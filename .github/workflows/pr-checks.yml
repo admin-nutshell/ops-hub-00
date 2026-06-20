@@ -118,7 +118,8 @@ jobs:
             -v "$GITHUB_WORKSPACE:/path" \
             ghcr.io/gitleaks/gitleaks@sha256:b109bc5f8f76a38196a3e413704fc5b9e3c32360bce4e4b603bd6f45b3721dbb \
             git \
-            --source=/path \
+            --no-banner \
             --redact \
             --verbose \
-            --exit-code=1
+            --exit-code=1 \
+            /path
