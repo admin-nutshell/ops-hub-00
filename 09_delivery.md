@@ -22,7 +22,7 @@ Phases overlap. Phase 2 hardening starts as soon as Phase 1 MVP is stable, not a
 
 The hub is in Phase 1 complete state when **all** of these are true:
 
-- [ ] GitHub repo `admin-nutshell/ops-hub` exists with full plan + workspace files
+- [ ] GitHub repo `admin-nutshell/ops-hub-00` exists with full plan + workspace files
 - [ ] Coolify projects provisioned: `ops-hub-staging` and `ops-hub-prod` on VPS
 - [ ] Dedicated Supabase project for Ops Hub (pgvector enabled)
 - [ ] Inngest, LangFuse, LiteLLM running in both staging and prod

@@ -301,11 +301,13 @@ Examples: adding a new ADR, swapping a tool, tightening a guardrail, adjusting a
 
 ### 3. Founder-owned
 
-Examples: pricing changes, new project undertaking, new tenant approval, budget changes > 20%, anything affecting Premium SLA scope, any policy change touching compliance posture, prod deploys for High-risk class, any decision requiring legal or financial commitment.
+Founder-owned decisions: pricing, new projects, new tenant approval, budget changes > 20%, Premium SLA scope, UI/UX direction, business logic definitions, compliance posture commitments, and prod deploys for High-risk class.
 
-→ Posted to `FOUNDER_QUEUE.md`. Agent waits for response. Founder approves explicitly.
+NOT founder-owned (agent-owned with recommendation): tool selection, security configuration, architecture choices, CI/CD configuration, monitoring thresholds, secret rotation, deployment approach, framework selection.
 
-**Default to category 1 or 2.** If unclear, agent posts a clarifying ask to FOUNDER_QUEUE.md asking only "is this founder-owned?" — not the full decision.
+→ Posted to `FOUNDER_QUEUE.md`. Agent brings a recommendation WITH rationale — not a choice between options. Founder approves explicitly.
+
+**Default to category 1 or 2.** If unclear, the agent makes the call, logs it in `DECISIONS.md`, and informs the founder — agents do not ask the founder to choose between technical options.
 
 ---
 
