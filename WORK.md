@@ -25,7 +25,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⏳ In progress — T-08 (LiteLLM) + T-10 (FreeScout) deploying now; T-07 (Inngest) blocked on T-15 app scaffold |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ⏳ In progress — T-10 deploying now |
-| 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ⏳ In progress — PR #1 approved (FQ-06 resolved); Tech Lead to merge + configure branch protection |
+| 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ⏳ In progress — PR #1 ✅ merged (9d685b0); branch protection pending GitHub Team upgrade (approved by Founder), interim pre-push hook in T-15 PR; eval gate + staging deploy land with T-15/T-17 |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | 🔒 Blocked on #7 |
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ In progress — Sentry DSN in Coolify env vars; UptimeRobot setup starts now; completion after T-15 |
 | 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | 🔒 Blocked on #4, #6, #7 |
@@ -66,7 +66,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-08: Deploy LiteLLM (self-hosted) to staging + prod on Coolify | Production Manager | ✅ Coolify provisioned | LiteLLM running; test API call returns model response | Jul 2 |
 | T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | LangFuse UI reachable; first trace logged from LiteLLM after T-08 | Jul 2 |
 | T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | FreeScout accessible at staging URL; test ticket submittable | Jul 2 |
-| T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | All tables created; RLS policies applied; migration files in `supabase/migrations/` | Jul 2 |
+| T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`; Security Lead review required (gates migration 2); awaiting founder execution. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned | All secrets in Vault; zero keys in env files, git, or Coolify env vars | Jul 2 |
 | T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | First test error captured in Sentry | Jul 2 |
 | T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | Monitors active; test alert fires and clears | Jul 2 |
@@ -76,7 +76,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-15: Implement GitHub Actions CI (lint + tests + staging auto-deploy on merge to main) | Tech Lead | T-05 ✅; ✅ Coolify provisioned | PR triggers pipeline; lint + test pass; staging deploys on merge | Jul 4 |
-| ↳ **[PR #1](https://github.com/admin-nutshell/ops-hub-00/pull/1) — APPROVED (FQ-06).** CI green. Tech Lead ✅ / QA Manager ✅ / Security Lead ✅. **Next: Tech Lead merges PR #1 and configures branch protection on main (agent-owned per updated operating model).** | | | | 2026-06-20 |
+| ↳ **[PR #1](https://github.com/admin-nutshell/ops-hub-00/pull/1) — ✅ MERGED (9d685b0).** CI green. Tech Lead ✅ / QA Manager ✅ / Security Lead ✅. **Branch protection: GitHub Team upgrade approved by Founder — pending upgrade execution; interim client-side pre-push hook (`.githooks/pre-push`) shipping in T-15 PR.** | | | | 2026-06-20 |
+| ↳ **T-15 app scaffold: IN PROGRESS — PR open on `feat/app-scaffold` branch.** | | | | 2026-06-20 |
 | T-16: Author 1 eval case per agent (11 total minimum) | Evals Lead | — | 11 `.yaml` eval files committed to `evals/`; each tests the agent's core capability | Jul 4 |
 | T-17: Wire Promptfoo eval gate into CI (failing eval blocks PR merge) | Evals Lead | T-15; T-16 | Failing eval blocks merge; passing eval trace visible in LangFuse | Jul 4 |
 | T-18: Verify cross-tenant RLS isolation (automated test) | Security Lead | T-11; T-12 | Test confirms tenant A cannot read tenant B rows; committed to CI | Jul 4 |
@@ -115,8 +116,10 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 - Production Manager: T-08 (LiteLLM) + T-10 (FreeScout) in parallel
 
 ### Tech Lead
-**🟢 T-11 UNBLOCKED (2026-06-18) — Supabase provisioned. Proceed with applying migrations.**
-Run `supabase/migrations/20260618120000_initial_schema.sql` then `20260618120100_enable_rls_policies.sql` against the new Ops Hub Supabase project. Connection details (placeholders) in `docs/infrastructure/supabase-ops-hub.md` — retrieve real values from Coolify env vars or the Founder. Confirm via Security Lead before running RLS migration that the `ops_hub_app` role model is correct (§6 of schema doc).
+**🟢 T-11 RUNBOOK READY (2026-06-20) — founder-run path chosen; agents never hold service_role key.**
+Decision: rather than provide agents a `DATABASE_URL`, the founder applies the two migrations themselves using a copy-paste runbook → `docs/engineering/t11-migration-runbook.md`. Runbook gates migration 2 (`20260618120100_enable_rls_policies.sql`) behind Security Lead sign-off, uses per-file `psql -f` (NOT `supabase db push`, which would apply both migrations at once and bypass the gate), and includes PowerShell-native commands for the founder's Windows environment. **Awaiting: (1) Security Lead RLS sign-off, (2) founder execution.** `ops_hub_app` login-role wiring follows in T-12.
+
+**Branch protection (2026-06-20):** Founder approved GitHub Team upgrade for `admin-nutshell` org to enable server-side branch protection on `main` (free-tier returned 403; classic protection + rulesets both require a paid plan on private repos). Pending upgrade execution. Interim: client-side pre-push hook (`.githooks/pre-push`) shipping in the T-15 scaffold PR to block direct pushes to `main`.
 
 **Track A complete (2026-06-18), ahead of the Jun 27 due date.** All four artifacts authored and committed on branch `feature/sprint1-track-a-architecture`:
 - T-01 → `docs/adr/0001-environment-topology.md` (incl. VPS sizing review; 70% util → founder resize escalation). Status Proposed — needs Prod Mgr deployability sign-off.

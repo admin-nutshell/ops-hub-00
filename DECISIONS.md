@@ -50,6 +50,14 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 2026-06-20 [Founder] Repo naming: admin-nutshell/ops-hub-00 is the canonical name. 09_delivery.md updated to match. Do not rename the repo.
 ```
 
+### 2026-06-20 — Branch protection + T-11 runbook resolution
+
+```
+2026-06-20 [Founder] GitHub Team upgrade approved for admin-nutshell org to enable server-side branch protection on main (resolves the free-tier 403 blocker; classic protection and rulesets both require paid plan on private repos).
+2026-06-20 [Tech Lead] T-11 migrations proceed via founder-run runbook — agents never hold service_role key per security model. Runbook at docs/engineering/t11-migration-runbook.md. Security Lead sign-off required before founder runs migration 2 (RLS policies).
+2026-06-20 [Tech Lead] Interim branch protection: client-side pre-push hook (.githooks/pre-push) added in T-15 scaffold PR to block direct pushes to main until server-side protection is active.
+```
+
 ---
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*
