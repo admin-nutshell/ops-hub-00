@@ -1,0 +1,373 @@
+name: Deploy Staging Services — T-08 LiteLLM + T-10 FreeScout
+
+# Triggered manually by Production Manager to deploy infrastructure services
+# to ops-hub-staging on Coolify. Never deploys to prod — that is workflow_dispatch
+# only via prod-promotion.yml (which does not exist yet; T-15 future scope).
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which services to deploy"
+        type: choice
+        options:
+          - all
+          - litellm-only
+          - freescout-only
+        default: all
+
+# Read-only checkout; all deploy calls are outbound API calls to Coolify.
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+
+jobs:
+  # ─── Phase 1: Discover ──────────────────────────────────────────────────────
+  discover:
+    name: Discover — Coolify state
+    runs-on: ubuntu-latest
+    outputs:
+      project_uuid: ${{ steps.project.outputs.uuid }}
+      server_uuid: ${{ steps.server.outputs.uuid }}
+      environment_name: ${{ steps.project.outputs.env_name }}
+
+    steps:
+      - name: Get server UUID
+        id: server
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          RESP=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers")
+          echo "=== Servers ==="
+          echo "$RESP" | jq -r '.[] | "  \(.name) — \(.uuid)"'
+          UUID=$(echo "$RESP" | jq -r '.[0].uuid')
+          [ -z "$UUID" ] || [ "$UUID" = "null" ] && { echo "ERROR: no server found"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      - name: Get project UUID and environment name
+        id: project
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          RESP=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects")
+          echo "=== Projects ==="
+          echo "$RESP" | jq -r '.[] | "  \(.name) — \(.uuid)"'
+          UUID=$(echo "$RESP" | jq -r '.[] | select(.name == "ops-hub-staging") | .uuid')
+          [ -z "$UUID" ] || [ "$UUID" = "null" ] && {
+            echo "ERROR: ops-hub-staging not found. Available:"
+            echo "$RESP" | jq -r '.[].name'
+            exit 1
+          }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+          # Get environment name from the project detail
+          DETAIL=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/projects/$UUID")
+          echo "=== Project environments ==="
+          echo "$DETAIL" | jq -r '.environments[] | "  \(.name) — \(.uuid)"' 2>/dev/null || true
+          ENV_NAME=$(echo "$DETAIL" | jq -r '.environments[0].name // "production"')
+          echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+          echo "Using environment: $ENV_NAME"
+
+      - name: List existing applications
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          echo "=== Existing Applications ==="
+          curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications" \
+            | jq -r '.[] | "  \(.name) [\(.status)] — \(.uuid) fqdn=\(.fqdn // "(none)")"' \
+            || echo "  (none or error listing)"
+
+      - name: List existing databases
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          echo "=== Existing Databases ==="
+          curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/databases" \
+            | jq -r '.[] | "  \(.name) [\(.status)] — \(.uuid)"' \
+            || echo "  (none or error listing)"
+
+  # ─── T-08: LiteLLM ──────────────────────────────────────────────────────────
+  deploy-litellm:
+    name: T-08 — LiteLLM staging
+    needs: discover
+    if: inputs.target == 'all' || inputs.target == 'litellm-only'
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      PROJECT_UUID: ${{ needs.discover.outputs.project_uuid }}
+      SERVER_UUID: ${{ needs.discover.outputs.server_uuid }}
+      ENV_NAME: ${{ needs.discover.outputs.environment_name }}
+
+    steps:
+      - name: Create or get LiteLLM application
+        id: app
+        run: |
+          # Idempotent: return existing UUID if already created
+          EXISTING=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications" \
+            | jq -r '.[] | select(.name == "litellm-staging") | .uuid' || true)
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "LiteLLM already exists: $EXISTING"
+            echo "uuid=$EXISTING" >> "$GITHUB_OUTPUT"
+          else
+            echo "Creating LiteLLM application..."
+            PAYLOAD=$(jq -n \
+              --arg proj "$PROJECT_UUID" \
+              --arg srv "$SERVER_UUID" \
+              --arg env "$ENV_NAME" \
+              '{
+                project_uuid: $proj,
+                server_uuid: $srv,
+                environment_name: $env,
+                name: "litellm-staging",
+                docker_registry_image_name: "ghcr.io/berriai/litellm:main-latest",
+                ports_exposes: "4000",
+                instant_deploy: false
+              }')
+            echo "Payload: $PAYLOAD"
+            RESP=$(curl -fsS -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              "$COOLIFY_BASE/applications" \
+              -d "$PAYLOAD" 2>&1)
+            echo "Create response: $RESP"
+            UUID=$(echo "$RESP" | jq -r '.uuid // .application_uuid // empty' 2>/dev/null)
+            [ -z "$UUID" ] || [ "$UUID" = "null" ] && {
+              echo "ERROR: failed to create LiteLLM. Full response: $RESP"
+              exit 1
+            }
+            echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+            echo "Created LiteLLM: $UUID"
+          fi
+
+      - name: Deploy (start) LiteLLM
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          echo "Starting LiteLLM $UUID..."
+          RESP=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$UUID/start" 2>&1)
+          echo "Start response: $RESP"
+
+      - name: Wait and verify LiteLLM health
+        run: |
+          echo "Waiting 90s for LiteLLM to initialize (Prisma migrations run on first boot)..."
+          sleep 90
+          UUID="${{ steps.app.outputs.uuid }}"
+          APP=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$UUID" 2>&1)
+          echo "=== LiteLLM state ==="
+          echo "$APP" | jq '{name, status, fqdn}' 2>/dev/null || echo "$APP"
+
+          FQDN=$(echo "$APP" | jq -r '.fqdn // empty' 2>/dev/null)
+          if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
+            HOST="${FQDN#https://}"
+            HOST="${HOST#http://}"
+            HOST="${HOST%/}"
+            echo "Checking readiness at https://$HOST/health/readiness"
+            HTTP=$(curl -o /dev/null -s -w "%{http_code}" \
+              --max-time 30 "https://$HOST/health/readiness" || echo "000")
+            echo "HTTP status: $HTTP"
+            [ "$HTTP" = "200" ] && echo "✅ LiteLLM healthy" \
+              || echo "⚠️  Not yet 200 — service may still be starting (check Coolify logs)"
+          else
+            echo "⚠️  No FQDN assigned yet — Coolify may still be routing. Check the dashboard."
+            echo "LiteLLM UUID for dashboard lookup: $UUID"
+          fi
+
+  # ─── T-10: FreeScout (MariaDB sidecar + FreeScout app) ──────────────────────
+  deploy-freescout:
+    name: T-10 — FreeScout staging
+    needs: discover
+    if: inputs.target == 'all' || inputs.target == 'freescout-only'
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      PROJECT_UUID: ${{ needs.discover.outputs.project_uuid }}
+      SERVER_UUID: ${{ needs.discover.outputs.server_uuid }}
+      ENV_NAME: ${{ needs.discover.outputs.environment_name }}
+
+    steps:
+      - name: Create or get MariaDB sidecar
+        id: mariadb
+        run: |
+          EXISTING=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/databases" \
+            | jq -r '.[] | select(.name == "freescout-mariadb") | .uuid' || true)
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "MariaDB exists: $EXISTING"
+            echo "uuid=$EXISTING" >> "$GITHUB_OUTPUT"
+          else
+            echo "Creating MariaDB sidecar..."
+            PAYLOAD=$(jq -n \
+              --arg proj "$PROJECT_UUID" \
+              --arg srv "$SERVER_UUID" \
+              --arg env "$ENV_NAME" \
+              '{
+                project_uuid: $proj,
+                server_uuid: $srv,
+                environment_name: $env,
+                name: "freescout-mariadb",
+                mariadb_database: "freescout",
+                mariadb_user: "freescout"
+              }')
+            echo "Payload: $PAYLOAD"
+            RESP=$(curl -fsS -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              "$COOLIFY_BASE/databases/mariadb" \
+              -d "$PAYLOAD" 2>&1)
+            echo "MariaDB create response: $RESP"
+            UUID=$(echo "$RESP" | jq -r '.uuid // .database_uuid // empty' 2>/dev/null)
+            [ -z "$UUID" ] || [ "$UUID" = "null" ] && {
+              echo "ERROR: failed to create MariaDB. Full response: $RESP"
+              exit 1
+            }
+            echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+            echo "Created MariaDB: $UUID"
+          fi
+
+      - name: Start MariaDB and capture internal hostname
+        id: db-start
+        run: |
+          UUID="${{ steps.mariadb.outputs.uuid }}"
+          echo "Starting MariaDB $UUID..."
+          RESP=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/databases/$UUID/start" 2>&1)
+          echo "MariaDB start response: $RESP"
+
+          echo "Waiting 30s for MariaDB to initialize..."
+          sleep 30
+
+          DB_STATE=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/databases/$UUID" 2>&1)
+          echo "=== MariaDB state ==="
+          echo "$DB_STATE" | jq '{name, status, internal_db_url}' 2>/dev/null || echo "$DB_STATE"
+
+          # Internal hostname in Coolify is the service name (set at creation time)
+          # For Docker networking within Coolify: service name = container hostname
+          INTERNAL_HOST=$(echo "$DB_STATE" | jq -r '.internal_db_url // empty' 2>/dev/null \
+            | sed 's|mysql://.*@||;s|:.*||' || true)
+          [ -z "$INTERNAL_HOST" ] && INTERNAL_HOST="freescout-mariadb"
+          echo "MariaDB internal host: $INTERNAL_HOST"
+          echo "host=$INTERNAL_HOST" >> "$GITHUB_OUTPUT"
+
+      - name: Create or get FreeScout application
+        id: freescout
+        run: |
+          EXISTING=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications" \
+            | jq -r '.[] | select(.name == "freescout-staging") | .uuid' || true)
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "FreeScout exists: $EXISTING"
+            echo "uuid=$EXISTING" >> "$GITHUB_OUTPUT"
+          else
+            echo "Creating FreeScout application..."
+            PAYLOAD=$(jq -n \
+              --arg proj "$PROJECT_UUID" \
+              --arg srv "$SERVER_UUID" \
+              --arg env "$ENV_NAME" \
+              '{
+                project_uuid: $proj,
+                server_uuid: $srv,
+                environment_name: $env,
+                name: "freescout-staging",
+                docker_registry_image_name: "thatwebagency/freescout",
+                ports_exposes: "80",
+                instant_deploy: false
+              }')
+            echo "Payload: $PAYLOAD"
+            RESP=$(curl -fsS -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              "$COOLIFY_BASE/applications" \
+              -d "$PAYLOAD" 2>&1)
+            echo "Create response: $RESP"
+            UUID=$(echo "$RESP" | jq -r '.uuid // .application_uuid // empty' 2>/dev/null)
+            [ -z "$UUID" ] || [ "$UUID" = "null" ] && {
+              echo "ERROR: failed to create FreeScout. Full response: $RESP"
+              exit 1
+            }
+            echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+            echo "Created FreeScout: $UUID"
+          fi
+
+      - name: Set FreeScout DB environment variables
+        run: |
+          UUID="${{ steps.freescout.outputs.uuid }}"
+          DB_HOST="${{ steps.db-start.outputs.host }}"
+          echo "Setting FreeScout env vars (DB_CONNECTION, DB_HOST=$DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME)..."
+          PAYLOAD=$(jq -n \
+            --arg host "$DB_HOST" \
+            '{
+              data: [
+                {key: "DB_CONNECTION", value: "mysql"},
+                {key: "DB_HOST",       value: $host},
+                {key: "DB_PORT",       value: "3306"},
+                {key: "DB_DATABASE",   value: "freescout"},
+                {key: "DB_USERNAME",   value: "freescout"}
+              ]
+            }')
+          RESP=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs/bulk" \
+            -d "$PAYLOAD" 2>&1)
+          echo "Env set response: $RESP"
+
+      - name: Deploy (start) FreeScout
+        run: |
+          UUID="${{ steps.freescout.outputs.uuid }}"
+          echo "Starting FreeScout $UUID..."
+          RESP=$(curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$UUID/start" 2>&1)
+          echo "Start response: $RESP"
+
+      - name: Verify FreeScout health
+        run: |
+          echo "Waiting 90s for FreeScout to initialize (DB migrations run on first boot)..."
+          sleep 90
+          UUID="${{ steps.freescout.outputs.uuid }}"
+          APP=$(curl -fsS \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$UUID" 2>&1)
+          echo "=== FreeScout state ==="
+          echo "$APP" | jq '{name, status, fqdn}' 2>/dev/null || echo "$APP"
+
+          FQDN=$(echo "$APP" | jq -r '.fqdn // empty' 2>/dev/null)
+          if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
+            HOST="${FQDN#https://}"
+            HOST="${HOST#http://}"
+            HOST="${HOST%/}"
+            echo "Checking https://$HOST/"
+            HTTP=$(curl -o /dev/null -s -w "%{http_code}" \
+              --max-time 30 "https://$HOST/" || echo "000")
+            echo "HTTP status: $HTTP"
+            [ "$HTTP" = "200" ] && echo "✅ FreeScout healthy" \
+              || echo "⚠️  Not yet 200 (may still be starting — check Coolify logs)"
+          else
+            echo "⚠️  No FQDN assigned yet. FreeScout UUID: $UUID"
+          fi
