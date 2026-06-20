@@ -55,15 +55,18 @@ jobs:
           jq . /tmp/noauth_body.txt 2>/dev/null || cat /tmp/noauth_body.txt 2>/dev/null || echo "(empty)"
 
           # 2. Authenticated probe — full header + body capture
+          # Bug fix: do NOT use `|| echo "000"` inside $() — curl -w "%{http_code}" already
+          # outputs "000" on timeout/error; the fallback would double it to "000000".
           echo ""
           echo "--- Authenticated probe (COOLIFY_API_TOKEN) ---"
           AUTH_HTTP=$(curl -s -D /tmp/auth_headers.txt -o /tmp/auth_body.txt -w "%{http_code}" \
             --max-time 15 \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
-            "$COOLIFY_BASE/servers" \
-            || echo "000")
-          echo "HTTP status: $AUTH_HTTP"
+            "$COOLIFY_BASE/servers" 2>/dev/null)
+          CURL_EXIT=$?
+          AUTH_HTTP="${AUTH_HTTP:-000}"
+          echo "HTTP status: $AUTH_HTTP (curl exit: $CURL_EXIT)"
           echo "Response headers:"
           cat /tmp/auth_headers.txt 2>/dev/null || echo "(no headers)"
           echo "Response body:"
@@ -78,14 +81,18 @@ jobs:
           # 4. Fail with a meaningful message
           if [ "$AUTH_HTTP" = "200" ]; then
             echo "✅ /api/v1/servers returned 200 — proceeding"
+          elif [ "$AUTH_HTTP" = "000" ] || [ "$CURL_EXIT" = "28" ]; then
+            echo "❌ Connection timeout (curl exit $CURL_EXIT) — Coolify unreachable from GitHub Actions"
+            echo "   Server may be restarting after a config change. Wait a minute and re-run."
+            exit 1
           elif [ "$AUTH_HTTP" = "401" ]; then
-            echo "❌ 401 Unauthorized — token is not being recognised. Check COOLIFY_API_TOKEN value."
+            echo "❌ 401 Unauthorized — token not recognised. Check COOLIFY_API_TOKEN secret."
             exit 1
           elif [ "$AUTH_HTTP" = "403" ]; then
-            echo "❌ 403 Forbidden — see headers/body above to determine if this is Coolify (auth) or proxy (IP block)"
+            echo "❌ 403 Forbidden — see response body above. Enable API: Coolify Settings → API."
             exit 1
           else
-            echo "❌ Unexpected HTTP $AUTH_HTTP — see above"
+            echo "❌ Unexpected HTTP $AUTH_HTTP (curl exit $CURL_EXIT) — see above"
             exit 1
           fi
 
