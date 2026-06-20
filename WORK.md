@@ -146,10 +146,13 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 ### Production Manager
 **🟢 ACTIVE (2026-06-20) — 34 env vars loaded in Coolify staging; 6 GitHub Actions secrets set.**
 
-**2026-06-20 — T-08 + T-10 deploy attempt: blocked on browser session permission.**
-Browser automation reached `coolify.inatechshell.ca` but the Claude-in-Chrome extension denied navigation — site-level permission for `coolify.inatechshell.ca` has not been granted in the extension settings. No deploy was executed. No false verification recorded.
+**2026-06-20 — T-08 + T-10 deploy attempt #2: blocked on Coolify credentials.**
+Two deployment paths attempted:
+1. Claude-in-Chrome browser extension: extension not connected (service worker not running in session). Same root cause as prior attempt — no browser UI access.
+2. Coolify REST API: confirmed live and reachable (HTTP 401 at `coolify.inatechshell.ca/api/v1`). No API token exists in project files — it is a founder-held credential. **FQ-07 raised** requesting token via reply or GitHub Actions secret.
+No deploy was executed. No false verification recorded.
 
-**Both tasks are ready to execute the moment browser access is restored.** Full specs below — no further agent decisions needed; execute these steps directly in the Coolify UI.
+**Both tasks unblock immediately once a Coolify API token is available (Option A: paste in chat) or the Claude-in-Chrome extension is connected.** Full specs below — no further agent decisions needed.
 
 ---
 

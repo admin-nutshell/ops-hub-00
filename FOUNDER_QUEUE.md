@@ -49,6 +49,28 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-07 — Coolify API token needed to deploy T-08 (LiteLLM) + T-10 (FreeScout)
+
+```
+BLOCKING: [Production Manager] Provide a Coolify API token so agents can deploy via the REST API.
+  Context: Two deployment paths were attempted on 2026-06-20.
+    1. Claude-in-Chrome browser extension: not connected (extension shows "not running" in session).
+       Same blocker as prior attempt. No deploy was executed.
+    2. Coolify REST API: live and reachable (HTTP 401 confirmed at coolify.inatechshell.ca/api/v1).
+       However, no API token exists in this repo or project env files — it's a founder-held credential.
+  Recommendation: Generate a Coolify API token (Coolify UI → Profile → API Tokens → New Token,
+    scoped to ops-hub-staging project), then either:
+      (a) Paste it in a reply here so the Production Manager agent can use it in this session, OR
+      (b) Set COOLIFY_TOKEN as a GitHub Actions secret (same place as the 6 existing secrets) and
+          the Production Manager will read it from there on the next invocation.
+    Option (a) is fastest — token is used once for T-08 + T-10, never committed anywhere.
+  Impact if delayed: T-08 (LiteLLM) + T-10 (FreeScout) remain undeployed; M1 checklist items #4 and
+    #6 stay blocked; T-09 (LangFuse trace test) and T-19 (integration test) remain blocked downstream.
+  Linked: WORK.md Production Manager section, T-08 + T-10 specs; docs/deploys/ (plan written, awaiting exec)
+```
+
+---
+
 ### ~~FQ-06 — Approve merge of PR #1: CI pipeline skeleton~~ — RESOLVED
 
 ```
