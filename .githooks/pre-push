@@ -1,0 +1,12 @@
+#!/bin/sh
+# Interim guard: prevent direct pushes to main (server-side enforcement lands with GitHub Team upgrade).
+# Installed automatically via: pnpm install (prepare script sets hooksPath)
+while IFS= read -r line; do
+  remote_ref=$(echo "$line" | awk '{print $3}')
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "ERROR: Direct push to 'main' is blocked. Open a PR instead."
+    echo "       Server-side branch protection will enforce this once the GitHub Team upgrade is active."
+    exit 1
+  fi
+done
+exit 0
