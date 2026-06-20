@@ -33,71 +33,159 @@ jobs:
       environment_name: ${{ steps.project.outputs.env_name }}
 
     steps:
+      # ── Pre-flight: verify connectivity and identify proxy vs Coolify 403 ───
+      - name: Pre-flight — connectivity + auth probe
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          echo "=== Target base URL: $COOLIFY_BASE ==="
+
+          # 1. Unauthenticated probe — identifies if basic connectivity works
+          #    and whether a proxy (not Coolify) is the 403 source.
+          echo ""
+          echo "--- Unauthenticated probe (expect 401 from Coolify or 403 from proxy) ---"
+          curl -s -D /tmp/noauth_headers.txt -o /tmp/noauth_body.txt -w "HTTP %{http_code}\n" \
+            --max-time 15 \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers" \
+            || echo "curl failed (exit $?)"
+          echo "Response headers:"
+          cat /tmp/noauth_headers.txt 2>/dev/null || echo "(no headers)"
+          echo "Response body:"
+          jq . /tmp/noauth_body.txt 2>/dev/null || cat /tmp/noauth_body.txt 2>/dev/null || echo "(empty)"
+
+          # 2. Authenticated probe — full header + body capture
+          echo ""
+          echo "--- Authenticated probe (COOLIFY_API_TOKEN) ---"
+          AUTH_HTTP=$(curl -s -D /tmp/auth_headers.txt -o /tmp/auth_body.txt -w "%{http_code}" \
+            --max-time 15 \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers" \
+            || echo "000")
+          echo "HTTP status: $AUTH_HTTP"
+          echo "Response headers:"
+          cat /tmp/auth_headers.txt 2>/dev/null || echo "(no headers)"
+          echo "Response body:"
+          jq . /tmp/auth_body.txt 2>/dev/null || cat /tmp/auth_body.txt 2>/dev/null || echo "(empty)"
+
+          # 3. Server header analysis — tells us if proxy (nginx/caddy) or Coolify is responding
+          echo ""
+          echo "--- Server identification ---"
+          SERVER_HEADER=$(grep -i "^server:" /tmp/auth_headers.txt 2>/dev/null || echo "no Server header found")
+          echo "Server header: $SERVER_HEADER"
+
+          # 4. Fail with a meaningful message
+          if [ "$AUTH_HTTP" = "200" ]; then
+            echo "✅ /api/v1/servers returned 200 — proceeding"
+          elif [ "$AUTH_HTTP" = "401" ]; then
+            echo "❌ 401 Unauthorized — token is not being recognised. Check COOLIFY_API_TOKEN value."
+            exit 1
+          elif [ "$AUTH_HTTP" = "403" ]; then
+            echo "❌ 403 Forbidden — see headers/body above to determine if this is Coolify (auth) or proxy (IP block)"
+            exit 1
+          else
+            echo "❌ Unexpected HTTP $AUTH_HTTP — see above"
+            exit 1
+          fi
+
+      # ── Step 1: Server UUID ─────────────────────────────────────────────────
       - name: Get server UUID
         id: server
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
-          RESP=$(curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/servers.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/servers")
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: /api/v1/servers returned HTTP $HTTP_CODE"
+            jq . /tmp/servers.json 2>/dev/null || cat /tmp/servers.json
+            exit 1
+          fi
           echo "=== Servers ==="
-          echo "$RESP" | jq -r '.[] | "  \(.name) — \(.uuid)"'
-          UUID=$(echo "$RESP" | jq -r '.[0].uuid')
-          [ -z "$UUID" ] || [ "$UUID" = "null" ] && { echo "ERROR: no server found"; exit 1; }
+          jq -r '.[] | "  \(.name) — \(.uuid)"' /tmp/servers.json
+          UUID=$(jq -r '.[0].uuid' /tmp/servers.json)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: no server found in response"
+            exit 1
+          fi
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
 
+      # ── Step 2: Project UUID + environment name ─────────────────────────────
       - name: Get project UUID and environment name
         id: project
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
-          RESP=$(curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/projects.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/projects")
-          echo "=== Projects ==="
-          echo "$RESP" | jq -r '.[] | "  \(.name) — \(.uuid)"'
-          UUID=$(echo "$RESP" | jq -r '.[] | select(.name == "ops-hub-staging") | .uuid')
-          [ -z "$UUID" ] || [ "$UUID" = "null" ] && {
-            echo "ERROR: ops-hub-staging not found. Available:"
-            echo "$RESP" | jq -r '.[].name'
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: /api/v1/projects returned HTTP $HTTP_CODE"
+            jq . /tmp/projects.json 2>/dev/null || cat /tmp/projects.json
             exit 1
-          }
+          fi
+          echo "=== Projects ==="
+          jq -r '.[] | "  \(.name) — \(.uuid)"' /tmp/projects.json
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-staging") | .uuid' /tmp/projects.json)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: ops-hub-staging not found. Available projects:"
+            jq -r '.[].name' /tmp/projects.json
+            exit 1
+          fi
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
 
           # Get environment name from the project detail
-          DETAIL=$(curl -fsS \
+          HTTP_CODE2=$(curl -s -o /tmp/project_detail.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
             "$COOLIFY_BASE/projects/$UUID")
-          echo "=== Project environments ==="
-          echo "$DETAIL" | jq -r '.environments[] | "  \(.name) — \(.uuid)"' 2>/dev/null || true
-          ENV_NAME=$(echo "$DETAIL" | jq -r '.environments[0].name // "production"')
-          echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
-          echo "Using environment: $ENV_NAME"
+          if [ "$HTTP_CODE2" != "200" ]; then
+            echo "WARNING: /api/v1/projects/$UUID returned HTTP $HTTP_CODE2 — using 'production'"
+            echo "env_name=production" >> "$GITHUB_OUTPUT"
+          else
+            echo "=== Project environments ==="
+            jq -r '.environments[] | "  \(.name) — \(.uuid)"' /tmp/project_detail.json 2>/dev/null || true
+            ENV_NAME=$(jq -r '.environments[0].name // "production"' /tmp/project_detail.json)
+            echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+            echo "Using environment: $ENV_NAME"
+          fi
 
+      # ── Step 3: Inventory ───────────────────────────────────────────────────
       - name: List existing applications
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
           echo "=== Existing Applications ==="
-          curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications" \
-            | jq -r '.[] | "  \(.name) [\(.status)] — \(.uuid) fqdn=\(.fqdn // "(none)")"' \
-            || echo "  (none or error listing)"
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          if [ "$HTTP_CODE" = "200" ]; then
+            jq -r '.[] | "  \(.name) [\(.status // "unknown")] — \(.uuid) fqdn=\(.fqdn // "(none)")"' \
+              /tmp/apps.json 2>/dev/null || echo "  (empty or unexpected format)"
+          else
+            echo "  (HTTP $HTTP_CODE listing applications)"
+          fi
 
       - name: List existing databases
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
           echo "=== Existing Databases ==="
-          curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/dbs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/databases" \
-            | jq -r '.[] | "  \(.name) [\(.status)] — \(.uuid)"' \
-            || echo "  (none or error listing)"
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases")
+          if [ "$HTTP_CODE" = "200" ]; then
+            jq -r '.[] | "  \(.name) [\(.status // "unknown")] — \(.uuid)"' \
+              /tmp/dbs.json 2>/dev/null || echo "  (empty or unexpected format)"
+          else
+            echo "  (HTTP $HTTP_CODE listing databases)"
+          fi
 
   # ─── T-08: LiteLLM ──────────────────────────────────────────────────────────
   deploy-litellm:
@@ -116,10 +204,16 @@ jobs:
         id: app
         run: |
           # Idempotent: return existing UUID if already created
-          EXISTING=$(curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications" \
-            | jq -r '.[] | select(.name == "litellm-staging") | .uuid' || true)
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: /api/v1/applications returned HTTP $HTTP_CODE"
+            jq . /tmp/apps.json 2>/dev/null || cat /tmp/apps.json
+            exit 1
+          fi
+          EXISTING=$(jq -r '.[] | select(.name == "litellm-staging") | .uuid' /tmp/apps.json 2>/dev/null || true)
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             echo "LiteLLM already exists: $EXISTING"
@@ -140,17 +234,23 @@ jobs:
                 instant_deploy: false
               }')
             echo "Payload: $PAYLOAD"
-            RESP=$(curl -fsS -X POST \
+            HTTP_CODE=$(curl -s -o /tmp/create_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
               "$COOLIFY_BASE/applications" \
-              -d "$PAYLOAD" 2>&1)
-            echo "Create response: $RESP"
-            UUID=$(echo "$RESP" | jq -r '.uuid // .application_uuid // empty' 2>/dev/null)
-            [ -z "$UUID" ] || [ "$UUID" = "null" ] && {
-              echo "ERROR: failed to create LiteLLM. Full response: $RESP"
+              -d "$PAYLOAD")
+            echo "Create HTTP $HTTP_CODE"
+            jq . /tmp/create_resp.json 2>/dev/null || cat /tmp/create_resp.json
+            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+              echo "ERROR: failed to create LiteLLM (HTTP $HTTP_CODE)"
               exit 1
-            }
+            fi
+            UUID=$(jq -r '.uuid // .application_uuid // empty' /tmp/create_resp.json 2>/dev/null)
+            if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+              echo "ERROR: no UUID in create response"
+              exit 1
+            fi
             echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
             echo "Created LiteLLM: $UUID"
           fi
@@ -159,23 +259,26 @@ jobs:
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           echo "Starting LiteLLM $UUID..."
-          RESP=$(curl -fsS -X POST \
+          HTTP_CODE=$(curl -s -o /tmp/start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications/$UUID/start" 2>&1)
-          echo "Start response: $RESP"
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/start")
+          echo "Start HTTP $HTTP_CODE"
+          jq . /tmp/start_resp.json 2>/dev/null || cat /tmp/start_resp.json
 
       - name: Wait and verify LiteLLM health
         run: |
           echo "Waiting 90s for LiteLLM to initialize (Prisma migrations run on first boot)..."
           sleep 90
           UUID="${{ steps.app.outputs.uuid }}"
-          APP=$(curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/app_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications/$UUID" 2>&1)
-          echo "=== LiteLLM state ==="
-          echo "$APP" | jq '{name, status, fqdn}' 2>/dev/null || echo "$APP"
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          echo "=== LiteLLM state (HTTP $HTTP_CODE) ==="
+          jq '{name, status, fqdn}' /tmp/app_state.json 2>/dev/null || cat /tmp/app_state.json
 
-          FQDN=$(echo "$APP" | jq -r '.fqdn // empty' 2>/dev/null)
+          FQDN=$(jq -r '.fqdn // empty' /tmp/app_state.json 2>/dev/null)
           if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
             HOST="${FQDN#https://}"
             HOST="${HOST#http://}"
@@ -207,10 +310,16 @@ jobs:
       - name: Create or get MariaDB sidecar
         id: mariadb
         run: |
-          EXISTING=$(curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/dbs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/databases" \
-            | jq -r '.[] | select(.name == "freescout-mariadb") | .uuid' || true)
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases")
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: /api/v1/databases returned HTTP $HTTP_CODE"
+            jq . /tmp/dbs.json 2>/dev/null || cat /tmp/dbs.json
+            exit 1
+          fi
+          EXISTING=$(jq -r '.[] | select(.name == "freescout-mariadb") | .uuid' /tmp/dbs.json 2>/dev/null || true)
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             echo "MariaDB exists: $EXISTING"
@@ -230,17 +339,23 @@ jobs:
                 mariadb_user: "freescout"
               }')
             echo "Payload: $PAYLOAD"
-            RESP=$(curl -fsS -X POST \
+            HTTP_CODE=$(curl -s -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
               "$COOLIFY_BASE/databases/mariadb" \
-              -d "$PAYLOAD" 2>&1)
-            echo "MariaDB create response: $RESP"
-            UUID=$(echo "$RESP" | jq -r '.uuid // .database_uuid // empty' 2>/dev/null)
-            [ -z "$UUID" ] || [ "$UUID" = "null" ] && {
-              echo "ERROR: failed to create MariaDB. Full response: $RESP"
+              -d "$PAYLOAD")
+            echo "MariaDB create HTTP $HTTP_CODE"
+            jq . /tmp/db_create_resp.json 2>/dev/null || cat /tmp/db_create_resp.json
+            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+              echo "ERROR: failed to create MariaDB (HTTP $HTTP_CODE)"
               exit 1
-            }
+            fi
+            UUID=$(jq -r '.uuid // .database_uuid // empty' /tmp/db_create_resp.json 2>/dev/null)
+            if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+              echo "ERROR: no UUID in create response"
+              exit 1
+            fi
             echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
             echo "Created MariaDB: $UUID"
           fi
@@ -250,23 +365,25 @@ jobs:
         run: |
           UUID="${{ steps.mariadb.outputs.uuid }}"
           echo "Starting MariaDB $UUID..."
-          RESP=$(curl -fsS -X POST \
+          HTTP_CODE=$(curl -s -o /tmp/db_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/databases/$UUID/start" 2>&1)
-          echo "MariaDB start response: $RESP"
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases/$UUID/start")
+          echo "MariaDB start HTTP $HTTP_CODE"
+          jq . /tmp/db_start_resp.json 2>/dev/null || cat /tmp/db_start_resp.json
 
           echo "Waiting 30s for MariaDB to initialize..."
           sleep 30
 
-          DB_STATE=$(curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/db_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/databases/$UUID" 2>&1)
-          echo "=== MariaDB state ==="
-          echo "$DB_STATE" | jq '{name, status, internal_db_url}' 2>/dev/null || echo "$DB_STATE"
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases/$UUID")
+          echo "=== MariaDB state (HTTP $HTTP_CODE) ==="
+          jq '{name, status, internal_db_url}' /tmp/db_state.json 2>/dev/null || cat /tmp/db_state.json
 
           # Internal hostname in Coolify is the service name (set at creation time)
-          # For Docker networking within Coolify: service name = container hostname
-          INTERNAL_HOST=$(echo "$DB_STATE" | jq -r '.internal_db_url // empty' 2>/dev/null \
+          INTERNAL_HOST=$(jq -r '.internal_db_url // empty' /tmp/db_state.json 2>/dev/null \
             | sed 's|mysql://.*@||;s|:.*||' || true)
           [ -z "$INTERNAL_HOST" ] && INTERNAL_HOST="freescout-mariadb"
           echo "MariaDB internal host: $INTERNAL_HOST"
@@ -275,10 +392,16 @@ jobs:
       - name: Create or get FreeScout application
         id: freescout
         run: |
-          EXISTING=$(curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications" \
-            | jq -r '.[] | select(.name == "freescout-staging") | .uuid' || true)
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: /api/v1/applications returned HTTP $HTTP_CODE"
+            jq . /tmp/apps.json 2>/dev/null || cat /tmp/apps.json
+            exit 1
+          fi
+          EXISTING=$(jq -r '.[] | select(.name == "freescout-staging") | .uuid' /tmp/apps.json 2>/dev/null || true)
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             echo "FreeScout exists: $EXISTING"
@@ -299,17 +422,23 @@ jobs:
                 instant_deploy: false
               }')
             echo "Payload: $PAYLOAD"
-            RESP=$(curl -fsS -X POST \
+            HTTP_CODE=$(curl -s -o /tmp/fs_create_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
               "$COOLIFY_BASE/applications" \
-              -d "$PAYLOAD" 2>&1)
-            echo "Create response: $RESP"
-            UUID=$(echo "$RESP" | jq -r '.uuid // .application_uuid // empty' 2>/dev/null)
-            [ -z "$UUID" ] || [ "$UUID" = "null" ] && {
-              echo "ERROR: failed to create FreeScout. Full response: $RESP"
+              -d "$PAYLOAD")
+            echo "FreeScout create HTTP $HTTP_CODE"
+            jq . /tmp/fs_create_resp.json 2>/dev/null || cat /tmp/fs_create_resp.json
+            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+              echo "ERROR: failed to create FreeScout (HTTP $HTTP_CODE)"
               exit 1
-            }
+            fi
+            UUID=$(jq -r '.uuid // .application_uuid // empty' /tmp/fs_create_resp.json 2>/dev/null)
+            if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+              echo "ERROR: no UUID in create response"
+              exit 1
+            fi
             echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
             echo "Created FreeScout: $UUID"
           fi
@@ -330,34 +459,39 @@ jobs:
                 {key: "DB_USERNAME",   value: "freescout"}
               ]
             }')
-          RESP=$(curl -fsS -X POST \
+          HTTP_CODE=$(curl -s -o /tmp/env_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID/envs/bulk" \
-            -d "$PAYLOAD" 2>&1)
-          echo "Env set response: $RESP"
+            -d "$PAYLOAD")
+          echo "Env set HTTP $HTTP_CODE"
+          jq . /tmp/env_resp.json 2>/dev/null || cat /tmp/env_resp.json
 
       - name: Deploy (start) FreeScout
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
           echo "Starting FreeScout $UUID..."
-          RESP=$(curl -fsS -X POST \
+          HTTP_CODE=$(curl -s -o /tmp/fs_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications/$UUID/start" 2>&1)
-          echo "Start response: $RESP"
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/start")
+          echo "Start HTTP $HTTP_CODE"
+          jq . /tmp/fs_start_resp.json 2>/dev/null || cat /tmp/fs_start_resp.json
 
       - name: Verify FreeScout health
         run: |
           echo "Waiting 90s for FreeScout to initialize (DB migrations run on first boot)..."
           sleep 90
           UUID="${{ steps.freescout.outputs.uuid }}"
-          APP=$(curl -fsS \
+          HTTP_CODE=$(curl -s -o /tmp/fs_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications/$UUID" 2>&1)
-          echo "=== FreeScout state ==="
-          echo "$APP" | jq '{name, status, fqdn}' 2>/dev/null || echo "$APP"
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          echo "=== FreeScout state (HTTP $HTTP_CODE) ==="
+          jq '{name, status, fqdn}' /tmp/fs_state.json 2>/dev/null || cat /tmp/fs_state.json
 
-          FQDN=$(echo "$APP" | jq -r '.fqdn // empty' 2>/dev/null)
+          FQDN=$(jq -r '.fqdn // empty' /tmp/fs_state.json 2>/dev/null)
           if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
             HOST="${FQDN#https://}"
             HOST="${HOST#http://}"
