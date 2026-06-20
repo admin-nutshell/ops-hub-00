@@ -60,6 +60,12 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 2026-06-20 [Security Lead] Gitleaks CI invocation fixed (PR #3, commit 295a481): --source flag removed from git subcommand, repo path now positional. Live-verified against pinned digest — clean repo exit 0, planted secret exit 1, --redact confirmed.
 ```
 
+### 2026-06-20 — T-08/T-10 deploy workflow
+
+```
+2026-06-20 [Production Manager] deploy-staging-services.yml merged to main (PR #6, 8c5170c): workflow_dispatch workflow for T-08 (LiteLLM) + T-10 (FreeScout) staging deploys via Coolify API. Jobs: discover (Coolify project/server UUIDs) → deploy-litellm + deploy-freescout in parallel. FreeScout creates MariaDB sidecar first, wires DB env vars, then starts app. First run triggered (#27886275175) — blocked on COOLIFY_API_TOKEN returning HTTP 403 on /api/v1/servers. Root cause: token lacks account-level scope. FQ-07 updated with regeneration steps.
+```
+
 ---
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*

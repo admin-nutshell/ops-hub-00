@@ -49,24 +49,29 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-07 — Coolify API token needed to deploy T-08 (LiteLLM) + T-10 (FreeScout)
+### FQ-07 — COOLIFY_API_TOKEN returns 403 on `/api/v1/servers`
 
 ```
-BLOCKING: [Production Manager] Provide a Coolify API token so agents can deploy via the REST API.
-  Context: Two deployment paths were attempted on 2026-06-20.
-    1. Claude-in-Chrome browser extension: not connected (extension shows "not running" in session).
-       Same blocker as prior attempt. No deploy was executed.
-    2. Coolify REST API: live and reachable (HTTP 401 confirmed at coolify.inatechshell.ca/api/v1).
-       However, no API token exists in this repo or project env files — it's a founder-held credential.
-  Recommendation: Generate a Coolify API token (Coolify UI → Profile → API Tokens → New Token,
-    scoped to ops-hub-staging project), then either:
-      (a) Paste it in a reply here so the Production Manager agent can use it in this session, OR
-      (b) Set COOLIFY_TOKEN as a GitHub Actions secret (same place as the 6 existing secrets) and
-          the Production Manager will read it from there on the next invocation.
-    Option (a) is fastest — token is used once for T-08 + T-10, never committed anywhere.
-  Impact if delayed: T-08 (LiteLLM) + T-10 (FreeScout) remain undeployed; M1 checklist items #4 and
-    #6 stay blocked; T-09 (LangFuse trace test) and T-19 (integration test) remain blocked downstream.
-  Linked: WORK.md Production Manager section, T-08 + T-10 specs; docs/deploys/ (plan written, awaiting exec)
+BLOCKING: [Production Manager] COOLIFY_API_TOKEN GitHub secret is set but the token is rejected
+  with HTTP 403 when the deploy workflow calls GET /api/v1/servers.
+  Context (2026-06-20):
+    - GitHub Actions secret COOLIFY_API_TOKEN confirmed set (founder reply: FQ-07 resolved).
+    - Deploy workflow (deploy-staging-services.yml) triggered on run #27886275175.
+    - First API call: GET https://coolify.inatechshell.ca/api/v1/servers
+      Response: HTTP 403 (curl exit code 22 = server rejected the request).
+    - 403 ≠ 401. The token IS being sent (Authorization: Bearer ***). The server recognises
+      the request format but denies access — this means the token has insufficient scope or is
+      a wrong token type (e.g. project-scoped instead of account-level, or OAuth vs API key).
+  Action needed: In Coolify dashboard → Profile (top-right) → API Tokens → copy the token and
+    verify it is an account-level (root) token, not project-scoped. If unsure, delete the
+    existing token, create a new one under Profile → API Tokens → New Token (no scope restriction),
+    copy the new value, and update the GitHub Actions secret COOLIFY_API_TOKEN at:
+    https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
+    Re-run the workflow after updating: Actions → Deploy Staging Services → Run workflow.
+  Impact if delayed: T-08 (LiteLLM) + T-10 (FreeScout) remain undeployed; M1 checklist items #4
+    and #6 stay blocked; T-09 (LangFuse trace test) and T-19 (integration test) blocked downstream.
+  Linked: github.com/admin-nutshell/ops-hub-00/actions/runs/27886275175 (failed run logs),
+    .github/workflows/deploy-staging-services.yml (the workflow), WORK.md Production Manager section
 ```
 
 ---
