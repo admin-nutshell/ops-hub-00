@@ -50,12 +50,14 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 2026-06-20 [Founder] Repo naming: admin-nutshell/ops-hub-00 is the canonical name. 09_delivery.md updated to match. Do not rename the repo.
 ```
 
-### 2026-06-20 — Branch protection + T-11 runbook resolution
+### 2026-06-20 — Branch protection + T-11 runbook resolution + T-15 scaffold
 
 ```
-2026-06-20 [Founder] GitHub Team upgrade approved for admin-nutshell org to enable server-side branch protection on main (resolves the free-tier 403 blocker; classic protection and rulesets both require paid plan on private repos).
+2026-06-20 [Founder] GitHub Team upgrade approved and executed for admin-nutshell org — enables server-side branch protection on main (free-tier returned 403; classic protection + rulesets both require paid plan on private repos).
+2026-06-20 [Tech Lead] Branch protection fully configured on main: 3 required status checks (Lint & Type Check, Unit Tests, Security Scan), strict (branches must be up to date), ≥1 approval required, dismiss stale reviews, no direct push, no force-push, no branch deletion.
 2026-06-20 [Tech Lead] T-11 migrations proceed via founder-run runbook — agents never hold service_role key per security model. Runbook at docs/engineering/t11-migration-runbook.md. Security Lead sign-off required before founder runs migration 2 (RLS policies).
-2026-06-20 [Tech Lead] Interim branch protection: client-side pre-push hook (.githooks/pre-push) added in T-15 scaffold PR to block direct pushes to main until server-side protection is active.
+2026-06-20 [Tech Lead] T-15 app scaffold merged (PR #2, commit 0860ff4): Node 20 + TS + pnpm toolchain, ESLint 9 flat config, strict tsc, Vitest, GET /health, multi-stage Dockerfile (non-root), .githooks/pre-push. All 3 CI checks green. Unblocks T-07 (Inngest), T-13 (Sentry SDK), Coolify app deploy.
+2026-06-20 [Security Lead] Gitleaks CI invocation fixed (PR #3, commit 295a481): --source flag removed from git subcommand, repo path now positional. Live-verified against pinned digest — clean repo exit 0, planted secret exit 1, --redact confirmed.
 ```
 
 ---
