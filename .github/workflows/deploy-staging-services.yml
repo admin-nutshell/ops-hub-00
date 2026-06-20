@@ -55,16 +55,19 @@ jobs:
           jq . /tmp/noauth_body.txt 2>/dev/null || cat /tmp/noauth_body.txt 2>/dev/null || echo "(empty)"
 
           # 2. Authenticated probe — full header + body capture
-          # Bug fix: do NOT use `|| echo "000"` inside $() — curl -w "%{http_code}" already
-          # outputs "000" on timeout/error; the fallback would double it to "000000".
+          # set +e guards the curl inside $() so bash -e doesn't fire on curl exit 28 (timeout)
+          # before we can capture CURL_EXIT. No || echo "000" inside $() — that would double
+          # the "000" that %{http_code} already outputs on failure.
           echo ""
           echo "--- Authenticated probe (COOLIFY_API_TOKEN) ---"
+          set +e
           AUTH_HTTP=$(curl -s -D /tmp/auth_headers.txt -o /tmp/auth_body.txt -w "%{http_code}" \
             --max-time 15 \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/servers" 2>/dev/null)
           CURL_EXIT=$?
+          set -e
           AUTH_HTTP="${AUTH_HTTP:-000}"
           echo "HTTP status: $AUTH_HTTP (curl exit: $CURL_EXIT)"
           echo "Response headers:"
