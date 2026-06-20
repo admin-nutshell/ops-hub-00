@@ -64,7 +64,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 |---|---|---|---|---|
 | T-07: Deploy Inngest (connect to Inngest Cloud) in staging + prod | Production Manager | ✅ Coolify; 🔒 T-15 app scaffold (Inngest SDK must be initialized in app code) | Inngest dashboard shows both envs; test event processed | Jul 2 |
 | T-08: Deploy LiteLLM (self-hosted) to staging + prod on Coolify | Production Manager | ✅ Coolify provisioned | LiteLLM running; test API call returns model response | Jul 2 |
-| ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. Run #27886275175 triggered; blocked on COOLIFY_API_TOKEN 403 (see FQ-07). | | | | 2026-06-20 |
+| ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. | | | | 2026-06-20 |
+| ↳ **[PR #8](https://github.com/admin-nutshell/ops-hub-00/pull/8) — ✅ MERGED (2fea606).** Pre-flight diagnostics + full HTTP capture. Run #27887003804 confirmed root cause: Coolify API gate disabled (see FQ-07). | | | | 2026-06-20 |
 | T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | LangFuse UI reachable; first trace logged from LiteLLM after T-08 | Jul 2 |
 | T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | FreeScout accessible at staging URL; test ticket submittable | Jul 2 |
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`; Security Lead review required (gates migration 2); awaiting founder execution. | Jul 2 |
@@ -146,20 +147,20 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 ### Production Manager
 **🟢 ACTIVE (2026-06-20) — 34 env vars loaded in Coolify staging; 6 GitHub Actions secrets set.**
 
-**2026-06-20 — T-08 + T-10 deploy attempt #3: workflow triggered, blocked on token scope.**
-Deploy workflow `deploy-staging-services.yml` written, merged to main (PR #6, commit 8c5170c), and
-triggered as GitHub Actions run #27886275175. The `discover` job failed immediately:
-```
-GET https://coolify.inatechshell.ca/api/v1/servers → HTTP 403
-```
-The `COOLIFY_API_TOKEN` GitHub secret exists and is being sent (confirmed: Authorization header
-in logs shows `***`). HTTP 403 (not 401) means the token is recognized but lacks scope.
-Root cause: token is likely project-scoped or is a wrong token type. **FQ-07 updated with
-exact steps to regenerate the token at account level in Coolify profile settings.**
+**2026-06-20 — T-08 + T-10 deploy attempt #3: root cause confirmed — Coolify API gate disabled.**
 
-**T-08 and T-10 will deploy automatically on the next workflow run once the token is corrected.**
-No architectural changes needed — the workflow logic is complete and tested to the point of
-reaching Coolify's auth layer. Re-run: GitHub Actions → Deploy Staging Services → Run workflow.
+Run #27887003804 — diagnostic workflow (PR #8, pre-flight step). Full headers + body captured:
+
+  Unauthenticated: HTTP 401 {"message":"Unauthenticated."} ← expected
+  Authenticated:   HTTP 403 {"success":true,"message":"You are not allowed to access the API."}
+  Server header:   nginx (reverse proxy for Coolify — 403 IS from Coolify, not a firewall)
+  Rate-limit:      x-ratelimit-remaining: 199 — Coolify processed the request, rate-counting it
+
+**Root cause: Coolify's "Enable API" feature is disabled at the instance/team level.**
+The COOLIFY_API_TOKEN is valid and recognised. This is a one-time ~1 min fix in Coolify
+Settings → API → Enable API Access toggle. Token does NOT need to be regenerated.
+
+**See FQ-07 for exact steps.** After enabling, re-run: Actions → Deploy Staging Services → Run workflow.
 
 ---
 

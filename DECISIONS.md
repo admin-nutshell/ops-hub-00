@@ -63,7 +63,8 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 ### 2026-06-20 — T-08/T-10 deploy workflow
 
 ```
-2026-06-20 [Production Manager] deploy-staging-services.yml merged to main (PR #6, 8c5170c): workflow_dispatch workflow for T-08 (LiteLLM) + T-10 (FreeScout) staging deploys via Coolify API. Jobs: discover (Coolify project/server UUIDs) → deploy-litellm + deploy-freescout in parallel. FreeScout creates MariaDB sidecar first, wires DB env vars, then starts app. First run triggered (#27886275175) — blocked on COOLIFY_API_TOKEN returning HTTP 403 on /api/v1/servers. Root cause: token lacks account-level scope. FQ-07 updated with regeneration steps.
+2026-06-20 [Production Manager] deploy-staging-services.yml merged to main (PR #6, 8c5170c): workflow_dispatch for T-08 (LiteLLM) + T-10 (FreeScout) staging deploys via Coolify REST API.
+2026-06-20 [Production Manager] PR #8 (2fea606): replaced curl -fsS with explicit HTTP status capture + pre-flight diagnostics. Run #27887003804 confirmed root cause: Coolify returns HTTP 403 {"success":true,"message":"You are not allowed to access the API."} with rate-limit headers present — token IS valid; the Coolify API access feature gate is disabled. Fix: Coolify Settings → API → Enable. No token regeneration needed.
 ```
 
 ---

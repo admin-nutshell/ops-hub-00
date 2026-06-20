@@ -49,29 +49,34 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-07 — COOLIFY_API_TOKEN returns 403 on `/api/v1/servers`
+### FQ-07 — Coolify API access feature gate is disabled
 
 ```
-BLOCKING: [Production Manager] COOLIFY_API_TOKEN GitHub secret is set but the token is rejected
-  with HTTP 403 when the deploy workflow calls GET /api/v1/servers.
-  Context (2026-06-20):
-    - GitHub Actions secret COOLIFY_API_TOKEN confirmed set (founder reply: FQ-07 resolved).
-    - Deploy workflow (deploy-staging-services.yml) triggered on run #27886275175.
-    - First API call: GET https://coolify.inatechshell.ca/api/v1/servers
-      Response: HTTP 403 (curl exit code 22 = server rejected the request).
-    - 403 ≠ 401. The token IS being sent (Authorization: Bearer ***). The server recognises
-      the request format but denies access — this means the token has insufficient scope or is
-      a wrong token type (e.g. project-scoped instead of account-level, or OAuth vs API key).
-  Action needed: In Coolify dashboard → Profile (top-right) → API Tokens → copy the token and
-    verify it is an account-level (root) token, not project-scoped. If unsure, delete the
-    existing token, create a new one under Profile → API Tokens → New Token (no scope restriction),
-    copy the new value, and update the GitHub Actions secret COOLIFY_API_TOKEN at:
-    https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
-    Re-run the workflow after updating: Actions → Deploy Staging Services → Run workflow.
-  Impact if delayed: T-08 (LiteLLM) + T-10 (FreeScout) remain undeployed; M1 checklist items #4
-    and #6 stay blocked; T-09 (LangFuse trace test) and T-19 (integration test) blocked downstream.
-  Linked: github.com/admin-nutshell/ops-hub-00/actions/runs/27886275175 (failed run logs),
-    .github/workflows/deploy-staging-services.yml (the workflow), WORK.md Production Manager section
+BLOCKING: [Production Manager] Root cause confirmed via run #27887003804 (2026-06-20).
+  The COOLIFY_API_TOKEN is valid — Coolify recognises the token and applies rate limiting.
+  But Coolify returns HTTP 403 with this exact JSON body:
+    {"success":true,"message":"You are not allowed to access the API."}
+  Rate-limit headers confirm the request reaches Coolify (x-ratelimit-remaining: 199).
+  This is NOT a token problem. It is Coolify's API access feature gate being disabled.
+
+  Evidence summary:
+    - Unauthenticated probe → HTTP 401 {"message":"Unauthenticated."} ✓ (expected)
+    - Authenticated probe   → HTTP 403 {"success":true,"message":"You are not allowed to access the API."}
+    - Server: nginx (reverse proxy for Coolify — the 403 is from Coolify, not a firewall)
+    - x-ratelimit headers present → Coolify processed the request before rejecting it
+
+  Action needed (one-time, ~1 minute in Coolify dashboard):
+    1. Log into Coolify at https://coolify.inatechshell.ca
+    2. Go to Settings (gear icon, top-left or side nav)
+    3. Find the "API" section — there is an "Enable API" or "API Access" toggle
+    4. Enable it and Save
+    (Alternative path if not in Settings: Profile → Teams → select your team → API → enable)
+    5. No need to regenerate the token. The existing COOLIFY_API_TOKEN is valid.
+    6. Re-run the workflow: GitHub Actions → Deploy Staging Services → Run workflow (target=all)
+
+  Impact if delayed: T-08 + T-10 undeployed; M1 #4 + #6 blocked; T-09, T-19 blocked downstream.
+  Linked: run #27887003804 (full diagnostic logs with headers + body),
+    .github/workflows/deploy-staging-services.yml (deploy workflow — no changes needed)
 ```
 
 ---
