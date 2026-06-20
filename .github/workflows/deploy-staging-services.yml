@@ -239,7 +239,7 @@ jobs:
                 server_uuid: $srv,
                 environment_name: $env,
                 name: "litellm-staging",
-                docker_image: "ghcr.io/berriai/litellm:main-latest",
+                docker_registry_image_name: "ghcr.io/berriai/litellm:main-latest",
                 ports_exposes: "4000",
                 instant_deploy: false
               }')
@@ -427,7 +427,7 @@ jobs:
                 server_uuid: $srv,
                 environment_name: $env,
                 name: "freescout-staging",
-                docker_image: "thatwebagency/freescout",
+                docker_registry_image_name: "thatwebagency/freescout",
                 ports_exposes: "80",
                 instant_deploy: false
               }')
