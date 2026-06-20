@@ -110,6 +110,10 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 
 **2026-06-20 — FQ-03 resolved.** Repo naming confirmed: `admin-nutshell/ops-hub-00` is canonical. `09_delivery.md` updated; repo not renamed.
 
+**2026-06-20 — Sprint 1 active work coordinated.** FOUNDER_QUEUE clear. Dispatched parallel tracks:
+- Tech Lead: merge PR #1 → branch protection → T-11 (migrations) → T-15 (app scaffold)
+- Production Manager: T-08 (LiteLLM) + T-10 (FreeScout) in parallel
+
 ### Tech Lead
 **🟢 T-11 UNBLOCKED (2026-06-18) — Supabase provisioned. Proceed with applying migrations.**
 Run `supabase/migrations/20260618120000_initial_schema.sql` then `20260618120100_enable_rls_policies.sql` against the new Ops Hub Supabase project. Connection details (placeholders) in `docs/infrastructure/supabase-ops-hub.md` — retrieve real values from Coolify env vars or the Founder. Confirm via Security Lead before running RLS migration that the `ops_hub_app` role model is correct (§6 of schema doc).
@@ -137,18 +141,59 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 **Active.** T-06 (test plan) starts immediately. T-19 (integration test) blocked until FreeScout + Supabase staging are live.
 
 ### Production Manager
-**🟢 ACTIVE (2026-06-20) — 34 env vars loaded in Coolify staging; 6 GitHub Actions secrets set. Deploy in this order:**
+**🟢 ACTIVE (2026-06-20) — 34 env vars loaded in Coolify staging; 6 GitHub Actions secrets set.**
 
-1. **T-08: LiteLLM** ← START HERE — Deploy Docker image `ghcr.io/berriai/litellm:main-latest` in Coolify; port 4000; all env vars already set (`LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `DATABASE_URL`, `ANTHROPIC_API_KEY`, `STORE_MODEL_IN_DB=True`). Verify: `curl https://<litellm-staging-url>/health`. Model router is needed by everything else.
-2. **T-10: FreeScout** — Deploy FreeScout Docker image in Coolify; all DB + mail env vars already set. ⚠️ FreeScout officially supports MySQL/MariaDB — if `DB_CONNECTION=pgsql` fails, you may need a MySQL sidecar container in Coolify instead of pointing at Supabase directly. Test a ticket submission before marking done.
+**2026-06-20 — T-08 + T-10 deploy attempt: blocked on browser session permission.**
+Browser automation reached `coolify.inatechshell.ca` but the Claude-in-Chrome extension denied navigation — site-level permission for `coolify.inatechshell.ca` has not been granted in the extension settings. No deploy was executed. No false verification recorded.
+
+**Both tasks are ready to execute the moment browser access is restored.** Full specs below — no further agent decisions needed; execute these steps directly in the Coolify UI.
+
+---
+
+**T-08: LiteLLM — READY TO DEPLOY (needs Coolify browser session)**
+
+- Project: `ops-hub-staging`
+- Service type: Docker image (public registry)
+- Image: `ghcr.io/berriai/litellm:main-latest`
+- Port: 4000
+- Env vars: pre-loaded (`LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `DATABASE_URL`, `ANTHROPIC_API_KEY`, `STORE_MODEL_IN_DB=True`)
+- Rollback path: delete the Coolify service (no prior version exists in staging; rollback is a no-op remove)
+- Post-deploy verification: `GET https://<litellm-staging-url>/health` — expect HTTP 200; body will contain per-model status. The master key may be required as a Bearer token header (`Authorization: Bearer $LITELLM_MASTER_KEY`) if the `/health` endpoint is protected.
+- Canary window: 24 hours before marking T-08 fully done
+- Known first-boot issue: DB connectivity errors in Coolify logs are non-fatal if Postgres migrations have not yet run; LiteLLM will retry. If startup stalls beyond 5 minutes, check `DATABASE_URL` format (must be `postgresql://` not `postgres://` for some LiteLLM versions).
+
+**T-10: FreeScout — READY TO DEPLOY (needs Coolify browser session)**
+
+- Project: `ops-hub-staging`
+- Service type: Docker image (public registry)
+- Image: `thatwebagency/freescout` (official image, port 80)
+- Port: 80
+- Env vars: pre-loaded (DB + mail vars already in Coolify staging)
+- DB decision (agent-owned, pre-decided): FreeScout officially supports MySQL/MariaDB only. Two options evaluated:
+  - **Option A (recommended): Add a MariaDB sidecar container in Coolify** — this is the officially-supported path, no supply-chain risk, straightforward. Point FreeScout `DB_CONNECTION=mysql`, `DB_HOST=<mariadb-sidecar-hostname>`, `DB_PORT=3306`.
+  - Option B: Use `rrpadilha/freescout` (PostgreSQL fork) — not recommended; fork maintenance risk, not officially supported.
+  - Decision: **Option A**. If `DB_CONNECTION=pgsql` is already set in Coolify staging env vars and FreeScout fails startup (check Coolify logs for MySQL/MariaDB errors), add a MariaDB service in the same `ops-hub-staging` project, then update FreeScout env vars to point at it.
+- Rollback path: delete the Coolify FreeScout service (and MariaDB sidecar if added); no prior version in staging
+- Post-deploy verification: FreeScout setup/login page loads at staging URL; submit one test ticket via the UI
+- Canary window: 24 hours
+
+**ADR-0001 sign-off: deferred.** Will sign off on `docs/adr/0001-environment-topology.md` only after T-08 + T-10 deploys are confirmed live with verified health checks.
+
+**Next action required from Founder or operator:**
+Grant `coolify.inatechshell.ca` site permission in the Claude-in-Chrome extension (extension settings > Site Permissions > add domain), then re-invoke the Production Manager agent to execute T-08 + T-10. No other input needed — all decisions above are agent-owned.
+
+---
+
+Remaining deploy order (unchanged):
+
+1. **T-08: LiteLLM** — see spec above
+2. **T-10: FreeScout** — see spec above
 3. **T-09 (verify): LangFuse Cloud** — Already provisioned (US region). After T-08, send a test trace from LiteLLM and confirm it appears in the LangFuse dashboard. No Coolify deploy needed.
 4. **T-11: Supabase migrations** — Coordinate with Tech Lead. Run `supabase/migrations/20260618120000_initial_schema.sql` then `20260618120100_enable_rls_policies.sql` against the Ops Hub Supabase project. Real connection string in Coolify env vars (`DATABASE_URL`).
 5. **T-12: Vault setup** — After T-11; coordinate with Security Lead. Move `ANTHROPIC_API_KEY` from Coolify env vars into Supabase Vault. This is Sprint 1 target; Sprint 2 completes the migration for all keys.
-6. **T-14: UptimeRobot** — Set up monitors for LiteLLM + FreeScout staging URLs now. Add ops-hub app URL monitor after T-15 scaffold + deploy.
+6. **T-14: UptimeRobot** — Set up monitors for LiteLLM + FreeScout staging URLs after deploys confirm. Add ops-hub app URL monitor after T-15 scaffold + deploy.
 7. **T-13: Sentry** — `SENTRY_DSN` already in Coolify env vars. Completion requires Sentry SDK init in app code — resume after T-15 scaffold lands.
 8. **T-07: Inngest** — After T-15 app scaffold. Inngest Cloud credentials already in Coolify env vars; SDK must be initialized in `src/inngest/client.ts`.
-
-Sign off on ADR-0001 (`docs/adr/0001-environment-topology.md`) once T-08 + T-10 deploy patterns are confirmed.
 
 ### Security Lead
 **Active.** Review T-03 schema when Tech Lead publishes (target Jun 27). T-12 + T-18 blocked on Supabase. Confirm secrets hygiene plan for GitHub Actions env vars now.
