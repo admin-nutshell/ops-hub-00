@@ -1,0 +1,102 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same PR when new commits are pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Setup is skipped until the app scaffold (package.json) lands in T-15
+      - name: Set up pnpm
+        if: hashFiles('package.json') != ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        if: hashFiles('package.json') != ''
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (ESLint + Prettier)
+        run: |
+          if [ ! -f package.json ]; then
+            echo "No app code yet — lint placeholder pass (T-15 will wire pnpm lint)"
+            exit 0
+          fi
+          pnpm lint
+
+      - name: Type check (tsc --noEmit)
+        run: |
+          if [ ! -f package.json ]; then
+            echo "No app code yet — typecheck placeholder pass (T-15 will wire pnpm typecheck)"
+            exit 0
+          fi
+          pnpm typecheck
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        if: hashFiles('package.json') != ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js 20
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        if: hashFiles('package.json') != ''
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit tests (Vitest)
+        run: |
+          if [ ! -f package.json ]; then
+            echo "No app code yet — test placeholder pass (T-15 will wire pnpm test)"
+            exit 0
+          fi
+          pnpm test
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history required for gitleaks to scan all commits
+          fetch-depth: 0
+
+      - name: Secret detection (gitleaks)
+        # Running the gitleaks CLI directly via Docker to avoid the paid licence
+        # required by gitleaks/gitleaks-action for org-owned private repos.
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/path" \
+            ghcr.io/gitleaks/gitleaks:latest \
+            detect \
+            --source=/path \
+            --redact \
+            --verbose \
+            --exit-code=1
