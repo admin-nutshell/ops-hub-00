@@ -102,7 +102,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
-          HTTP_CODE=$(curl -s -o /tmp/servers.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/servers.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/servers")
@@ -126,7 +126,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
-          HTTP_CODE=$(curl -s -o /tmp/projects.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/projects.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/projects")
@@ -146,7 +146,7 @@ jobs:
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
 
           # Get environment name from the project detail
-          HTTP_CODE2=$(curl -s -o /tmp/project_detail.json -w "%{http_code}" \
+          HTTP_CODE2=$(curl -s --max-time 30 -o /tmp/project_detail.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/projects/$UUID")
@@ -167,7 +167,7 @@ jobs:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
           echo "=== Existing Applications ==="
-          HTTP_CODE=$(curl -s -o /tmp/apps.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications")
@@ -183,7 +183,7 @@ jobs:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
           echo "=== Existing Databases ==="
-          HTTP_CODE=$(curl -s -o /tmp/dbs.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/databases")
@@ -211,7 +211,7 @@ jobs:
         id: app
         run: |
           # Idempotent: return existing UUID if already created
-          HTTP_CODE=$(curl -s -o /tmp/apps.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications")
@@ -241,7 +241,7 @@ jobs:
                 instant_deploy: false
               }')
             echo "Payload: $PAYLOAD"
-            HTTP_CODE=$(curl -s -o /tmp/create_resp.json -w "%{http_code}" -X POST \
+            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/create_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
               -H "Accept: application/json" \
@@ -266,7 +266,7 @@ jobs:
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           echo "Starting LiteLLM $UUID..."
-          HTTP_CODE=$(curl -s -o /tmp/start_resp.json -w "%{http_code}" -X POST \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID/start")
@@ -278,7 +278,7 @@ jobs:
           echo "Waiting 90s for LiteLLM to initialize (Prisma migrations run on first boot)..."
           sleep 90
           UUID="${{ steps.app.outputs.uuid }}"
-          HTTP_CODE=$(curl -s -o /tmp/app_state.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/app_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID")
@@ -317,7 +317,7 @@ jobs:
       - name: Create or get MariaDB sidecar
         id: mariadb
         run: |
-          HTTP_CODE=$(curl -s -o /tmp/dbs.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/databases")
@@ -346,7 +346,7 @@ jobs:
                 mariadb_user: "freescout"
               }')
             echo "Payload: $PAYLOAD"
-            HTTP_CODE=$(curl -s -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
+            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
               -H "Accept: application/json" \
@@ -372,7 +372,7 @@ jobs:
         run: |
           UUID="${{ steps.mariadb.outputs.uuid }}"
           echo "Starting MariaDB $UUID..."
-          HTTP_CODE=$(curl -s -o /tmp/db_start_resp.json -w "%{http_code}" -X POST \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/db_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/databases/$UUID/start")
@@ -382,7 +382,7 @@ jobs:
           echo "Waiting 30s for MariaDB to initialize..."
           sleep 30
 
-          HTTP_CODE=$(curl -s -o /tmp/db_state.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/db_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/databases/$UUID")
@@ -399,7 +399,7 @@ jobs:
       - name: Create or get FreeScout application
         id: freescout
         run: |
-          HTTP_CODE=$(curl -s -o /tmp/apps.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications")
@@ -429,7 +429,7 @@ jobs:
                 instant_deploy: false
               }')
             echo "Payload: $PAYLOAD"
-            HTTP_CODE=$(curl -s -o /tmp/fs_create_resp.json -w "%{http_code}" -X POST \
+            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_create_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
               -H "Accept: application/json" \
@@ -466,7 +466,7 @@ jobs:
                 {key: "DB_USERNAME",   value: "freescout"}
               ]
             }')
-          HTTP_CODE=$(curl -s -o /tmp/env_resp.json -w "%{http_code}" -X POST \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
@@ -479,7 +479,7 @@ jobs:
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
           echo "Starting FreeScout $UUID..."
-          HTTP_CODE=$(curl -s -o /tmp/fs_start_resp.json -w "%{http_code}" -X POST \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID/start")
@@ -491,7 +491,7 @@ jobs:
           echo "Waiting 90s for FreeScout to initialize (DB migrations run on first boot)..."
           sleep 90
           UUID="${{ steps.freescout.outputs.uuid }}"
-          HTTP_CODE=$(curl -s -o /tmp/fs_state.json -w "%{http_code}" \
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID")
