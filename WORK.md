@@ -22,9 +22,9 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 1 | GitHub repo with full plan + workspace files | Founder | ✅ Done (2026-06-18) |
 | 2 | Coolify projects provisioned: `ops-hub-staging` and `ops-hub-prod` | **Founder** | ✅ Done (2026-06-20) — 34 env vars configured in staging; 6 GitHub secrets set |
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
-| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⏳ In progress — T-08 (LiteLLM) + T-10 (FreeScout) deploying now; T-07 (Inngest) blocked on T-15 app scaffold |
+| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⛔ Blocked — T-08/T-10 deploy workflow triggered (run #27886275175); Coolify API returned HTTP 403 on /api/v1/servers; COOLIFY_API_TOKEN token scope insufficient — see FQ-07 |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
-| 6 | FreeScout deployed and connected as ticket intake | Production Manager | ⏳ In progress — T-10 deploying now |
+| 6 | FreeScout deployed and connected as ticket intake | Production Manager | ⛔ Blocked — same FQ-07 Coolify token issue as #4 |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **T-15 scaffold merged** (0860ff4, 2026-06-20); **branch protection fully active** — 3 required checks (lint, test, security), ≥1 approval, no direct push; eval gate lands with T-17 |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | 🔒 Blocked on #7 |
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ In progress — Sentry DSN in Coolify env vars; UptimeRobot setup starts now; completion after T-15 |
@@ -64,6 +64,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 |---|---|---|---|---|
 | T-07: Deploy Inngest (connect to Inngest Cloud) in staging + prod | Production Manager | ✅ Coolify; 🔒 T-15 app scaffold (Inngest SDK must be initialized in app code) | Inngest dashboard shows both envs; test event processed | Jul 2 |
 | T-08: Deploy LiteLLM (self-hosted) to staging + prod on Coolify | Production Manager | ✅ Coolify provisioned | LiteLLM running; test API call returns model response | Jul 2 |
+| ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. Run #27886275175 triggered; blocked on COOLIFY_API_TOKEN 403 (see FQ-07). | | | | 2026-06-20 |
 | T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | LangFuse UI reachable; first trace logged from LiteLLM after T-08 | Jul 2 |
 | T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | FreeScout accessible at staging URL; test ticket submittable | Jul 2 |
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`; Security Lead review required (gates migration 2); awaiting founder execution. | Jul 2 |
@@ -97,9 +98,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-**No blockers.** All founder-provisioning dependencies resolved as of 2026-06-18.
-- FQ-01 (Coolify): APPROVED — `ops-hub-staging` + `ops-hub-prod` at `coolify.inatechshell.ca`
-- FQ-02 (Supabase): APPROVED — dedicated Ops Hub project provisioned
+| T-08 (LiteLLM) + T-10 (FreeScout) | FQ-07: COOLIFY_API_TOKEN returns 403 on /api/v1/servers — token needs account-level scope, see FQ-07 for exact steps | M1 #4 + #6 stay blocked; T-09 (LangFuse trace) + T-19 (integration test) blocked downstream | Production Manager |
+| T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
 
 ---
 
@@ -146,13 +146,20 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 ### Production Manager
 **🟢 ACTIVE (2026-06-20) — 34 env vars loaded in Coolify staging; 6 GitHub Actions secrets set.**
 
-**2026-06-20 — T-08 + T-10 deploy attempt #2: blocked on Coolify credentials.**
-Two deployment paths attempted:
-1. Claude-in-Chrome browser extension: extension not connected (service worker not running in session). Same root cause as prior attempt — no browser UI access.
-2. Coolify REST API: confirmed live and reachable (HTTP 401 at `coolify.inatechshell.ca/api/v1`). No API token exists in project files — it is a founder-held credential. **FQ-07 raised** requesting token via reply or GitHub Actions secret.
-No deploy was executed. No false verification recorded.
+**2026-06-20 — T-08 + T-10 deploy attempt #3: workflow triggered, blocked on token scope.**
+Deploy workflow `deploy-staging-services.yml` written, merged to main (PR #6, commit 8c5170c), and
+triggered as GitHub Actions run #27886275175. The `discover` job failed immediately:
+```
+GET https://coolify.inatechshell.ca/api/v1/servers → HTTP 403
+```
+The `COOLIFY_API_TOKEN` GitHub secret exists and is being sent (confirmed: Authorization header
+in logs shows `***`). HTTP 403 (not 401) means the token is recognized but lacks scope.
+Root cause: token is likely project-scoped or is a wrong token type. **FQ-07 updated with
+exact steps to regenerate the token at account level in Coolify profile settings.**
 
-**Both tasks unblock immediately once a Coolify API token is available (Option A: paste in chat) or the Claude-in-Chrome extension is connected.** Full specs below — no further agent decisions needed.
+**T-08 and T-10 will deploy automatically on the next workflow run once the token is corrected.**
+No architectural changes needed — the workflow logic is complete and tested to the point of
+reaching Coolify's auth layer. Re-run: GitHub Actions → Deploy Staging Services → Run workflow.
 
 ---
 
