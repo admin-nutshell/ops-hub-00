@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [main]
 
+# This workflow only reads the repo (checkout + scan); nothing is pushed back.
+# Minimal least-privilege set per zizmor (chosen over `read-all`).
+permissions:
+  contents: read
+
 # Cancel in-progress runs for the same PR when new commits are pushed
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -14,18 +19,20 @@ jobs:
     name: Lint & Type Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       # Setup is skipped until the app scaffold (package.json) lands in T-15
       - name: Set up pnpm
         if: hashFiles('package.json') != ''
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9
 
       - name: Set up Node.js 20
         if: hashFiles('package.json') != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -53,17 +60,19 @@ jobs:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up pnpm
         if: hashFiles('package.json') != ''
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 9
 
       - name: Set up Node.js 20
         if: hashFiles('package.json') != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -79,22 +88,35 @@ jobs:
           fi
           pnpm test
 
+      # CI/CD spec §3 mandates both unit (pnpm test) and integration (pnpm test:integration).
+      # Integration tests live under tests/integration/ and arrive in T-19; until then this
+      # step is a placeholder pass so the required check stays green.
+      - name: Integration tests (Vitest)
+        run: |
+          if [ ! -f package.json ] || [ ! -d tests/integration ]; then
+            echo "No integration tests yet — placeholder pass (T-19 populates tests/integration/)"
+            exit 0
+          fi
+          pnpm test:integration
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           # Full history required for gitleaks to scan all commits
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Secret detection (gitleaks)
         # Running the gitleaks CLI directly via Docker to avoid the paid licence
         # required by gitleaks/gitleaks-action for org-owned private repos.
+        # Image pinned to a fixed release tag (latest stable) per supply-chain review.
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/path" \
-            ghcr.io/gitleaks/gitleaks:latest \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
             detect \
             --source=/path \
             --redact \
