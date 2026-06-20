@@ -26,9 +26,10 @@ jobs:
       # Setup is skipped until the app scaffold (package.json) lands in T-15
       - name: Set up pnpm
         if: hashFiles('package.json') != ''
+        # Version is driven by the "packageManager" field in package.json (pnpm@10.28.2).
+        # Do NOT also set `version:` here — pnpm/action-setup errors (ERR_PNPM_BAD_PM_VERSION)
+        # when both the action `version` and package.json `packageManager` specify a version.
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 9
 
       - name: Set up Node.js 20
         if: hashFiles('package.json') != ''
@@ -66,9 +67,10 @@ jobs:
 
       - name: Set up pnpm
         if: hashFiles('package.json') != ''
+        # Version is driven by the "packageManager" field in package.json (pnpm@10.28.2).
+        # Do NOT also set `version:` here — pnpm/action-setup errors (ERR_PNPM_BAD_PM_VERSION)
+        # when both the action `version` and package.json `packageManager` specify a version.
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 9
 
       - name: Set up Node.js 20
         if: hashFiles('package.json') != ''

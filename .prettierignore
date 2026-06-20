@@ -1,0 +1,14 @@
+# Build output & deps
+dist
+node_modules
+
+# Lockfile (managed by pnpm, not prettier)
+pnpm-lock.yaml
+
+# Pre-existing planning & documentation content (hand-authored; not governed by prettier)
+# Prettier governs the app scaffold (src/, config files) only; T-15 does not reformat docs.
+docs
+.claude
+.github
+*.md
+local files
