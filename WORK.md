@@ -22,7 +22,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 1 | GitHub repo with full plan + workspace files | Founder | ✅ Done (2026-06-18) |
 | 2 | Coolify projects provisioned: `ops-hub-staging` and `ops-hub-prod` | **Founder** | ✅ Done (2026-06-20) — 34 env vars configured in staging; 6 GitHub secrets set |
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
-| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367, run #12 re-confirmed healthy). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. Inngest: T-07 blocked on T-15 complete (done) — ready to start. |
+| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. **T-07 Inngest: ops-hub-app ✅ DEPLOYED** (run #27921007847, HTTP 200 on `/health`, 2026-06-21). Inngest Cloud registration + test event pending. |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **T-10 DONE (2026-06-21).** FreeScout v2.1.2 running on Coolify staging; health check green; Supabase Postgres connected via session pooler (aws-1-ca-central-1). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **T-15 scaffold merged** (0860ff4, 2026-06-20); **branch protection fully active** — 3 required checks (lint, test, security), ≥1 approval, no direct push; eval gate lands with T-17 |
@@ -63,7 +63,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-07: Deploy Inngest (connect to Inngest Cloud) in staging + prod | Production Manager | ✅ Coolify; ✅ T-15 done | Inngest dashboard shows both envs; test event processed | Jul 2 |
-| ↳ **[PR #49](https://github.com/admin-nutshell/ops-hub-00/pull/49) — ⏳ IN REVIEW.** inngest@4.7.0 SDK, `src/inngest/client.ts`, serve endpoint `/api/inngest`, `main-deploy.yml` (GHCR build + COOLIFY_STAGING_DEPLOY_HOOK). Waiting on ops-hub Coolify app creation for first live deploy. | | | | 2026-06-21 |
+| ↳ **ops-hub-app ✅ DEPLOYED (2026-06-21).** Run #27921007847 — all steps green. Health check HTTP 200 on attempt 1. FQDN: `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`. FQ-12 resolved (docker login ghcr.io on VPS). Remaining: Inngest Cloud registration + verify test event. | | | | 2026-06-21 |
 | T-08: Deploy LiteLLM (self-hosted) to staging + prod on Coolify | Production Manager | ✅ Coolify provisioned | LiteLLM running; test API call returns model response | Jul 2 |
 | ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. | | | | 2026-06-20 |
 | ↳ **[PR #8](https://github.com/admin-nutshell/ops-hub-00/pull/8) — ✅ MERGED (2fea606).** Pre-flight diagnostics + full HTTP capture. Run #27887003804 confirmed root cause: Coolify API gate disabled (see FQ-07). | | | | 2026-06-20 |
@@ -102,7 +102,6 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
 | T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
-| T-07 (Inngest) | **FQ-12**: GHCR package `ops-hub-00` is private; Coolify VPS has no credentials; CI returns `unauthorized`. Founder must make package public (30s in GitHub settings) or run `docker login ghcr.io` on VPS. Deploy pipeline is fully correct — this is the only blocker. | M1 #4 partial; T-09 trace test blocked | Tech Lead |
 
 ---
 
@@ -157,19 +156,11 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 ---
 
-**T-07: Inngest — ⏳ BLOCKED ON FQ-12 (GHCR visibility)**
+**T-07: Inngest — ✅ ops-hub-app DEPLOYED (2026-06-21)**
 
-ops-hub-app created in Coolify staging (UUID `ajqplom2mghf5a8h6vf1q6xg`, FQDN `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`). Full deploy pipeline fixed end-to-end (PRs #50–#55):
-- Dockerfile CI=1 fix (build succeeds) ✅
-- `main-deploy.yml` Coolify API deploy (PATCH HTTP 200, image tag updates correctly) ✅
-- Coolify deployment image reference format (no double-tag) ✅
-- Deployment status poll + container log dump on failure ✅
+ops-hub-app running at `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`. Run #27921007847 — health check HTTP 200 on attempt 1 (immediately after deployment). FQ-12 resolved: docker login ghcr.io on VPS (Option B). Deploy pipeline fully operational end-to-end (PRs #50–#58).
 
-**Sole remaining blocker:** `ghcr.io/admin-nutshell/ops-hub-00` is private. Coolify VPS has no GHCR credentials. CI returns `error from registry: unauthorized`. Coolify's API has no per-app credential field — auth is server-level only. See **FQ-12** in FOUNDER_QUEUE.md for the one-time action (30-second GitHub settings change to make the package public, OR run `docker login ghcr.io` on the VPS).
-
-After FQ-12 is completed:
-1. Next push to `main` will deploy ops-hub-app successfully
-2. Register staging FQDN with Inngest Cloud; verify test event processed
+**Next:** Register staging FQDN with Inngest Cloud; verify test event processed via `/api/inngest`.
 
 **T-09: LangFuse Cloud** — Already provisioned (US region). Blocked on T-08 canary → send test trace from LiteLLM after T-07 live.
 
