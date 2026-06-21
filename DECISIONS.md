@@ -71,6 +71,14 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 2026-06-20 [Production Manager] T-10 FreeScout root cause identified: thatwebagency/freescout does not exist on Docker Hub (returns 404) — Docker image pull was failing silently on every deploy attempt. Decision: switch to tiredofit/freescout (actively maintained, June 2026 release, PostgreSQL-capable via DB_TYPE=pgsql) + Supabase PostgreSQL (eliminates MariaDB sidecar entirely). MariaDB crash was a secondary problem; the primary issue was the non-existent image. FREESCOUT_STAGING_ADMIN_PASS secret set in GitHub. PR #17 implements the fix. No cost impact ($0 — uses existing Supabase staging DB). Staging trade-off accepted: FreeScout tables co-tenant in Ops Hub Supabase public schema for Sprint 1 staging only; production deployment will use a dedicated database. → PR #18
 ```
 
+### 2026-06-21 — T-10 FreeScout multi-PR debug sequence
+
+```
+2026-06-21 [Production Manager] T-10 FreeScout: SITE_URL fixed via PR #21 (container now reaches DB check). Root cause of that failure: tiredofit/freescout entrypoint uses SITE_URL (not APP_URL) as required URL var; SETUP_TYPE=AUTO halts on missing SITE_URL. Fixed by fetching app FQDN from Coolify API and setting both SITE_URL and APP_URL. Force-recreate strategy (always delete+recreate app) was adopted to sidestep Coolify env-var upsert failures (PATCH→422, DELETE→000, POST→409). upsert_env→set_env rename fixed merge artifact (PR #22).
+2026-06-21 [Production Manager] T-10 FreeScout: New failure after SITE_URL fix — container exits with "Can't connect to DB_HOST" after ~4 seconds. Env vars confirmed set (all HTTP 201): DB_HOST=aws-0-ca-central-1.pooler.supabase.com, DB_USER=postgres.yocoljutbiizdbfraapx, DB_PORT=5432. Two candidate root causes: (a) wrong pooler region code in the hostname, (b) VPS outbound port 5432 blocked by firewall. PR #23 adds DEBUG_MODE=TRUE and a connectivity probe (DNS + TCP:5432 from GitHub Actions runner) to distinguish the two cases.
+2026-06-21 [Production Manager] FQ-07 archived — Coolify API access confirmed enabled (evidenced by all workflow runs returning HTTP 200 from /api/v1/servers in PRs #19–#22). No further action required.
+```
+
 ---
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*

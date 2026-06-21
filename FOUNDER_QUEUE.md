@@ -75,34 +75,13 @@ RESOLVED: [Production Manager] 2026-06-20 — no founder action required.
 
 ---
 
-### FQ-07 — Coolify API access feature gate is disabled
+### ~~FQ-07 — Coolify API access feature gate is disabled~~ — RESOLVED (agent-confirmed)
 
 ```
-BLOCKING: [Production Manager] Root cause confirmed via run #27887003804 (2026-06-20).
-  The COOLIFY_API_TOKEN is valid — Coolify recognises the token and applies rate limiting.
-  But Coolify returns HTTP 403 with this exact JSON body:
-    {"success":true,"message":"You are not allowed to access the API."}
-  Rate-limit headers confirm the request reaches Coolify (x-ratelimit-remaining: 199).
-  This is NOT a token problem. It is Coolify's API access feature gate being disabled.
-
-  Evidence summary:
-    - Unauthenticated probe → HTTP 401 {"message":"Unauthenticated."} ✓ (expected)
-    - Authenticated probe   → HTTP 403 {"success":true,"message":"You are not allowed to access the API."}
-    - Server: nginx (reverse proxy for Coolify — the 403 is from Coolify, not a firewall)
-    - x-ratelimit headers present → Coolify processed the request before rejecting it
-
-  Action needed (one-time, ~1 minute in Coolify dashboard):
-    1. Log into Coolify at https://coolify.inatechshell.ca
-    2. Go to Settings (gear icon, top-left or side nav)
-    3. Find the "API" section — there is an "Enable API" or "API Access" toggle
-    4. Enable it and Save
-    (Alternative path if not in Settings: Profile → Teams → select your team → API → enable)
-    5. No need to regenerate the token. The existing COOLIFY_API_TOKEN is valid.
-    6. Re-run the workflow: GitHub Actions → Deploy Staging Services → Run workflow (target=all)
-
-  Impact if delayed: T-08 + T-10 undeployed; M1 #4 + #6 blocked; T-09, T-19 blocked downstream.
-  Linked: run #27887003804 (full diagnostic logs with headers + body),
-    .github/workflows/deploy-staging-services.yml (deploy workflow — no changes needed)
+RESOLVED: [Production Manager] 2026-06-21 — Coolify API access was enabled by founder
+  (evidenced by all subsequent workflow runs returning HTTP 200 from /api/v1/servers).
+  PRs #19–#22 all ran successfully against the Coolify API. No further action needed.
+  FQ-07 archived to docs/founder-queue-archive/.
 ```
 
 ---
