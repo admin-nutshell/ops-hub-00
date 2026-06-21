@@ -49,62 +49,55 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-10 — T-10 FreeScout: VPS directory permissions block PostgreSQL; architecture choice needed
+### FQ-11 — T-10 FreeScout: Supabase Supavisor pooler rejects project — action needed in Supabase dashboard
 
 ```
-BLOCKING: [Production Manager] True root cause identified after PRs #25–#34.
-  Docker creates the bind-mount directory /data/coolify/databases/{uuid}/ as root:root.
-  Coolify then fails to write its README.md into that directory ("Permission denied:
-  /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw/README.md") before PostgreSQL even
-  starts — every fresh DB UUID hits this, systemic on this VPS.
-  Previous "port 5432" hypothesis in PRs #31–#34 was incorrect; the port change to 5433
-  the founder made in the Coolify UI surfaced the real error underneath.
+BLOCKING: [Production Manager] CONFIRMED 2026-06-21 — both poolers fail. Run #27914003478.
 
-  WHY THIS NEEDS FOUNDER ACTION:
-    - Browser terminal not available (Chrome extension not connected in this session)
-    - No SSH key secret in GitHub Actions (gh secret list confirmed: no VPS_SSH_KEY)
-    - Coolify API has no server command-execution endpoint (routes/api.php confirmed)
-    - Every autonomous path is exhausted
+  BOTH Supabase pooler endpoints return ENOTFOUND for project yocoljutbiizdbfraapx:
+    Session pooler    aws-0-ca-central-1.pooler.supabase.com:5432  → exit 2 (tenant not found)
+    Transaction pooler aws-0-ca-central-1.pooler.supabase.com:6543 → exit 2 (tenant not found)
 
-  RECOMMENDED: OPTION B — Revert to Supabase (open one outbound port)
-    This is the cleaner architecture. The internal-PG path has proven fragile
-    (10 PRs, port conflicts, then directory permission bugs — all VPS-specific).
-    Supabase is already provisioned and was the original design.
+  This is NOT a VPS/Docker or network issue — tested directly from GitHub Actions (Azure East US).
+  TCP connects, TLS succeeds, Supavisor rejects at auth phase. Project is not registered
+  with the Supavisor pooler at aws-0-ca-central-1.pooler.supabase.com.
 
-    1. SSH into the VPS (or use Hostinger terminal), run:
-         sudo iptables -I OUTPUT -p tcp --dport 5432 -j ACCEPT
-         sudo iptables-save | sudo tee /etc/iptables/rules.v4
-       OR use the Coolify server firewall UI:
-         Servers → VPS → Firewall → Add outbound rule: TCP 5432 Allow
-    2. Reply: APPROVED: outbound 5432 open
-    3. Agents will revert the workflow to Supabase PostgreSQL — no other action needed
+  Likely causes (one of):
+    1. Project region is NOT ca-central-1 → pooler hostname is wrong
+    2. Connection Pooling was never enabled for this project → Supavisor never registered it
+    3. Project is paused (free tier) → Supavisor removes paused tenants
 
-    Cost impact: $0 (uses existing Supabase staging project).
-    This also resolves FQ-09 (VPS firewall blocks Supabase) permanently.
+  ACTION NEEDED (< 5 minutes in the Supabase dashboard):
 
-  FALLBACK: OPTION A — Fix VPS directory permissions (keep internal PG)
-    If the firewall change is not feasible, run these diagnostics + fix on the VPS:
+  Please open https://supabase.com/dashboard → ops-hub project → Project Settings → Database.
+  Look for the "Connection pooling" section and the "Poolers" section.
 
-    # Diagnose first (3 commands — covers all possible causes):
-    ls -la /data/coolify/databases/
-    lsattr -d /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw 2>/dev/null || echo "no lsattr"
-    df -h /data ; mount | grep ' /data'
+  Report back ONE of the following (no password needed):
+    A) Copy the "Session mode" connection string HOST only from the dashboard
+       (it will look like: aws-0-{region}.pooler.supabase.com)
+       If it differs from aws-0-ca-central-1.pooler.supabase.com → that's the fix
+    B) If the project shows "Paused" → click Resume Project, then reply "project was paused"
+    C) If Connection Pooling section shows a toggle → confirm it is ON
 
-    # Fix (after diagnosing — run the matching command):
-    # Standard case (root-owned dir):
-    sudo chmod -R 777 /data/coolify/databases/
-    # If immutable flag (lsattr shows 'i'):
-    sudo chattr -i /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw
-    sudo chmod -R 777 /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw
+  This is a single dashboard check. Once the correct hostname or status is confirmed,
+  agents will update the workflow without further founder input.
 
-    Then: in Coolify UI → ops-hub-staging → Databases → freescout-postgres → click Start
-    Wait for "Running" status, then reply: APPROVED: DB running, permissions fixed
+  Impact if delayed: T-10 FreeScout undeployed; M1 #6 blocked.
+  Linked: FQ-10 (resolved), runs #27913431979 (#39) + #27914003478 (#40), DECISIONS.md
+```
 
-    Downside: fragile — every new DB UUID the workflow creates hits the same issue.
-    Agents will add a note to never delete-and-recreate this DB.
+---
 
-  Impact if unresolved: T-10 FreeScout undeployed; M1 #6 blocked; T-19 blocked.
-  Linked: PRs #25–#34 (failed attempts), FQ-09 (Supabase firewall — same root fix)
+### ~~FQ-10 — T-10 FreeScout: VPS directory permissions block PostgreSQL; architecture choice needed~~ — RESOLVED
+
+```
+RESOLVED: [Production Manager] 2026-06-21 — Founder chose Option B (Supabase).
+  VPS outbound TCP:5432 is now OPEN (iptables rule added by founder).
+  Workflow reverted to tiredofit/freescout + Supabase PostgreSQL (PRs #36–#37).
+  Coolify-managed PostgreSQL permanently abandoned on this VPS (bind-mount root:root
+  permission bug is systemic; all 10 autonomous fix paths were exhausted in PRs #25–#34).
+  New active blocker: Supabase session pooler rejects project (see FQ-11).
+  Linked: PRs #25–#37, FQ-09 (superseded), FQ-11 (active)
 ```
 
 ---
