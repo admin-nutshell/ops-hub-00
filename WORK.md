@@ -67,7 +67,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. | | | | 2026-06-20 |
 | ↳ **[PR #8](https://github.com/admin-nutshell/ops-hub-00/pull/8) — ✅ MERGED (2fea606).** Pre-flight diagnostics + full HTTP capture. Run #27887003804 confirmed root cause: Coolify API gate disabled (see FQ-07). | | | | 2026-06-20 |
 | T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | LangFuse UI reachable; first trace logged from LiteLLM after T-08 | Jul 2 |
-| T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | ⏳ **PR #31 merged** (fix async deletion race). Awaiting first clean run → FreeScout accessible at staging URL; test ticket submittable | Jul 2 |
+| T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | 🔒 **BLOCKED on FQ-10** — VPS host port 5432 permanently occupied; all API-level workarounds (PRs #31–#34) exhausted. Founder must change postgres port in Coolify UI or SSH-identify the port occupier. → FOUNDER_QUEUE.md FQ-10 | Jul 2 |
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`; Security Lead review required (gates migration 2); awaiting founder execution. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned | All secrets in Vault; zero keys in env files, git, or Coolify env vars | Jul 2 |
 | T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | First test error captured in Sentry | Jul 2 |
@@ -99,7 +99,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-10 (FreeScout) | PR #31 merged — fix targets async DB deletion race (confirmed root cause). First clean run will confirm if FreeScout reaches HTTP 200. | M1 #6 blocked until first run passes; T-19 blocked downstream | Production Manager |
+| T-10 (FreeScout) | FQ-10 raised — VPS host port 5432 permanently held (not our containers). All API workarounds exhausted. Founder needs to: change postgres port to 5433 in Coolify UI OR SSH-identify what holds port 5432. | M1 #6 blocked; T-19 blocked | Production Manager |
 | T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
 
 ---
