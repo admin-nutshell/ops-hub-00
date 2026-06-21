@@ -441,8 +441,17 @@ jobs:
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
           echo "Parsed DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
+          # Get app FQDN for APP_URL (required by SETUP_TYPE=AUTO for first-run installer)
+          APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_fqdn.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID") || true
+          APP_URL=$(jq -r '.fqdn // empty' /tmp/app_fqdn.json 2>/dev/null | sed 's|/$||' || true)
+          [ -z "$APP_URL" ] && APP_URL="http://$UUID.187.124.76.235.sslip.io"
+          echo "APP_URL: $APP_URL"
+
           # tiredofit/freescout uses wrapper env vars (not standard Laravel names).
-          # Clear any stale keys from previous MySQL-based deploys before setting new ones.
+          # Clear any stale keys from previous deploys before setting new ones.
           ENV_HTTP=$(curl -s --max-time 30 -o /tmp/fs_envs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
@@ -450,7 +459,7 @@ jobs:
           if [ "$ENV_HTTP" = "200" ]; then
             for STALE_KEY in DB_CONNECTION DB_DATABASE DB_USERNAME DB_PASSWORD \
                              DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS \
-                             DB_PGSQL_SSL_MODE SETUP_TYPE ADMIN_EMAIL ADMIN_PASS; do
+                             DB_PGSQL_SSL_MODE SETUP_TYPE ADMIN_EMAIL ADMIN_PASS APP_URL; do
               ENV_UUID=$(jq -r --arg k "$STALE_KEY" '.[] | select(.key == $k) | .uuid' \
                 /tmp/fs_envs.json 2>/dev/null || true)
               if [ -n "$ENV_UUID" ] && [ "$ENV_UUID" != "null" ]; then
@@ -487,6 +496,7 @@ jobs:
             || echo "  DB_PASS: skipped (no password in DB_URL)"
           set_env "DB_PGSQL_SSL_MODE" "require"
           set_env "SETUP_TYPE"        "AUTO"
+          set_env "APP_URL"           "$APP_URL"
           set_env "ADMIN_EMAIL"       "mai@leelaecospa.com"
           [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
@@ -514,14 +524,11 @@ jobs:
           echo "=== FreeScout state (HTTP $HTTP_CODE) ==="
           jq '{name, status, fqdn}' /tmp/fs_state.json 2>/dev/null || cat /tmp/fs_state.json
 
-          FQDN=$(jq -r '.fqdn // empty' /tmp/fs_state.json 2>/dev/null)
+          FQDN=$(jq -r '.fqdn // empty' /tmp/fs_state.json 2>/dev/null | sed 's|/$||')
           if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
-            HOST="${FQDN#https://}"
-            HOST="${HOST#http://}"
-            HOST="${HOST%/}"
-            echo "Checking https://$HOST/"
+            echo "Checking $FQDN/"
             set +e
-            HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 "https://$HOST/")
+            HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 "$FQDN/")
             CURL_RC=$?
             set -e
             [ "$CURL_RC" != "0" ] && HTTP="000"
