@@ -304,13 +304,13 @@ jobs:
             echo "LiteLLM UUID for dashboard lookup: $UUID"
           fi
 
-  # ─── T-10: FreeScout (PR #31: fix DB port-conflict from async Coolify deletion) ──────────────
-  # Root cause (confirmed PR #30 run #27895401460):
-  #   DELETE /databases/{uuid} returns {"message":"Database deletion request queued."} — async.
-  #   Old PostgreSQL container holds port 5432 while new container tries to bind → port conflict
-  #   → new container exits immediately → status stays "exited:unhealthy" throughout deploy.
-  # Fix: never delete-and-recreate the DB. Reuse existing "freescout-postgres" if it exists;
-  #   create a new one only when none is present. Coolify's start is idempotent on running DBs.
+  # ─── T-10: FreeScout (Supabase PostgreSQL — firewall confirmed open 2026-06-21) ──────────────
+  # Prior failures (PRs #25–#34) root cause: Coolify-managed PostgreSQL containers crash because
+  #   Docker creates /data/coolify/databases/{uuid}/ as root:root; Coolify cannot write its
+  #   README.md setup file. Systemic on this VPS — Coolify-managed DBs are permanently avoided.
+  # Fix: connect directly to Supabase PostgreSQL. VPS outbound TCP:5432 confirmed open
+  #   (verified by founder via Coolify terminal 2026-06-21). SUPABASE_STAGING_DB_URL secret
+  #   already set in GitHub Actions. No Coolify-managed DB provisioning needed.
   deploy-freescout:
     name: T-10 — FreeScout staging
     needs: discover
@@ -322,11 +322,13 @@ jobs:
       SERVER_UUID: ${{ needs.discover.outputs.server_uuid }}
       ENV_NAME: ${{ needs.discover.outputs.environment_name }}
       FREESCOUT_ADMIN_PASS: ${{ secrets.FREESCOUT_STAGING_ADMIN_PASS }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
 
     steps:
       - name: Clean up existing FreeScout resources
         run: |
-          # Best-effort cleanup: delete existing app and standalone DB from prior runs.
+          # Delete existing app from prior runs. Also delete Coolify-managed freescout-postgres
+          # DB if one lingers from prior attempts — we no longer use it.
           for attempt in 1 2 3; do
             HTTP_CODE=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
               -H "Authorization: Bearer $TOKEN" \
@@ -353,6 +355,7 @@ jobs:
             echo "Could not list apps (HTTP $HTTP_CODE) — skipping app cleanup"
           fi
 
+          # Delete any lingering Coolify-managed freescout-postgres DB from prior runs
           for attempt in 1 2 3; do
             HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
               -H "Authorization: Bearer $TOKEN" \
@@ -366,107 +369,21 @@ jobs:
             EXISTING_DB=$(jq -r '.[] | select(.name == "freescout-postgres") | .uuid' \
               /tmp/dbs.json 2>/dev/null || true)
             if [ -n "$EXISTING_DB" ] && [ "$EXISTING_DB" != "null" ]; then
-              echo "Preserving freescout-postgres ($EXISTING_DB) — will reuse in next step"
-            else
-              echo "No existing freescout-postgres DB found — will create in next step"
-            fi
-          else
-            echo "Could not list databases (HTTP $HTTP_CODE) — next step will attempt create"
-          fi
-
-      - name: Provision FreeScout PostgreSQL DB
-        id: freescout_db
-        run: |
-          # Strategy: reuse healthy DB; delete-and-wait crashed DB; create if absent.
-          # Rationale: DELETE /databases is async — old container holds port 5432 while
-          # new one tries to bind it → immediate crash. We add a 30s wait after DELETE
-          # to let the Coolify queue job stop the old container before we create a new one.
-          DB_UUID=$(jq -r '.[] | select(.name == "freescout-postgres") | .uuid' \
-            /tmp/dbs.json 2>/dev/null || true)
-
-          if [ -n "$DB_UUID" ] && [ "$DB_UUID" != "null" ]; then
-            DB_STATUS=$(curl -s --max-time 30 \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/databases/$DB_UUID" \
-              | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
-            echo "Existing freescout-postgres ($DB_UUID) status: $DB_STATUS"
-
-            case "$DB_STATUS" in
-              running*|healthy*)
-                echo "DB is healthy — reusing without restart"
-                ;;
-              *)
-                echo "DB is in non-running state ($DB_STATUS) — deleting and recreating..."
-                curl -s --max-time 30 -o /dev/null -X DELETE \
-                  -H "Authorization: Bearer $TOKEN" \
-                  "$COOLIFY_BASE/databases/$DB_UUID" || true
-                echo "Deletion queued — sleeping 30s for Coolify queue to stop old container..."
-                sleep 30
-                DB_UUID=""
-                ;;
-            esac
-          fi
-
-          if [ -z "$DB_UUID" ] || [ "$DB_UUID" = "null" ]; then
-            echo "Creating fresh freescout-postgres..."
-            PAYLOAD=$(jq -n \
-              --arg proj "$PROJECT_UUID" \
-              --arg srv  "$SERVER_UUID" \
-              --arg env  "$ENV_NAME" \
-              '{
-                project_uuid:     $proj,
-                server_uuid:      $srv,
-                environment_name: $env,
-                name:             "freescout-postgres",
-                instant_deploy:   false
-              }')
-            for attempt in 1 2 3; do
-              HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
+              echo "Deleting abandoned Coolify-managed freescout-postgres ($EXISTING_DB)..."
+              DEL_DB_HTTP=$(curl -s --max-time 30 -o /tmp/db_del_resp.json -w "%{http_code}" -X DELETE \
                 -H "Authorization: Bearer $TOKEN" \
-                -H "Content-Type: application/json" \
-                -H "Accept: application/json" \
-                "$COOLIFY_BASE/databases/postgresql" \
-                -d "$PAYLOAD") || true
-              [ "$HTTP_CODE" != "000" ] && break
-              echo "Attempt $attempt/3: Coolify unreachable, waiting 20s..."
-              sleep 20
-            done
-            echo "DB create HTTP $HTTP_CODE"
-            jq . /tmp/db_create_resp.json 2>/dev/null || cat /tmp/db_create_resp.json
-            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-              echo "ERROR: failed to create freescout-postgres (HTTP $HTTP_CODE)"
-              exit 1
+                "$COOLIFY_BASE/databases/$EXISTING_DB") || true
+              echo "DB delete HTTP $DEL_DB_HTTP"
+              cat /tmp/db_del_resp.json 2>/dev/null || true
+            else
+              echo "No Coolify-managed freescout-postgres DB found — nothing to clean up"
             fi
-            DB_UUID=$(jq -r '.uuid // .database_uuid // empty' /tmp/db_create_resp.json 2>/dev/null)
-            if [ -z "$DB_UUID" ] || [ "$DB_UUID" = "null" ]; then
-              echo "ERROR: no UUID in DB create response"
-              exit 1
-            fi
-            echo "Created freescout-postgres: $DB_UUID"
-            # PATCH to set postgres_port: 5433 — avoids host port 5432 conflict
-            # (postgres_port is rejected at creation time by this Coolify version)
-            PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/db_patch_resp.json -w "%{http_code}" -X PATCH \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/databases/$DB_UUID" \
-              -d '{"postgres_port": 5433}') || true
-            echo "DB patch HTTP $PATCH_HTTP"
-            jq '{postgres_port, message, errors}' /tmp/db_patch_resp.json 2>/dev/null || cat /tmp/db_patch_resp.json
           fi
-          echo "db_uuid=$DB_UUID" >> "$GITHUB_OUTPUT"
-          echo "=== DIAGNOSTIC: DB resource detail ==="
-          curl -s --max-time 30 \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/databases/$DB_UUID" \
-            | jq '{uuid, name, status, type, destination_uuid, destination}' 2>/dev/null || true
 
-      - name: Create FreeScout app (connect to Docker network)
+      - name: Create FreeScout app
         id: freescout
         run: |
-          echo "Creating FreeScout application (tiredofit/freescout + connect_to_docker_network)..."
+          echo "Creating FreeScout application (tiredofit/freescout + Supabase PostgreSQL)..."
           PAYLOAD=$(jq -n \
             --arg proj "$PROJECT_UUID" \
             --arg srv  "$SERVER_UUID" \
@@ -478,7 +395,6 @@ jobs:
               name:                       "freescout-staging",
               docker_registry_image_name: "tiredofit/freescout",
               ports_exposes:              "80",
-              connect_to_docker_network:  true,
               instant_deploy:             false
             }')
           for attempt in 1 2 3; do
@@ -505,79 +421,15 @@ jobs:
           fi
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
           echo "Created FreeScout: $UUID"
-          # DIAGNOSTIC: capture full app detail — destination_uuid, settings.connect_to_docker_network
-          echo "=== DIAGNOSTIC: Full app resource detail ==="
-          APP_DIAG=$(curl -s --max-time 30 \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$UUID") || true
-          echo "$APP_DIAG" | jq \
-            '{uuid, name, status, destination_uuid, destination, settings}' \
-            2>/dev/null || echo "$APP_DIAG"
-          # DIAGNOSTIC: server destinations — lists all Docker networks on this server
-          echo "=== DIAGNOSTIC: Server destinations/networks ==="
-          curl -s --max-time 30 \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/servers/$SERVER_UUID" \
-            | jq '{uuid, name, ip, destinations}' 2>/dev/null \
-            || echo "(server endpoint unavailable or returned non-JSON)"
 
       - name: Set FreeScout environment variables
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
-          DB_UUID="${{ steps.freescout_db.outputs.db_uuid }}"
 
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
 
-          # Ensure DB is running (start is idempotent on already-running DBs)
-          echo "Starting freescout-postgres ($DB_UUID)..."
-          curl -s --max-time 30 -o /dev/null -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/databases/$DB_UUID/start" || true
-
-          # Poll for DB status — max 180s, checking every 10s
-          echo "Polling freescout-postgres status (max 180s)..."
-          DB_READY=false
-          for i in $(seq 1 18); do
-            DB_HTTP=$(curl -s --max-time 30 -o /tmp/db_detail.json -w "%{http_code}" \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/databases/$DB_UUID") || true
-            DB_STATUS=$(jq -r '.status // "unknown"' /tmp/db_detail.json 2>/dev/null)
-            echo "  DB poll $i/18: status=$DB_STATUS (HTTP $DB_HTTP)"
-            case "$DB_STATUS" in running*|healthy*) DB_READY=true; break ;; esac
-            sleep 10
-          done
-          echo "=== DIAGNOSTIC: Full DB detail after poll ==="
-          jq 'del(.postgres_password, .internal_db_url)' /tmp/db_detail.json 2>/dev/null \
-            || cat /tmp/db_detail.json
-          if [ "$DB_READY" = "false" ]; then
-            echo "ERROR: DB did not reach running status after 180s (last: $DB_STATUS) — aborting"
-            exit 1
-          fi
-
-          # Fetch internal connection URL
-          DB_HTTP=$(curl -s --max-time 30 -o /tmp/db_detail.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/databases/$DB_UUID") || true
-          echo "DB detail HTTP $DB_HTTP"
-          if [ "$DB_HTTP" != "200" ]; then
-            echo "ERROR: could not fetch DB detail (HTTP $DB_HTTP)"
-            jq . /tmp/db_detail.json 2>/dev/null || cat /tmp/db_detail.json
-            exit 1
-          fi
-
-          INTERNAL_URL=$(jq -r '.internal_db_url // empty' /tmp/db_detail.json 2>/dev/null)
-          if [ -z "$INTERNAL_URL" ] || [ "$INTERNAL_URL" = "null" ]; then
-            echo "ERROR: internal_db_url missing — DB may not be running yet"
-            jq '{uuid, name, status, type}' /tmp/db_detail.json 2>/dev/null || cat /tmp/db_detail.json
-            exit 1
-          fi
-
-          # Parse internal_db_url: postgresql://user:pass@hostname:port/dbname
-          DB_NO_PROTO="${INTERNAL_URL#postgresql://}"
+          # Parse SUPABASE_STAGING_DB_URL: postgresql://user:pass@host:port/dbname
+          DB_NO_PROTO="${SUPABASE_DB_URL#postgresql://}"
           DB_NO_PROTO="${DB_NO_PROTO#postgres://}"
           DB_USERPASS="${DB_NO_PROTO%%@*}"
           DB_USER="${DB_USERPASS%%:*}"
@@ -589,7 +441,7 @@ jobs:
           DB_NAME="${DB_PORTDB##*/}"
           DB_NAME="${DB_NAME%%\?*}"
           [ -n "$DB_PASS" ] && echo "::add-mask::$DB_PASS"
-          echo "Internal DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
+          echo "Supabase DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
           # Get app FQDN for SITE_URL (required by tiredofit/freescout SETUP_TYPE=AUTO)
           APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_fqdn.json -w "%{http_code}" \
@@ -600,7 +452,6 @@ jobs:
           [ -z "$APP_URL" ] && APP_URL="http://$UUID.187.124.76.235.sslip.io"
           echo "APP_URL: $APP_URL"
 
-          # Fresh app (always recreated above) — simple POST; no 409 conflicts possible.
           set_env() {
             local KEY="$1" VAL="$2"
             local PAYLOAD HTTP
@@ -621,8 +472,8 @@ jobs:
           set_env "DB_NAME"     "$DB_NAME"
           set_env "DB_USER"     "$DB_USER"
           [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
-            || echo "  DB_PASS: skipped (no password in internal_db_url)"
-          set_env "DB_SSL"      "FALSE"
+            || echo "  DB_PASS: skipped (no password in SUPABASE_STAGING_DB_URL)"
+          set_env "DB_SSL"      "TRUE"
           set_env "SETUP_TYPE"  "AUTO"
           set_env "SITE_URL"    "$APP_URL"
           set_env "APP_URL"     "$APP_URL"
@@ -633,7 +484,7 @@ jobs:
       - name: Deploy (start) FreeScout
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
-          echo "Starting FreeScout $UUID (tiredofit/freescout + Coolify PostgreSQL on coolify network)..."
+          echo "Starting FreeScout $UUID (tiredofit/freescout + Supabase PostgreSQL)..."
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
@@ -646,22 +497,12 @@ jobs:
           echo "Waiting 180s for FreeScout to initialize (SETUP_TYPE=AUTO first-run + DB migrations)..."
           sleep 180
           UUID="${{ steps.freescout.outputs.uuid }}"
-          DB_UUID="${{ steps.freescout_db.outputs.db_uuid }}"
-          # DIAGNOSTIC: full DB state — confirms whether DB is actually running/healthy
-          echo "=== DIAGNOSTIC: DB state after 180s ==="
-          curl -s --max-time 30 \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/databases/$DB_UUID" \
-            | jq '{uuid, name, status, destination_uuid, destination}' 2>/dev/null || true
-          # DIAGNOSTIC: full app state — includes destination and settings
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID")
-          echo "=== DIAGNOSTIC: Full app state after 180s (HTTP $HTTP_CODE) ==="
-          jq '{uuid, name, status, fqdn, destination_uuid, destination, settings}' \
-            /tmp/fs_state.json 2>/dev/null || cat /tmp/fs_state.json
+          echo "=== App state after 180s (HTTP $HTTP_CODE) ==="
+          jq '{uuid, name, status, fqdn}' /tmp/fs_state.json 2>/dev/null || cat /tmp/fs_state.json
 
           FQDN=$(jq -r '.fqdn // empty' /tmp/fs_state.json 2>/dev/null | sed 's|/$||')
           if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then

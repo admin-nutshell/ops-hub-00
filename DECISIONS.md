@@ -126,6 +126,24 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   either change port via Coolify UI or SSH-identify the process holding 5432.
 ```
 
+### 2026-06-21 — T-10 FreeScout root cause correction
+
+```
+2026-06-21 [Production Manager] T-10 FreeScout: TRUE ROOT CAUSE CORRECTED. PRs #31–#34
+  diagnosis ("VPS host port 5432 permanently occupied") was incorrect. Founder changing
+  the Coolify UI port to 5433 surfaced the actual error:
+  "Permission denied: /data/coolify/databases/{uuid}/README.md"
+  Root cause: Docker daemon creates bind-mount host directory as root:root. Coolify
+  (StartPostgresql.php) does not pre-create it with correct ownership. Every fresh DB
+  UUID hits this — systemic on this VPS. All autonomous fix paths exhausted (no browser
+  terminal, no SSH key in GitHub Actions secrets, no Coolify API execute endpoint).
+  Escalated to founder via FQ-10 with two options:
+    Option A (recommended): open outbound TCP:5432, revert to Supabase PostgreSQL
+    Option B: SSH chmod -R 777 /data/coolify/databases/ to fix VPS permissions
+  FQ-09 superseded — its agent workaround (internal PG) is the failed path; its fix
+  (open port 5432) is now the recommended architecture. Awaiting founder action.
+```
+
 ---
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*
