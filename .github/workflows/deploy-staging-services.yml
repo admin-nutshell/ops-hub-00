@@ -304,11 +304,12 @@ jobs:
             echo "LiteLLM UUID for dashboard lookup: $UUID"
           fi
 
-  # ─── T-10: FreeScout (tiredofit/freescout + Supabase PostgreSQL) ────────────
-  # Root cause of prior failures: thatwebagency/freescout does not exist on Docker Hub
-  # (returns 404) — Docker could never pull the image. Switching to tiredofit/freescout
-  # (actively maintained, PostgreSQL-capable via DB_TYPE=pgsql) + Supabase eliminates
-  # both the missing-image problem and the MariaDB sidecar crash.
+  # ─── T-10: FreeScout (tiredofit/freescout + Coolify-managed internal PostgreSQL) ─
+  # DB approach: Coolify-managed PostgreSQL (internal Docker network).
+  # Prior attempts with Supabase (direct IPv6, session pooler 5432, txn pooler 6543) all
+  # failed because the VPS firewall blocks ALL outbound PostgreSQL traffic (confirmed
+  # runs #27890237911 + #27890511141). Coolify-managed DB keeps all traffic inside the
+  # Docker network — no external firewall impact.
   deploy-freescout:
     name: T-10 — FreeScout staging
     needs: discover
@@ -319,32 +320,65 @@ jobs:
       PROJECT_UUID: ${{ needs.discover.outputs.project_uuid }}
       SERVER_UUID: ${{ needs.discover.outputs.server_uuid }}
       ENV_NAME: ${{ needs.discover.outputs.environment_name }}
-      DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
       FREESCOUT_ADMIN_PASS: ${{ secrets.FREESCOUT_STAGING_ADMIN_PASS }}
 
     steps:
-      - name: Remove MariaDB sidecar if present
+      - name: Create or get FreeScout internal PostgreSQL
+        id: freescout_db
         run: |
+          # Idempotent: find existing freescout-postgres or create new one.
+          # Coolify-managed DB runs on Docker internal network — bypasses VPS outbound
+          # firewall entirely (root cause of Supabase failure: both 5432 and 6543 blocked).
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/databases") || true
+
+          EXISTING_DB=""
           if [ "$HTTP_CODE" = "200" ]; then
-            MARIADB_UUID=$(jq -r '.[] | select(.name == "freescout-mariadb") | .uuid' \
+            EXISTING_DB=$(jq -r '.[] | select(.name == "freescout-postgres") | .uuid' \
               /tmp/dbs.json 2>/dev/null || true)
-            if [ -n "$MARIADB_UUID" ] && [ "$MARIADB_UUID" != "null" ]; then
-              echo "Removing freescout-mariadb ($MARIADB_UUID)..."
-              DEL_HTTP=$(curl -s --max-time 30 -o /tmp/del_resp.json -w "%{http_code}" -X DELETE \
-                -H "Authorization: Bearer $TOKEN" \
-                "$COOLIFY_BASE/databases/$MARIADB_UUID") || true
-              echo "Delete HTTP $DEL_HTTP"
-              cat /tmp/del_resp.json 2>/dev/null || true
-            else
-              echo "No freescout-mariadb found — nothing to remove"
-            fi
           else
-            echo "Could not list databases (HTTP $HTTP_CODE) — skipping cleanup"
+            echo "Could not list databases (HTTP $HTTP_CODE) — will attempt create"
           fi
+
+          if [ -n "$EXISTING_DB" ] && [ "$EXISTING_DB" != "null" ]; then
+            echo "Found existing freescout-postgres: $EXISTING_DB"
+            DB_UUID="$EXISTING_DB"
+          else
+            echo "Creating freescout-postgres (Coolify-managed PostgreSQL)..."
+            PAYLOAD=$(jq -n \
+              --arg proj "$PROJECT_UUID" \
+              --arg srv  "$SERVER_UUID" \
+              --arg env  "$ENV_NAME" \
+              '{
+                project_uuid:     $proj,
+                server_uuid:      $srv,
+                environment_name: $env,
+                name:             "freescout-postgres",
+                instant_deploy:   true
+              }')
+            HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/databases/postgresql" \
+              -d "$PAYLOAD")
+            echo "DB create HTTP $HTTP_CODE"
+            jq . /tmp/db_create_resp.json 2>/dev/null || cat /tmp/db_create_resp.json
+            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+              echo "ERROR: failed to create freescout-postgres (HTTP $HTTP_CODE)"
+              exit 1
+            fi
+            DB_UUID=$(jq -r '.uuid // .database_uuid // empty' /tmp/db_create_resp.json 2>/dev/null)
+            if [ -z "$DB_UUID" ] || [ "$DB_UUID" = "null" ]; then
+              echo "ERROR: no UUID in DB create response"
+              exit 1
+            fi
+            echo "Created freescout-postgres: $DB_UUID"
+          fi
+
+          echo "db_uuid=$DB_UUID" >> "$GITHUB_OUTPUT"
 
       - name: Create or get FreeScout application
         id: freescout
@@ -418,9 +452,39 @@ jobs:
       - name: Set FreeScout environment variables
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
+          DB_UUID="${{ steps.freescout_db.outputs.db_uuid }}"
 
-          # Parse Supabase DB URL: postgresql://user:pass@host:port/dbname[?params]
-          DB_NO_PROTO="${DB_URL#postgresql://}"
+          [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
+
+          # Ensure DB is running (start is idempotent on already-running DBs)
+          echo "Starting freescout-postgres ($DB_UUID)..."
+          curl -s --max-time 30 -o /dev/null -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/databases/$DB_UUID/start" || true
+          echo "Waiting 30s for PostgreSQL to be ready..."
+          sleep 30
+
+          # Fetch internal connection URL — only available once DB is running
+          DB_HTTP=$(curl -s --max-time 30 -o /tmp/db_detail.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases/$DB_UUID") || true
+          echo "DB detail HTTP $DB_HTTP"
+          if [ "$DB_HTTP" != "200" ]; then
+            echo "ERROR: could not fetch DB detail (HTTP $DB_HTTP)"
+            jq . /tmp/db_detail.json 2>/dev/null || cat /tmp/db_detail.json
+            exit 1
+          fi
+
+          INTERNAL_URL=$(jq -r '.internal_db_url // empty' /tmp/db_detail.json 2>/dev/null)
+          if [ -z "$INTERNAL_URL" ] || [ "$INTERNAL_URL" = "null" ]; then
+            echo "ERROR: internal_db_url missing — DB may not be running yet"
+            jq '{uuid, name, status, type}' /tmp/db_detail.json 2>/dev/null || cat /tmp/db_detail.json
+            exit 1
+          fi
+
+          # Parse internal_db_url: postgresql://user:pass@hostname:port/dbname
+          DB_NO_PROTO="${INTERNAL_URL#postgresql://}"
           DB_NO_PROTO="${DB_NO_PROTO#postgres://}"
           DB_USERPASS="${DB_NO_PROTO%%@*}"
           DB_USER="${DB_USERPASS%%:*}"
@@ -431,29 +495,10 @@ jobs:
           DB_PORT="${DB_PORTDB%%/*}"
           DB_NAME="${DB_PORTDB##*/}"
           DB_NAME="${DB_NAME%%\?*}"
-          [ -n "$DB_PASS" ]              && echo "::add-mask::$DB_PASS"
-          [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
-          echo "Parsed DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
+          [ -n "$DB_PASS" ] && echo "::add-mask::$DB_PASS"
+          echo "Internal DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
-          # Supabase direct connections (db.*.supabase.co) are IPv6-only since 2024.
-          # Session pooler (port 5432) is IPv4-accessible but confirmed blocked by VPS
-          # firewall (run #27890237911 diagnostic: DNS resolves, TCP:5432 reachable from
-          # internet, but psql in container times out after ~35s — textbook outbound
-          # firewall drop). Trying transaction pooler on port 6543 which uses the same
-          # hostname but a different port that may not be blocked.
-          # NOTE: Supabase transaction mode does not support prepared statements — if
-          # FreeScout/Laravel fails with prepared-statement errors, fix is to open port
-          # 5432 on the VPS firewall (see FOUNDER_QUEUE FQ-09).
-          if echo "$DB_HOST" | grep -qE '^db\.[a-z0-9]+\.supabase\.co$'; then
-            PROJECT_REF="${DB_HOST#db.}"
-            PROJECT_REF="${PROJECT_REF%.supabase.co}"
-            DB_HOST="aws-0-ca-central-1.pooler.supabase.com"
-            DB_USER="postgres.${PROJECT_REF}"
-            DB_PORT="6543"
-            echo "Supabase direct→transaction-pooler port 6543: $DB_HOST / $DB_USER"
-          fi
-
-          # Get app FQDN for APP_URL (required by SETUP_TYPE=AUTO first-run installer)
+          # Get app FQDN for SITE_URL (required by SETUP_TYPE=AUTO first-run installer)
           APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_fqdn.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
@@ -461,7 +506,6 @@ jobs:
           APP_URL=$(jq -r '.fqdn // empty' /tmp/app_fqdn.json 2>/dev/null | sed 's|/$||' || true)
           [ -z "$APP_URL" ] && APP_URL="http://$UUID.187.124.76.235.sslip.io"
           echo "APP_URL: $APP_URL"
-          echo "Final DB config: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
           # Fresh app (always recreated above) — simple POST; no 409 conflicts possible.
           set_env() {
@@ -478,52 +522,25 @@ jobs:
             [ "$HTTP" != "201" ] && cat /tmp/env_resp.json 2>/dev/null || true
           }
 
-          set_env "DEBUG_MODE"        "TRUE"
-          set_env "DB_TYPE"           "pgsql"
-          set_env "DB_HOST"           "$DB_HOST"
-          set_env "DB_PORT"           "$DB_PORT"
-          set_env "DB_NAME"           "$DB_NAME"
-          set_env "DB_USER"           "$DB_USER"
+          set_env "DB_TYPE"     "pgsql"
+          set_env "DB_HOST"     "$DB_HOST"
+          set_env "DB_PORT"     "$DB_PORT"
+          set_env "DB_NAME"     "$DB_NAME"
+          set_env "DB_USER"     "$DB_USER"
           [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
-            || echo "  DB_PASS: skipped (no password in DB_URL)"
-          set_env "DB_SSL"            "TRUE"
-          set_env "DB_PGSQL_SSL_MODE" "require"
-          set_env "SETUP_TYPE"        "AUTO"
-          set_env "SITE_URL"          "$APP_URL"
-          set_env "APP_URL"           "$APP_URL"
-          set_env "ADMIN_EMAIL"       "mai@leelaecospa.com"
+            || echo "  DB_PASS: skipped (no password in internal_db_url)"
+          set_env "DB_SSL"      "FALSE"
+          set_env "SETUP_TYPE"  "AUTO"
+          set_env "SITE_URL"    "$APP_URL"
+          set_env "APP_URL"     "$APP_URL"
+          set_env "ADMIN_EMAIL" "mai@leelaecospa.com"
           [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
-
-          # Remove stale MySQL-era keys that would confuse tiredofit's entrypoint
-          for STALE_KEY in DB_CONNECTION DB_DATABASE DB_USERNAME DB_PASSWORD; do
-            STALE_UUID=$(jq -r --arg k "$STALE_KEY" 'map(select(.key == $k)) | first | .uuid // empty' \
-              /tmp/fs_envs.json 2>/dev/null || true)
-            if [ -n "$STALE_UUID" ] && [ "$STALE_UUID" != "null" ]; then
-              DEL_HTTP=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
-                -H "Authorization: Bearer $TOKEN" \
-                "$COOLIFY_BASE/applications/$UUID/envs/$STALE_UUID") || true
-              echo "  Removed stale $STALE_KEY: HTTP $DEL_HTTP"
-            fi
-          done
-
-      - name: Connectivity probe — Supabase pooler reachability
-        run: |
-          # Tests from GitHub Actions runner (not from VPS container), but confirms:
-          # (a) hostname resolves via DNS, (b) port 5432 is reachable on the internet.
-          # If this passes but the container still fails, the VPS firewall is blocking outbound 5432.
-          POOLER="aws-0-ca-central-1.pooler.supabase.com"
-          echo "=== DNS resolution for $POOLER ==="
-          nslookup "$POOLER" 2>&1 || host "$POOLER" 2>&1 || echo "DNS lookup failed"
-          echo "=== TCP:5432 reachability ==="
-          timeout 10 bash -c "</dev/tcp/$POOLER/5432" 2>&1 \
-            && echo "TCP 5432: REACHABLE from GitHub Actions runner" \
-            || echo "TCP 5432: UNREACHABLE from GitHub Actions runner (hostname may not exist)"
 
       - name: Deploy (start) FreeScout
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
-          echo "Starting FreeScout $UUID (tiredofit/freescout + Supabase PostgreSQL)..."
+          echo "Starting FreeScout $UUID (tiredofit/freescout + Coolify internal PostgreSQL)..."
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
