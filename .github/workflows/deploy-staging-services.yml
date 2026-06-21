@@ -499,6 +499,10 @@ jobs:
           [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
             || echo "  DB_PASS: skipped (no password in SUPABASE_STAGING_DB_URL)"
           set_env "DB_SSL"      "TRUE"
+          # pg_isready doesn't do full auth; Supavisor rejects it unless SSL+auth.
+          # DB_TIMEOUT=0 skips the pre-flight pg_isready loop in tiredofit init.
+          # FreeScout's PHP/PDO driver handles SSL auth correctly on first real query.
+          set_env "DB_TIMEOUT"  "0"
           set_env "SETUP_TYPE"  "AUTO"
           set_env "SITE_URL"    "$APP_URL"
           set_env "APP_URL"     "$APP_URL"
