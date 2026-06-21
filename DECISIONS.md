@@ -144,6 +144,37 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   (open port 5432) is now the recommended architecture. Awaiting founder action.
 ```
 
+### 2026-06-21 — T-10 FreeScout Supabase pooler diagnostic sequence (PRs #36–#40)
+
+```
+2026-06-21 [Production Manager] T-10 FreeScout: PR #36 merged (reverted to Supabase direct URL
+  after Coolify-managed PG permanently broken on this VPS). PR #37 added session pooler rewrite
+  (direct db.[ref].supabase.co → aws-0-ca-central-1.pooler.supabase.com) to bypass IPv6-only
+  direct connection. Run #27912494307: container started, fail still occurred with different timing.
+
+2026-06-21 [Production Manager] T-10 FreeScout: PR #38 added DEBUG_MODE + DNS probe.
+  Run #27913055416 findings:
+    - All 12 env vars HTTP 201 (confirmed — prior "only SITE_URL visible" was grep head-30 artifact)
+    - DNS: aws-0-ca-central-1.pooler.supabase.com has A records only (no AAAA) — IPv6 ruled out
+    - Container error still "Can't connect to DB_HOST" but psql output suppressed in tiredofit
+
+2026-06-21 [Production Manager] T-10 FreeScout: PR #39 added psql test from GitHub Actions
+  (Azure East US) to distinguish Docker networking vs credentials issue.
+  Run #27913431979 finding: FATAL: (ENOTFOUND) tenant/user postgres.yocoljutbiizdbfraapx not found
+  — this error appears from GitHub Actions too, NOT just from Docker container.
+  ROOT CAUSE CONFIRMED: Supabase session pooler at aws-0-ca-central-1.pooler.supabase.com
+  rejects project yocoljutbiizdbfraapx ("tenant not found"). TCP connects, TLS succeeds,
+  PgBouncer rejects at auth phase. Not a VPS/Docker networking issue.
+  Port 5432 VPS outbound: OPEN (timing pattern changed from ~35s TCP-drop to ~4s app-layer fail).
+
+2026-06-21 [Production Manager] T-10 FreeScout: PR #40 transaction pooler test result (run #27914003478):
+  BOTH poolers failed — same ENOTFOUND error on port 6543 as port 5432.
+  Session pooler (5432) exit: 2; Transaction pooler (6543) exit: 2.
+  FQ-11 escalated. Root cause candidates: (1) project region ≠ ca-central-1,
+  (2) Connection Pooling never enabled in Supabase dashboard, (3) project paused.
+  Awaiting founder dashboard check per FQ-11.
+```
+
 ---
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*
