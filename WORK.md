@@ -62,7 +62,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-07: Deploy Inngest (connect to Inngest Cloud) in staging + prod | Production Manager | ✅ Coolify; 🔒 T-15 app scaffold (Inngest SDK must be initialized in app code) | Inngest dashboard shows both envs; test event processed | Jul 2 |
+| T-07: Deploy Inngest (connect to Inngest Cloud) in staging + prod | Production Manager | ✅ Coolify; ✅ T-15 done | Inngest dashboard shows both envs; test event processed | Jul 2 |
+| ↳ **[PR #49](https://github.com/admin-nutshell/ops-hub-00/pull/49) — ⏳ IN REVIEW.** inngest@4.7.0 SDK, `src/inngest/client.ts`, serve endpoint `/api/inngest`, `main-deploy.yml` (GHCR build + COOLIFY_STAGING_DEPLOY_HOOK). Waiting on ops-hub Coolify app creation for first live deploy. | | | | 2026-06-21 |
 | T-08: Deploy LiteLLM (self-hosted) to staging + prod on Coolify | Production Manager | ✅ Coolify provisioned | LiteLLM running; test API call returns model response | Jul 2 |
 | ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. | | | | 2026-06-20 |
 | ↳ **[PR #8](https://github.com/admin-nutshell/ops-hub-00/pull/8) — ✅ MERGED (2fea606).** Pre-flight diagnostics + full HTTP capture. Run #27887003804 confirmed root cause: Coolify API gate disabled (see FQ-07). | | | | 2026-06-20 |
