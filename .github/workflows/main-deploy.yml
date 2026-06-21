@@ -1,0 +1,121 @@
+name: Deploy to Staging
+
+# Auto-deploys the ops-hub application to Coolify staging on every push to main.
+# Prod promotion is manual-only via prod-promotion.yml (workflow_dispatch).
+# CI/CD spec: docs/engineering/ci-cd-pipeline.md §5
+on:
+  push:
+    branches: [main]
+
+# Least-privilege: needs packages:write for GHCR image push.
+permissions:
+  contents: read
+  packages: write
+
+# Never cancel a deploy in progress — let it finish or fail cleanly.
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & Deploy to Coolify Staging
+    runs-on: ubuntu-latest
+
+    env:
+      COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+      IMAGE: "ghcr.io/${{ github.repository }}"
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      # ── Pre-deploy checks (fast fail before building image) ──────────────────
+      - name: Set up pnpm
+        if: hashFiles('package.json') != ''
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Set up Node.js 20
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        if: hashFiles('package.json') != ''
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint & type check
+        run: |
+          if [ ! -f package.json ]; then exit 0; fi
+          pnpm lint
+          pnpm typecheck
+
+      - name: Unit tests
+        run: |
+          if [ ! -f package.json ]; then exit 0; fi
+          pnpm test
+
+      # ── Build & push image to GHCR ───────────────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --tag "$IMAGE:latest" \
+            --tag "$IMAGE:${{ github.sha }}" \
+            .
+
+      - name: Push image to GHCR
+        run: |
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          echo "Pushed $IMAGE:latest (${{ github.sha }})"
+
+      # ── Deploy to Coolify staging ─────────────────────────────────────────────
+      # COOLIFY_STAGING_DEPLOY_HOOK: Coolify-generated deploy webhook URL for the
+      # ops-hub app in ops-hub-staging. Set by founder on 2026-06-20.
+      # If this step returns non-200, the ops-hub app is not yet configured in
+      # Coolify; run deploy-staging-services.yml with target=ops-hub to create it.
+      - name: Trigger Coolify staging deploy
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/deploy_resp.json -w "%{http_code}" \
+            -X GET "${{ secrets.COOLIFY_STAGING_DEPLOY_HOOK }}")
+          echo "=== Coolify deploy response (HTTP $HTTP) ==="
+          cat /tmp/deploy_resp.json 2>/dev/null || true
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: Coolify deploy webhook returned HTTP $HTTP"
+            echo "If the ops-hub app is not yet created in Coolify, run:"
+            echo "  Actions → Deploy Staging Services → target=ops-hub-app"
+            exit 1
+          fi
+          echo "Staging deploy triggered."
+
+      # ── Staging health check ──────────────────────────────────────────────────
+      # COOLIFY_STAGING_APP_URL: set this secret once Coolify assigns a FQDN to
+      # the ops-hub app (visible in Coolify dashboard or from the Discover step).
+      # The check is skipped if the secret is not yet set.
+      - name: Wait for staging health check
+        env:
+          STAGING_URL: ${{ secrets.COOLIFY_STAGING_APP_URL }}
+        run: |
+          if [ -z "$STAGING_URL" ]; then
+            echo "COOLIFY_STAGING_APP_URL not set — skipping health poll."
+            echo "Set this secret to the ops-hub staging FQDN after first deploy."
+            exit 0
+          fi
+          echo "Polling $STAGING_URL/health ..."
+          for i in $(seq 1 30); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
+              "$STAGING_URL/health" || true)
+            if [ "$HTTP" = "200" ]; then
+              echo "Health check passed (attempt $i) — staging is live."
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $HTTP — waiting 10s"
+            sleep 10
+          done
+          echo "ERROR: health check timed out after 5 minutes"
+          exit 1

@@ -3,7 +3,7 @@ const eslintConfigPrettier = require("eslint-config-prettier");
 
 module.exports = tseslint.config(
   // This CommonJS config file is Node tooling, not app source — keep it out of TS linting.
-  { ignores: ["dist/**", "node_modules/**", "eslint.config.js"] },
+  { ignores: ["dist/**", "node_modules/**", "eslint.config.js", ".claude/**"] },
   ...tseslint.configs.recommended,
   eslintConfigPrettier
 );
