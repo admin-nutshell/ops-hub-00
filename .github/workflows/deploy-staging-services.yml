@@ -419,8 +419,7 @@ jobs:
                 server_uuid:      $srv,
                 environment_name: $env,
                 name:             "freescout-postgres",
-                instant_deploy:   false,
-                postgres_port:    5433
+                instant_deploy:   false
               }')
             for attempt in 1 2 3; do
               HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
@@ -445,6 +444,16 @@ jobs:
               exit 1
             fi
             echo "Created freescout-postgres: $DB_UUID"
+            # PATCH to set postgres_port: 5433 — avoids host port 5432 conflict
+            # (postgres_port is rejected at creation time by this Coolify version)
+            PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/db_patch_resp.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/databases/$DB_UUID" \
+              -d '{"postgres_port": 5433}') || true
+            echo "DB patch HTTP $PATCH_HTTP"
+            jq '{postgres_port, message, errors}' /tmp/db_patch_resp.json 2>/dev/null || cat /tmp/db_patch_resp.json
           fi
           echo "db_uuid=$DB_UUID" >> "$GITHUB_OUTPUT"
           echo "=== DIAGNOSTIC: DB resource detail ==="

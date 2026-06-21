@@ -49,6 +49,40 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-10 — VPS host port 5432 blocked: FreeScout PostgreSQL container crashes on startup
+
+```
+BLOCKING: [Production Manager] Every Coolify-managed PostgreSQL container we create
+  immediately exits (exited:unhealthy) before any /start call. Root cause: something on
+  the VPS permanently holds host port 5432, so Docker can't bind 5432:5432.
+
+  EVIDENCE:
+    - Brand-new containers (instant_deploy:false) show exited:unhealthy right after creation
+    - 30s wait after deleting old container → fresh container still crashes immediately
+    - All PostgreSQL containers from PRs #25–#33 exhibit identical behavior
+    - postgres_port: 5433 rejected at creation time (API HTTP 422)
+    - PATCH attempt in progress (PR #34 — if it works, this item auto-resolves)
+
+  AGENT ACTION IN PROGRESS:
+    PR #34 attempts PATCH /databases/{uuid} with {"postgres_port": 5433} after creation.
+    If this succeeds, no founder action needed.
+
+  FOUNDER ACTION — only if PR #34 ALSO fails:
+    SSH into the VPS and run:
+      docker ps -a | grep -E "5432|postgres"
+      lsof -i :5432 | head -20
+      netstat -tlnp | grep 5432
+    Report which process/container holds port 5432. Options once identified:
+      A) If it's Coolify's own DB: it can't be moved; we use PATCH (need Coolify to accept it)
+      B) If it's a native PostgreSQL service: sudo systemctl stop postgresql && sudo systemctl disable postgresql
+      C) If it's another container: identify and stop it
+
+  Impact if unresolved: T-10 FreeScout remains undeployed; T-19 blocked downstream.
+  Linked: PRs #25–#34, DECISIONS.md T-10 entries
+```
+
+---
+
 ### FQ-09 — VPS firewall blocks outbound TCP:5432 — FreeScout cannot reach Supabase
 
 ```
