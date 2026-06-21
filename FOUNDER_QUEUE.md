@@ -49,6 +49,42 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-08 — FreeScout MariaDB sidecar is crashing on Coolify VPS
+
+```
+BLOCKING: [Production Manager] FreeScout deploy workflow is complete (run #27888022061, 2026-06-21).
+  All workflow steps green: MariaDB found, FreeScout app created (UUID u103pgr0dbq9iiwf636m1msw),
+  all 6 env vars set (DB_CONNECTION, DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD — all HTTP 201).
+  FreeScout deployed (start HTTP 200).
+
+  BUT: MariaDB sidecar (freescout-mariadb) shows status "exited:unhealthy" 30s after every start call.
+  FreeScout exits because it can't connect to the database.
+
+  This is a server-side infrastructure issue — not a workflow code issue.
+  Cause is unknown: could be OOM kill, MariaDB startup failure, health check misconfiguration,
+  or data directory corruption from repeated restarts.
+
+  Action needed (~5 minutes in the Coolify dashboard):
+    1. Log into Coolify at https://coolify.inatechshell.ca
+    2. Go to the ops-hub-staging project
+    3. Find the "freescout-mariadb" database service
+    4. Check its container logs for the crash reason (MariaDB error at startup)
+    5. Common fixes:
+       a. If OOM: VPS needs a memory increase or other containers need to be stopped
+       b. If "Permission denied" on data dir: the Coolify container volume may need a reset
+          (delete freescout-mariadb from Coolify, let the next workflow run recreate it fresh)
+       c. If "Access denied" or credential mismatch: share the error here so the agent can
+          adjust the FreeScout DB_PASSWORD env var
+       d. If "Plugin ... not found" or similar: the MariaDB image version may need pinning
+    6. Once MariaDB is running:healthy, re-trigger the workflow:
+       GitHub Actions → Deploy Staging Services → Run workflow → target=freescout-only
+
+  Impact if delayed: T-10 undeployed; M1 #6 blocked; T-19 (integration test) blocked.
+  Linked: run #27888022061 (all steps passed except runtime health), FQ-07 RESOLVED.
+```
+
+---
+
 ### FQ-07 — Coolify API access feature gate is disabled
 
 ```
