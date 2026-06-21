@@ -366,23 +366,16 @@ jobs:
           EXISTING=$(jq -r '.[] | select(.name == "freescout-staging") | .uuid' /tmp/apps.json 2>/dev/null || true)
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            # Existing app may have been created with thatwebagency/freescout (wrong/missing image).
-            # GET the app detail to check the image and delete+recreate if necessary.
-            APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_detail.json -w "%{http_code}" \
+            # Always delete and recreate to ensure a clean env-var slate.
+            # (Coolify has no reliable upsert/update for env vars — PATCH returns 422,
+            # DELETE returns 000, POST returns 409 on duplicate. Force-recreate avoids all that.)
+            echo "Deleting existing FreeScout ($EXISTING) to recreate with clean config..."
+            DEL_HTTP=$(curl -s --max-time 30 -o /tmp/app_del_resp.json -w "%{http_code}" -X DELETE \
               -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/json" \
               "$COOLIFY_BASE/applications/$EXISTING") || true
-            CURRENT_IMAGE=$(jq -r '.docker_registry_image_name // empty' /tmp/app_detail.json 2>/dev/null || true)
-            echo "Existing FreeScout: $EXISTING (image: $CURRENT_IMAGE)"
-            if [ "$CURRENT_IMAGE" = "thatwebagency/freescout" ]; then
-              echo "Image is non-existent (thatwebagency/freescout not on Docker Hub) — deleting to recreate..."
-              curl -s --max-time 30 -o /dev/null -X DELETE \
-                -H "Authorization: Bearer $TOKEN" \
-                "$COOLIFY_BASE/applications/$EXISTING" || true
-              EXISTING=""
-            else
-              echo "uuid=$EXISTING" >> "$GITHUB_OUTPUT"
-            fi
+            echo "Delete HTTP $DEL_HTTP"
+            cat /tmp/app_del_resp.json 2>/dev/null || true
+            EXISTING=""
           fi
 
           if [ -z "$EXISTING" ] || [ "$EXISTING" = "null" ]; then
@@ -465,40 +458,31 @@ jobs:
           [ -z "$APP_URL" ] && APP_URL="http://$UUID.187.124.76.235.sslip.io"
           echo "APP_URL: $APP_URL"
 
-          # Fetch current env var list so upsert_env can PATCH existing keys.
-          # DELETE-then-POST was failing (DELETE returned 000; POST returned 409 conflict).
-          ENV_HTTP=$(curl -s --max-time 30 -o /tmp/fs_envs.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$UUID/envs") || true
-          [ "$ENV_HTTP" != "200" ] && echo '[]' > /tmp/fs_envs.json
+          # Supabase direct connections (db.*.supabase.co) are IPv6-only since 2024;
+          # unreachable from this IPv4-only VPS. Switch to Session-mode pooler (port 5432).
+          # Session mode required for Laravel prepared statements.
+          if echo "$DB_HOST" | grep -qE '^db\.[a-z0-9]+\.supabase\.co$'; then
+            PROJECT_REF="${DB_HOST#db.}"
+            PROJECT_REF="${PROJECT_REF%.supabase.co}"
+            DB_HOST="aws-0-ca-central-1.pooler.supabase.com"
+            DB_USER="postgres.${PROJECT_REF}"
+            DB_PORT="5432"
+            echo "Supabase direct→pooler: $DB_HOST / $DB_USER"
+          fi
 
-          # upsert_env: PATCH if key already exists (avoids 409), POST if new (avoids 000 from DELETE)
-          upsert_env() {
+          # Fresh app (always recreated above) — simple POST; no 409 conflicts possible.
+          set_env() {
             local KEY="$1" VAL="$2"
-            local ENV_UUID PAYLOAD HTTP
-            ENV_UUID=$(jq -r --arg k "$KEY" 'map(select(.key == $k)) | first | .uuid // empty' \
-              /tmp/fs_envs.json 2>/dev/null || true)
-            if [ -n "$ENV_UUID" ] && [ "$ENV_UUID" != "null" ]; then
-              PAYLOAD=$(jq -n --arg u "$ENV_UUID" --arg k "$KEY" --arg v "$VAL" \
-                '{uuid: $u, key: $k, value: $v}')
-              HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X PATCH \
-                -H "Authorization: Bearer $TOKEN" \
-                -H "Content-Type: application/json" \
-                -H "Accept: application/json" \
-                "$COOLIFY_BASE/applications/$UUID/envs" \
-                -d "$PAYLOAD") || true
-              echo "  $KEY → PATCH $HTTP"
-            else
-              PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$VAL" '{key: $k, value: $v}')
-              HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
-                -H "Authorization: Bearer $TOKEN" \
-                -H "Content-Type: application/json" \
-                -H "Accept: application/json" \
-                "$COOLIFY_BASE/applications/$UUID/envs" \
-                -d "$PAYLOAD") || true
-              echo "  $KEY → POST $HTTP"
-            fi
+            local PAYLOAD HTTP
+            PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$VAL" '{key: $k, value: $v}')
+            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" \
+              -d "$PAYLOAD") || true
+            echo "  $KEY → HTTP $HTTP"
+            [ "$HTTP" != "201" ] && cat /tmp/env_resp.json 2>/dev/null || true
           }
 
           upsert_env "DB_TYPE"           "pgsql"
@@ -508,12 +492,13 @@ jobs:
           upsert_env "DB_USER"           "$DB_USER"
           [ -n "$DB_PASS" ] && upsert_env "DB_PASS" "$DB_PASS" \
             || echo "  DB_PASS: skipped (no password in DB_URL)"
-          upsert_env "DB_SSL"            "TRUE"
-          upsert_env "DB_PGSQL_SSL_MODE" "require"
-          upsert_env "SETUP_TYPE"        "AUTO"
-          upsert_env "APP_URL"           "$APP_URL"
-          upsert_env "ADMIN_EMAIL"       "mai@leelaecospa.com"
-          [ -n "$FREESCOUT_ADMIN_PASS" ] && upsert_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
+          set_env "DB_SSL"            "TRUE"
+          set_env "DB_PGSQL_SSL_MODE" "require"
+          set_env "SETUP_TYPE"        "AUTO"
+          set_env "SITE_URL"          "$APP_URL"
+          set_env "APP_URL"           "$APP_URL"
+          set_env "ADMIN_EMAIL"       "mai@leelaecospa.com"
+          [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
 
           # Remove stale MySQL-era keys that would confuse tiredofit's entrypoint
