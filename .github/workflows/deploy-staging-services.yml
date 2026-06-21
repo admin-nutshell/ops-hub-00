@@ -505,6 +505,24 @@ jobs:
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
           set_env "DEBUG_MODE"  "TRUE"
 
+          # ── Verify credentials from GitHub Actions BEFORE the container tries ──
+          # Uses --host/--port/--username flags + PGPASSWORD (not URL) to avoid
+          # any special-char encoding issues in the password. Exit code is decisive:
+          # 0 = creds valid, Docker networking is the problem
+          # non-0 = credentials wrong, SSL error, or Supabase restriction
+          echo ""
+          echo "=== Psql credential test from GitHub Actions runner ==="
+          sudo apt-get install -y --quiet postgresql-client 2>/dev/null || true
+          PGCONNECT_TIMEOUT=10 PGPASSWORD="$DB_PASS" psql \
+            --host="$DB_HOST" --port="$DB_PORT" --dbname="$DB_NAME" --username="$DB_USER" \
+            -c "SELECT 1;" 2>&1 | head -10 || true
+          PSQL_RC=$?
+          if [ "$PSQL_RC" = "0" ]; then
+            echo "✅ Credentials VALID from GitHub Actions — Docker networking is the blocker"
+          else
+            echo "❌ Psql failed (exit $PSQL_RC) from GitHub Actions — credentials/SSL/Supabase restriction issue"
+          fi
+
       - name: Deploy (start) FreeScout
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
