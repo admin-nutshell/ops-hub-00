@@ -102,7 +102,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
 | T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
-| T-07 (Inngest) | ops-hub Node.js app not yet created in Coolify staging — only litellm-staging + freescout-staging exist (confirmed via API, run #27916949231). App creation + `main-deploy.yml` required before Inngest serve endpoint is reachable. | M1 #4 partial; T-09 trace test blocked | Production Manager |
+| T-07 (Inngest) | **FQ-12**: GHCR package `ops-hub-00` is private; Coolify VPS has no credentials; CI returns `unauthorized`. Founder must make package public (30s in GitHub settings) or run `docker login ghcr.io` on VPS. Deploy pipeline is fully correct — this is the only blocker. | M1 #4 partial; T-09 trace test blocked | Tech Lead |
 
 ---
 
@@ -157,20 +157,19 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 ---
 
-**T-07: Inngest — NEXT (blocked pending ops-hub app creation in Coolify)**
+**T-07: Inngest — ⏳ BLOCKED ON FQ-12 (GHCR visibility)**
 
-Coolify staging state confirmed via API (run #27916949231 "List existing applications"):
-- `litellm-staging` ✅ running
-- `freescout-staging` ✅ running
-- No ops-hub app deployed yet
+ops-hub-app created in Coolify staging (UUID `ajqplom2mghf5a8h6vf1q6xg`, FQDN `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`). Full deploy pipeline fixed end-to-end (PRs #50–#55):
+- Dockerfile CI=1 fix (build succeeds) ✅
+- `main-deploy.yml` Coolify API deploy (PATCH HTTP 200, image tag updates correctly) ✅
+- Coolify deployment image reference format (no double-tag) ✅
+- Deployment status poll + container log dump on failure ✅
 
-Inngest requires the ops-hub Node.js app to be running with a public HTTPS URL (serve endpoint `/api/inngest`). Deployment plan (agent-owned):
-1. Add `inngest` SDK to app code: `src/inngest/client.ts` + serve endpoint in `src/index.ts`
-2. Add ops-hub app creation to `deploy-staging-services.yml` workflow (GitHub-source app via Coolify API)
-3. Create `main-deploy.yml` — triggers `COOLIFY_STAGING_DEPLOY_HOOK` on push to main
-4. After app is live: register staging URL with Inngest Cloud; verify test event processed
+**Sole remaining blocker:** `ghcr.io/admin-nutshell/ops-hub-00` is private. Coolify VPS has no GHCR credentials. CI returns `error from registry: unauthorized`. Coolify's API has no per-app credential field — auth is server-level only. See **FQ-12** in FOUNDER_QUEUE.md for the one-time action (30-second GitHub settings change to make the package public, OR run `docker login ghcr.io` on the VPS).
 
-Inngest env vars (`INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`) expected to already be in Coolify staging env vars (part of the 34 vars configured 2026-06-20).
+After FQ-12 is completed:
+1. Next push to `main` will deploy ops-hub-app successfully
+2. Register staging FQDN with Inngest Cloud; verify test event processed
 
 **T-09: LangFuse Cloud** — Already provisioned (US region). Blocked on T-08 canary → send test trace from LiteLLM after T-07 live.
 
