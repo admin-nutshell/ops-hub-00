@@ -49,6 +49,47 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-09 — VPS firewall blocks outbound TCP:5432 — FreeScout cannot reach Supabase
+
+```
+BLOCKING: [Production Manager/Tech Lead] Root cause confirmed via run #27890237911 (2026-06-21).
+
+  EVIDENCE:
+    - Supabase pooler hostname: aws-0-ca-central-1.pooler.supabase.com
+    - DNS resolution: ✅ resolves to IPv4 15.156.180.136 + 15.156.114.158 (AWS ca-central-1 ELB)
+    - TCP:5432 from GitHub Actions runner: ✅ REACHABLE
+    - TCP:5432 from VPS container (psql in tiredofit/freescout): ❌ TIMES OUT (~35s)
+    - Diagnosis: VPS firewall drops outbound TCP:5432. Same host+port is open from internet
+      but unreachable from the container — consistent with an iptables OUTPUT or FORWARD rule.
+
+  WORKAROUND ATTEMPTED: PR #24 tries port 6543 (Supabase transaction pooler — same host,
+  different port). If port 6543 is also blocked, or if FreeScout breaks with transaction
+  mode (no prepared statements), the VPS firewall must be opened.
+
+  ACTION NEEDED — one of the following (in order of preference):
+
+  Option A — Open outbound TCP:5432 via Coolify server settings (preferred, ~2 min):
+    1. Log into Coolify at https://coolify.inatechshell.ca
+    2. Go to Servers → select the VPS server → Firewall (or Security)
+    3. Add outbound rule: Protocol TCP, Port 5432, Direction Outbound, Action Allow
+    4. Save and re-run the deploy workflow (freescout-only)
+
+  Option B — Open via SSH to VPS (~2 min):
+    sudo iptables -I OUTPUT -p tcp --dport 5432 -j ACCEPT
+    sudo iptables -I FORWARD -p tcp --dport 5432 -j ACCEPT
+    sudo netfilter-persistent save   # or: iptables-save > /etc/iptables/rules.v4
+
+  Option C — If port 6543 (transaction pooler, PR #24) works and FreeScout is stable:
+    No firewall change needed. Production deploy will use session mode (5432) which
+    will require either: opening port 5432 on prod VPS, or using a dedicated DB.
+
+  Impact if delayed: T-10 FreeScout staging blocked; M1 #6 blocked; T-09 blocked downstream.
+  Linked: run #27890237911 (connectivity probe + DEBUG_MODE logs),
+    PR #24 (transaction pooler port 6543 workaround attempt)
+```
+
+---
+
 ### ~~FQ-08 — FreeScout MariaDB sidecar is crashing on Coolify VPS~~ — RESOLVED (agent-owned)
 
 ```
