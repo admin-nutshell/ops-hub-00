@@ -49,6 +49,78 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-10 — T-10 FreeScout: VPS directory permissions block PostgreSQL; architecture choice needed
+
+```
+BLOCKING: [Production Manager] True root cause identified after PRs #25–#34.
+  Docker creates the bind-mount directory /data/coolify/databases/{uuid}/ as root:root.
+  Coolify then fails to write its README.md into that directory ("Permission denied:
+  /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw/README.md") before PostgreSQL even
+  starts — every fresh DB UUID hits this, systemic on this VPS.
+  Previous "port 5432" hypothesis in PRs #31–#34 was incorrect; the port change to 5433
+  the founder made in the Coolify UI surfaced the real error underneath.
+
+  WHY THIS NEEDS FOUNDER ACTION:
+    - Browser terminal not available (Chrome extension not connected in this session)
+    - No SSH key secret in GitHub Actions (gh secret list confirmed: no VPS_SSH_KEY)
+    - Coolify API has no server command-execution endpoint (routes/api.php confirmed)
+    - Every autonomous path is exhausted
+
+  RECOMMENDED: OPTION B — Revert to Supabase (open one outbound port)
+    This is the cleaner architecture. The internal-PG path has proven fragile
+    (10 PRs, port conflicts, then directory permission bugs — all VPS-specific).
+    Supabase is already provisioned and was the original design.
+
+    1. SSH into the VPS (or use Hostinger terminal), run:
+         sudo iptables -I OUTPUT -p tcp --dport 5432 -j ACCEPT
+         sudo iptables-save | sudo tee /etc/iptables/rules.v4
+       OR use the Coolify server firewall UI:
+         Servers → VPS → Firewall → Add outbound rule: TCP 5432 Allow
+    2. Reply: APPROVED: outbound 5432 open
+    3. Agents will revert the workflow to Supabase PostgreSQL — no other action needed
+
+    Cost impact: $0 (uses existing Supabase staging project).
+    This also resolves FQ-09 (VPS firewall blocks Supabase) permanently.
+
+  FALLBACK: OPTION A — Fix VPS directory permissions (keep internal PG)
+    If the firewall change is not feasible, run these diagnostics + fix on the VPS:
+
+    # Diagnose first (3 commands — covers all possible causes):
+    ls -la /data/coolify/databases/
+    lsattr -d /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw 2>/dev/null || echo "no lsattr"
+    df -h /data ; mount | grep ' /data'
+
+    # Fix (after diagnosing — run the matching command):
+    # Standard case (root-owned dir):
+    sudo chmod -R 777 /data/coolify/databases/
+    # If immutable flag (lsattr shows 'i'):
+    sudo chattr -i /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw
+    sudo chmod -R 777 /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw
+
+    Then: in Coolify UI → ops-hub-staging → Databases → freescout-postgres → click Start
+    Wait for "Running" status, then reply: APPROVED: DB running, permissions fixed
+
+    Downside: fragile — every new DB UUID the workflow creates hits the same issue.
+    Agents will add a note to never delete-and-recreate this DB.
+
+  Impact if unresolved: T-10 FreeScout undeployed; M1 #6 blocked; T-19 blocked.
+  Linked: PRs #25–#34 (failed attempts), FQ-09 (Supabase firewall — same root fix)
+```
+
+---
+
+### ~~FQ-09 — VPS firewall blocks outbound TCP:5432~~ — SUPERSEDED BY FQ-10
+
+```
+SUPERSEDED: [Production Manager] 2026-06-21 — the PR #25 agent workaround (internal PG)
+  ultimately failed due to VPS directory permission issues (see FQ-10). FQ-09's recommended
+  action (open outbound TCP 5432) is now the RECOMMENDED path in FQ-10 Option B.
+  This item is retained for reference. No separate founder action needed — FQ-10 covers it.
+  Linked: FQ-10 (active), PRs #25–#34
+```
+
+---
+
 ### ~~FQ-08 — FreeScout MariaDB sidecar is crashing on Coolify VPS~~ — RESOLVED (agent-owned)
 
 ```
