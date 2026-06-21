@@ -49,6 +49,34 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-13 — One-time action: Inngest Cloud app provisioning (signing key + event key)
+
+```
+BLOCKING: [Production Manager] Inngest Cloud credentials needed to complete T-07.
+
+Context: ops-hub-app is deployed and healthy at
+  http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io
+  The /api/inngest endpoint is live (inngest@4.7.0 SDK, helloWorld function).
+  The app cannot connect to Inngest Cloud without INNGEST_SIGNING_KEY and
+  INNGEST_EVENT_KEY, which come from the Inngest Cloud dashboard.
+
+Steps (3–5 minutes):
+  1. Go to https://app.inngest.com → sign up or log in
+  2. Create a new app named "ops-hub" (or "ops-hub-staging")
+  3. Copy the Event Key  → set as INNGEST_EVENT_KEY in Coolify env vars for ops-hub-app
+  4. Copy the Signing Key → set as INNGEST_SIGNING_KEY in Coolify env vars for ops-hub-app
+  5. In Coolify: restart ops-hub-app to pick up the new env vars
+  6. In Inngest Cloud dashboard → Apps → "Sync app" → enter:
+       http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/api/inngest
+  7. Reply to this item with: RESOLVED: [date] — Inngest app synced, signing key set.
+
+Impact if delayed: T-07 exit criteria unmet (Inngest dashboard shows envs; test event
+  processed). M1 #4 remains partial. T-09 LangFuse trace test also blocked.
+Linked: T-07, PR #49 (merged), WORK.md
+```
+
+---
+
 ### ~~FQ-12 — One-time action: GHCR auth on Coolify VPS~~ — RESOLVED
 
 ```

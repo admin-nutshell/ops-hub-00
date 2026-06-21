@@ -102,6 +102,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
 | T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
+| T-07 Inngest Cloud registration | **FQ-13**: INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY must be provisioned from Inngest Cloud dashboard by founder (same pattern as FQ-12). App is live and `/api/inngest` ready. | M1 #4 remains partial; T-09 trace test blocked | Production Manager |
 
 ---
 
@@ -160,7 +161,7 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 ops-hub-app running at `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`. Run #27921007847 — health check HTTP 200 on attempt 1 (immediately after deployment). FQ-12 resolved: docker login ghcr.io on VPS (Option B). Deploy pipeline fully operational end-to-end (PRs #50–#58).
 
-**Next:** Register staging FQDN with Inngest Cloud; verify test event processed via `/api/inngest`.
+**Next:** FQ-13 — founder to provision Inngest Cloud app, set INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY in Coolify env vars, sync URL `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/api/inngest`. See FOUNDER_QUEUE.md FQ-13.
 
 **T-09: LangFuse Cloud** — Already provisioned (US region). Blocked on T-08 canary → send test trace from LiteLLM after T-07 live.
 
