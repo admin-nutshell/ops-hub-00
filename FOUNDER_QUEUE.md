@@ -49,12 +49,12 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### ~~FQ-12 — One-time action: make GHCR package public (ops-hub-00)~~ — RESOLVED
+### ~~FQ-12 — One-time action: GHCR auth on Coolify VPS~~ — RESOLVED
 
 ```
-RESOLVED: [Founder] 2026-06-21 — ghcr.io/admin-nutshell/ops-hub-00 package visibility
-  set to Public. Next main push will deploy ops-hub-app to Coolify staging without
-  auth errors. T-07 Inngest staging deploy unblocked.
+RESOLVED: [Founder] 2026-06-21 — Option B chosen: docker login ghcr.io configured on
+  Coolify VPS with read:packages PAT. Login confirmed successful. VPS can now pull
+  private GHCR images. T-07 Inngest staging deploy unblocked.
   Linked: PRs #53–#55, T-07
 ```
 
