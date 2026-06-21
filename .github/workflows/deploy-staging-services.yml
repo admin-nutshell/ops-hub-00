@@ -397,12 +397,16 @@ jobs:
           echo "=== MariaDB state (HTTP $HTTP_CODE) ==="
           jq '{name, status, internal_db_url}' /tmp/db_state.json 2>/dev/null || cat /tmp/db_state.json
 
-          # Internal hostname in Coolify is the service name (set at creation time)
-          INTERNAL_HOST=$(jq -r '.internal_db_url // empty' /tmp/db_state.json 2>/dev/null \
-            | sed 's|mysql://.*@||;s|:.*||' || true)
+          # Extract host and password from internal_db_url
+          # URL format: mysql://user:password@hostname:port/database
+          INTERNAL_DB_URL=$(jq -r '.internal_db_url // empty' /tmp/db_state.json 2>/dev/null || true)
+          INTERNAL_HOST=$(echo "$INTERNAL_DB_URL" | sed 's|mysql://.*@||;s|:.*||' || true)
+          DB_PASS=$(echo "$INTERNAL_DB_URL" | sed 's|mysql://[^:]*:||;s|@.*||' || true)
           [ -z "$INTERNAL_HOST" ] && INTERNAL_HOST="freescout-mariadb"
+          [ -n "$DB_PASS" ] && echo "::add-mask::$DB_PASS"
           echo "MariaDB internal host: $INTERNAL_HOST"
           echo "host=$INTERNAL_HOST" >> "$GITHUB_OUTPUT"
+          echo "db_password=$DB_PASS" >> "$GITHUB_OUTPUT"
 
       - name: Create or get FreeScout application
         id: freescout
@@ -467,26 +471,28 @@ jobs:
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
           DB_HOST="${{ steps.db-start.outputs.host }}"
-          echo "Setting FreeScout env vars (DB_CONNECTION, DB_HOST=$DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME)..."
-          PAYLOAD=$(jq -n \
-            --arg host "$DB_HOST" \
-            '{
-              data: [
-                {key: "DB_CONNECTION", value: "mysql"},
-                {key: "DB_HOST",       value: $host},
-                {key: "DB_PORT",       value: "3306"},
-                {key: "DB_DATABASE",   value: "freescout"},
-                {key: "DB_USERNAME",   value: "freescout"}
-              ]
-            }')
-          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$UUID/envs/bulk" \
-            -d "$PAYLOAD")
-          echo "Env set HTTP $HTTP_CODE"
-          jq . /tmp/env_resp.json 2>/dev/null || cat /tmp/env_resp.json
+          DB_PASS="${{ steps.db-start.outputs.db_password }}"
+          echo "Setting FreeScout env vars individually (bulk endpoint not available in this Coolify version)..."
+          # Post each env var separately via POST /api/v1/applications/{uuid}/envs
+          set_env() {
+            local KEY="$1" VAL="$2"
+            local PAYLOAD
+            PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$VAL" '{key: $k, value: $v}')
+            local HTTP
+            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" \
+              -d "$PAYLOAD") || true
+            echo "  $KEY → HTTP $HTTP"
+          }
+          set_env "DB_CONNECTION" "mysql"
+          set_env "DB_HOST"       "$DB_HOST"
+          set_env "DB_PORT"       "3306"
+          set_env "DB_DATABASE"   "freescout"
+          set_env "DB_USERNAME"   "freescout"
+          [ -n "$DB_PASS" ] && set_env "DB_PASSWORD" "$DB_PASS" || echo "  DB_PASSWORD: skipped (no password from MariaDB URL)"
 
       - name: Deploy (start) FreeScout
         run: |
