@@ -485,12 +485,12 @@ jobs:
             [ "$HTTP" != "201" ] && cat /tmp/env_resp.json 2>/dev/null || true
           }
 
-          upsert_env "DB_TYPE"           "pgsql"
-          upsert_env "DB_HOST"           "$DB_HOST"
-          upsert_env "DB_PORT"           "$DB_PORT"
-          upsert_env "DB_NAME"           "$DB_NAME"
-          upsert_env "DB_USER"           "$DB_USER"
-          [ -n "$DB_PASS" ] && upsert_env "DB_PASS" "$DB_PASS" \
+          set_env "DB_TYPE"           "pgsql"
+          set_env "DB_HOST"           "$DB_HOST"
+          set_env "DB_PORT"           "$DB_PORT"
+          set_env "DB_NAME"           "$DB_NAME"
+          set_env "DB_USER"           "$DB_USER"
+          [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
             || echo "  DB_PASS: skipped (no password in DB_URL)"
           set_env "DB_SSL"            "TRUE"
           set_env "DB_PGSQL_SSL_MODE" "require"
