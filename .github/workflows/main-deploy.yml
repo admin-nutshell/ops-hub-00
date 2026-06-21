@@ -125,11 +125,16 @@ jobs:
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
             echo "ops-hub-app exists ($EXISTING) — patching image + GHCR credentials..."
+            # docker_registry_image_name must be the repo WITHOUT a tag; Coolify appends
+            # docker_registry_image_tag separately when assembling the full image ref.
+            # Passing "repo:sha" as the name produces "repo:sha:old-tag" = invalid reference.
             PATCH_BODY=$(jq -n \
-              --arg img "$IMAGE:${{ github.sha }}" \
+              --arg img "$IMAGE" \
+              --arg tag "${{ github.sha }}" \
               --arg usr "$GHCR_USER" \
               --arg tok "$GHCR_TOKEN" \
               '{docker_registry_image_name:$img,
+                docker_registry_image_tag:$tag,
                 docker_registry_username:$usr,
                 docker_registry_token:$tok}')
             PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
@@ -142,11 +147,13 @@ jobs:
             echo "Creating ops-hub-app in Coolify ($PROJECT_UUID)..."
             PAYLOAD=$(jq -n \
               --arg proj "$PROJECT_UUID" --arg srv "$SERVER_UUID" --arg env "$ENV_NAME" \
-              --arg img "$IMAGE:${{ github.sha }}" \
+              --arg img "$IMAGE" \
+              --arg tag "${{ github.sha }}" \
               --arg usr "$GHCR_USER" \
               --arg tok "$GHCR_TOKEN" \
               '{project_uuid:$proj, server_uuid:$srv, environment_name:$env,
                 name:"ops-hub-app", docker_registry_image_name:$img,
+                docker_registry_image_tag:$tag,
                 docker_registry_username:$usr, docker_registry_token:$tok,
                 ports_exposes:"3000", instant_deploy:false}')
             CREATE_HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
