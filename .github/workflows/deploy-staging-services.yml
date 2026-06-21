@@ -320,10 +320,15 @@ jobs:
       - name: Create or get MariaDB sidecar
         id: mariadb
         run: |
-          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/databases")
+          for attempt in 1 2 3; do
+            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/databases") || true
+            [ "$HTTP_CODE" != "000" ] && break
+            echo "Attempt $attempt/3: Coolify unreachable (timeout), waiting 20s..."
+            sleep 20
+          done
           if [ "$HTTP_CODE" != "200" ]; then
             echo "ERROR: /api/v1/databases returned HTTP $HTTP_CODE"
             jq . /tmp/dbs.json 2>/dev/null || cat /tmp/dbs.json
@@ -402,10 +407,15 @@ jobs:
       - name: Create or get FreeScout application
         id: freescout
         run: |
-          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications")
+          for attempt in 1 2 3; do
+            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications") || true
+            [ "$HTTP_CODE" != "000" ] && break
+            echo "Attempt $attempt/3: Coolify unreachable (timeout), waiting 20s..."
+            sleep 20
+          done
           if [ "$HTTP_CODE" != "200" ]; then
             echo "ERROR: /api/v1/applications returned HTTP $HTTP_CODE"
             jq . /tmp/apps.json 2>/dev/null || cat /tmp/apps.json
