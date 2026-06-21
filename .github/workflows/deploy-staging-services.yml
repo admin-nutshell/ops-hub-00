@@ -454,6 +454,10 @@ jobs:
           [ -n "$DB_PASS" ] && echo "::add-mask::$DB_PASS"
           echo "Supabase DB (parsed): host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
+          # Install psql unconditionally — needed for final connectivity check regardless
+          # of whether SUPABASE_STAGING_DB_URL is a direct or pooler URL.
+          sudo apt-get install -y --quiet postgresql-client 2>/dev/null || true
+
           # Supabase direct connection (db.[ref].supabase.co) uses IPv6 only.
           # Docker containers on this VPS don't have IPv6 routing — use the
           # session pooler (IPv4, port 5432) instead. Extract project ref from
@@ -465,7 +469,6 @@ jobs:
             DB_HOST="aws-1-ca-central-1.pooler.supabase.com"
             DB_USER="postgres.${PROJECT_REF}"
             echo "Pooler: host=$DB_HOST port=$DB_PORT user=$DB_USER"
-            sudo apt-get install -y --quiet postgresql-client 2>/dev/null || true
           fi
 
           # Get app FQDN for SITE_URL (required by tiredofit/freescout entrypoint)
@@ -498,12 +501,13 @@ jobs:
           set_env "DB_USER"     "$DB_USER"
           [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
             || echo "  DB_PASS: skipped (no password in SUPABASE_STAGING_DB_URL)"
-          set_env "DB_SSL"      "TRUE"
-          # pg_isready doesn't do full auth; Supavisor rejects it unless SSL+auth.
-          # DB_TIMEOUT=0 skips the pre-flight pg_isready loop in tiredofit init.
-          # FreeScout's PHP/PDO driver handles SSL auth correctly on first real query.
-          set_env "DB_TIMEOUT"  "0"
-          set_env "SETUP_TYPE"  "AUTO"
+          set_env "DB_SSL"         "TRUE"
+          # SKIP_DB_READY=TRUE tells the nfrastack/container-base init to bypass the
+          # pg_isready pre-flight loop entirely. That loop retries forever (no timeout)
+          # because pg_isready doesn't complete TLS auth and Supavisor rejects bare
+          # startup packets. FreeScout's own PHP/PDO driver handles SSL auth correctly.
+          set_env "SKIP_DB_READY"  "TRUE"
+          set_env "SETUP_TYPE"     "AUTO"
           set_env "SITE_URL"    "$APP_URL"
           set_env "APP_URL"     "$APP_URL"
           set_env "ADMIN_EMAIL" "mai@leelaecospa.com"
