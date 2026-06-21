@@ -117,11 +117,17 @@ create policy tickets_update on tickets
 --   => updates/deletes denied for ops_hub_app (service_role can still modify;
 --      residual noted in schema doc §6 / flag #2 for Security Lead).
 -- ---------------------------------------------------------------------------
+-- C1 (Security Lead 2026-06-21): ops_hub_app only. Removing `authenticated` from
+-- this policy prevents a portal user from forging audit entries for other tenants/
+-- actors via `with check (true)`. Agents (ops_hub_app) write audit rows on behalf
+-- of the tenant they are acting for; portal callers have no legitimate audit-write
+-- need. Re-add `authenticated` deliberately in a future migration with a scoped
+-- `with check (tenant_id = current_tenant_id() and actor = ...)` if a portal need arises.
 create policy audit_log_insert on audit_log
-  for insert to ops_hub_app, authenticated
-  with check (true);   -- writers may stamp any tenant they are acting for; the
-                       -- actor/tenant_id are recorded; cross-tenant write abuse
-                       -- is mitigated by the agent role being trusted + audited.
+  for insert to ops_hub_app
+  with check (true);   -- writers stamp any tenant they act for; actor/tenant_id
+                       -- are recorded; cross-tenant write abuse mitigated by agent
+                       -- role being trusted and audited.
 
 create policy audit_log_select on audit_log
   for select to ops_hub_app, authenticated
