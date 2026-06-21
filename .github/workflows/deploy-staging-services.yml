@@ -419,7 +419,8 @@ jobs:
                 server_uuid:      $srv,
                 environment_name: $env,
                 name:             "freescout-postgres",
-                instant_deploy:   false
+                instant_deploy:   false,
+                postgres_port:    5433
               }')
             for attempt in 1 2 3; do
               HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
