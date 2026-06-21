@@ -74,6 +74,26 @@ jobs:
           docker push "$IMAGE:${{ github.sha }}"
           echo "Pushed $IMAGE:latest (${{ github.sha }})"
 
+      # Make the ops-hub-00 package public so Coolify can pull it without auth.
+      # The image contains only compiled TS + production deps — no secrets.
+      # This is idempotent: a no-op if the package is already public.
+      - name: Make GHCR package public
+        run: |
+          PKG_NAME="${{ github.event.repository.name }}"
+          HTTP=$(gh api --method PATCH \
+            "/orgs/${{ github.repository_owner }}/packages/container/$PKG_NAME" \
+            -f visibility=public \
+            --silent -w "%{http_code}" 2>/dev/null || echo "000")
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "204" ]; then
+            echo "Package visibility set to public."
+          else
+            echo "WARNING: Could not set package visibility (HTTP $HTTP)."
+            echo "Coolify may fail to pull the private image."
+            echo "To fix: make ghcr.io/${{ github.repository }} public in GitHub → Packages → Settings."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       # ── Deploy to Coolify staging ─────────────────────────────────────────────
       # Idempotent: creates the ops-hub-app in ops-hub-staging if it does not yet
       # exist, then starts/restarts it. No pre-configured webhook URL needed.
