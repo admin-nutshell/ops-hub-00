@@ -418,6 +418,7 @@ jobs:
       - name: Set FreeScout environment variables
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
+
           # Parse Supabase DB URL: postgresql://user:pass@host:port/dbname[?params]
           DB_NO_PROTO="${DB_URL#postgresql://}"
           DB_NO_PROTO="${DB_NO_PROTO#postgres://}"
@@ -434,7 +435,21 @@ jobs:
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
           echo "Parsed DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
-          # Get app FQDN for APP_URL (required by SETUP_TYPE=AUTO for first-run installer)
+          # Supabase direct connections (db.*.supabase.co) are IPv6-only since 2024 and
+          # unreachable from IPv4-only VPS hosts. Switch to the Session-mode pooler
+          # (aws-0-<region>.pooler.supabase.com, port 5432), which is IPv4-accessible.
+          # Session mode (vs. Transaction mode port 6543) is required for Laravel because
+          # it uses persistent connections and prepared statements.
+          if echo "$DB_HOST" | grep -qE '^db\.[a-z0-9]+\.supabase\.co$'; then
+            PROJECT_REF="${DB_HOST#db.}"
+            PROJECT_REF="${PROJECT_REF%.supabase.co}"
+            DB_HOST="aws-0-ca-central-1.pooler.supabase.com"
+            DB_USER="postgres.${PROJECT_REF}"
+            DB_PORT="5432"
+            echo "Supabase direct→pooler (Session): $DB_HOST / $DB_USER"
+          fi
+
+          # Get app FQDN for APP_URL (required by SETUP_TYPE=AUTO first-run installer)
           APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_fqdn.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
@@ -469,12 +484,13 @@ jobs:
             echo "  $KEY → HTTP $HTTP"
             [ "$HTTP" != "201" ] && cat /tmp/env_resp.json 2>/dev/null || true
           }
-          set_env "DB_TYPE"           "pgsql"
-          set_env "DB_HOST"           "$DB_HOST"
-          set_env "DB_PORT"           "$DB_PORT"
-          set_env "DB_NAME"           "$DB_NAME"
-          set_env "DB_USER"           "$DB_USER"
-          [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
+
+          upsert_env "DB_TYPE"           "pgsql"
+          upsert_env "DB_HOST"           "$DB_HOST"
+          upsert_env "DB_PORT"           "$DB_PORT"
+          upsert_env "DB_NAME"           "$DB_NAME"
+          upsert_env "DB_USER"           "$DB_USER"
+          [ -n "$DB_PASS" ] && upsert_env "DB_PASS" "$DB_PASS" \
             || echo "  DB_PASS: skipped (no password in DB_URL)"
           set_env "DB_SSL"            "TRUE"
           set_env "DB_PGSQL_SSL_MODE" "require"
@@ -484,6 +500,18 @@ jobs:
           set_env "ADMIN_EMAIL"       "mai@leelaecospa.com"
           [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
+
+          # Remove stale MySQL-era keys that would confuse tiredofit's entrypoint
+          for STALE_KEY in DB_CONNECTION DB_DATABASE DB_USERNAME DB_PASSWORD; do
+            STALE_UUID=$(jq -r --arg k "$STALE_KEY" 'map(select(.key == $k)) | first | .uuid // empty' \
+              /tmp/fs_envs.json 2>/dev/null || true)
+            if [ -n "$STALE_UUID" ] && [ "$STALE_UUID" != "null" ]; then
+              DEL_HTTP=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$UUID/envs/$STALE_UUID") || true
+              echo "  Removed stale $STALE_KEY: HTTP $DEL_HTTP"
+            fi
+          done
 
       - name: Deploy (start) FreeScout
         run: |
