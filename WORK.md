@@ -22,9 +22,9 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 1 | GitHub repo with full plan + workspace files | Founder | ✅ Done (2026-06-18) |
 | 2 | Coolify projects provisioned: `ops-hub-staging` and `ops-hub-prod` | **Founder** | ✅ Done (2026-06-20) — 34 env vars configured in staging; 6 GitHub secrets set |
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
-| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⛔ Blocked — T-08/T-10 deploy workflow triggered (run #27886275175); Coolify API returned HTTP 403 on /api/v1/servers; COOLIFY_API_TOKEN token scope insufficient — see FQ-07 |
+| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367, run #12 re-confirmed healthy). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. Inngest: T-07 blocked on T-15 complete (done) — ready to start. |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
-| 6 | FreeScout deployed and connected as ticket intake | Production Manager | ⛔ Blocked — same FQ-07 Coolify token issue as #4 |
+| 6 | FreeScout deployed and connected as ticket intake | Production Manager | ⚠️ Partial — **T-10 FreeScout: app created + started (UUID u103pgr0dbq9iiwf636m1msw), all env vars set, but `exited:unhealthy`**. Root cause: MariaDB sidecar (`freescout-mariadb`) is `exited:unhealthy` — container crashing on VPS. Workflow deploy complete; blocked on FQ-08 MariaDB diagnosis. |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **T-15 scaffold merged** (0860ff4, 2026-06-20); **branch protection fully active** — 3 required checks (lint, test, security), ≥1 approval, no direct push; eval gate lands with T-17 |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | 🔒 Blocked on #7 |
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ In progress — Sentry DSN in Coolify env vars; UptimeRobot setup starts now; completion after T-15 |

@@ -65,6 +65,9 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 ```
 2026-06-20 [Production Manager] deploy-staging-services.yml merged to main (PR #6, 8c5170c): workflow_dispatch for T-08 (LiteLLM) + T-10 (FreeScout) staging deploys via Coolify REST API.
 2026-06-20 [Production Manager] PR #8 (2fea606): replaced curl -fsS with explicit HTTP status capture + pre-flight diagnostics. Run #27887003804 confirmed root cause: Coolify returns HTTP 403 {"success":true,"message":"You are not allowed to access the API."} with rate-limit headers present — token IS valid; the Coolify API access feature gate is disabled. Fix: Coolify Settings → API → Enable. No token regeneration needed.
+2026-06-20 [Production Manager] T-08 LiteLLM staging: DEPLOYED (run #27887445367, PR #6). litellm-staging found existing in Coolify; started successfully.
+2026-06-20 [Production Manager] T-08 LiteLLM staging: DEPLOYED. litellm-staging found existing in Coolify (UUID h12xz8887fxvbvjts2hac8if); started successfully via workflow. Run #27887445367 all green.
+2026-06-21 [Production Manager] T-10 FreeScout staging: workflow complete (run #27888022061, all steps green). FreeScout app created (UUID u103pgr0dbq9iiwf636m1msw), all 6 DB env vars set (HTTP 201 each), deployment queued. BLOCKED at runtime: MariaDB sidecar (freescout-mariadb) is exited:unhealthy — container crashes on VPS before FreeScout can connect. FQ-08 raised for founder to diagnose MariaDB logs and resolve. Fixes applied via PRs #12–#16: endpoint (→/applications/dockerimage), field name (docker_registry_image_name), set-e guard, retry logic, bulk-env→individual POSTs, DB_PASSWORD extraction from internal_db_url.
 ```
 
 ---
