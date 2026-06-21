@@ -457,18 +457,7 @@ jobs:
           APP_URL=$(jq -r '.fqdn // empty' /tmp/app_fqdn.json 2>/dev/null | sed 's|/$||' || true)
           [ -z "$APP_URL" ] && APP_URL="http://$UUID.187.124.76.235.sslip.io"
           echo "APP_URL: $APP_URL"
-
-          # Supabase direct connections (db.*.supabase.co) are IPv6-only since 2024;
-          # unreachable from this IPv4-only VPS. Switch to Session-mode pooler (port 5432).
-          # Session mode required for Laravel prepared statements.
-          if echo "$DB_HOST" | grep -qE '^db\.[a-z0-9]+\.supabase\.co$'; then
-            PROJECT_REF="${DB_HOST#db.}"
-            PROJECT_REF="${PROJECT_REF%.supabase.co}"
-            DB_HOST="aws-0-ca-central-1.pooler.supabase.com"
-            DB_USER="postgres.${PROJECT_REF}"
-            DB_PORT="5432"
-            echo "Supabase direct→pooler: $DB_HOST / $DB_USER"
-          fi
+          echo "Final DB config: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
           # Fresh app (always recreated above) — simple POST; no 409 conflicts possible.
           set_env() {
@@ -485,6 +474,7 @@ jobs:
             [ "$HTTP" != "201" ] && cat /tmp/env_resp.json 2>/dev/null || true
           }
 
+          set_env "DEBUG_MODE"        "TRUE"
           set_env "DB_TYPE"           "pgsql"
           set_env "DB_HOST"           "$DB_HOST"
           set_env "DB_PORT"           "$DB_PORT"
@@ -512,6 +502,19 @@ jobs:
               echo "  Removed stale $STALE_KEY: HTTP $DEL_HTTP"
             fi
           done
+
+      - name: Connectivity probe — Supabase pooler reachability
+        run: |
+          # Tests from GitHub Actions runner (not from VPS container), but confirms:
+          # (a) hostname resolves via DNS, (b) port 5432 is reachable on the internet.
+          # If this passes but the container still fails, the VPS firewall is blocking outbound 5432.
+          POOLER="aws-0-ca-central-1.pooler.supabase.com"
+          echo "=== DNS resolution for $POOLER ==="
+          nslookup "$POOLER" 2>&1 || host "$POOLER" 2>&1 || echo "DNS lookup failed"
+          echo "=== TCP:5432 reachability ==="
+          timeout 10 bash -c "</dev/tcp/$POOLER/5432" 2>&1 \
+            && echo "TCP 5432: REACHABLE from GitHub Actions runner" \
+            || echo "TCP 5432: UNREACHABLE from GitHub Actions runner (hostname may not exist)"
 
       - name: Deploy (start) FreeScout
         run: |
