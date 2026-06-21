@@ -329,10 +329,15 @@ jobs:
           # Idempotent: find existing freescout-postgres or create new one.
           # Coolify-managed DB runs on Docker internal network — bypasses VPS outbound
           # firewall entirely (root cause of Supabase failure: both 5432 and 6543 blocked).
-          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/databases") || true
+          for attempt in 1 2 3; do
+            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/databases") || true
+            [ "$HTTP_CODE" != "000" ] && break
+            echo "Attempt $attempt/3: Coolify unreachable (timeout), waiting 20s..."
+            sleep 20
+          done
 
           EXISTING_DB=""
           if [ "$HTTP_CODE" = "200" ]; then
@@ -358,12 +363,17 @@ jobs:
                 name:             "freescout-postgres",
                 instant_deploy:   true
               }')
-            HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/databases/postgresql" \
-              -d "$PAYLOAD")
+            for attempt in 1 2 3; do
+              HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                "$COOLIFY_BASE/databases/postgresql" \
+                -d "$PAYLOAD") || true
+              [ "$HTTP_CODE" != "000" ] && break
+              echo "Attempt $attempt/3: DB create timed out, waiting 20s..."
+              sleep 20
+            done
             echo "DB create HTTP $HTTP_CODE"
             jq . /tmp/db_create_resp.json 2>/dev/null || cat /tmp/db_create_resp.json
             if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
