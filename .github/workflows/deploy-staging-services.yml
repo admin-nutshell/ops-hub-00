@@ -505,22 +505,37 @@ jobs:
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
           set_env "DEBUG_MODE"  "TRUE"
 
-          # ── Verify credentials from GitHub Actions BEFORE the container tries ──
-          # Uses --host/--port/--username flags + PGPASSWORD (not URL) to avoid
-          # any special-char encoding issues in the password. Exit code is decisive:
-          # 0 = creds valid, Docker networking is the problem
-          # non-0 = credentials wrong, SSL error, or Supabase restriction
+          # ── Verify pooler connectivity from GitHub Actions BEFORE container starts ──
+          # Session pooler (port 5432) confirmed "tenant not found" in run #27913431979.
+          # Testing transaction pooler (port 6543) — separate PgBouncer, may be registered.
           echo ""
-          echo "=== Psql credential test from GitHub Actions runner ==="
+          echo "=== Psql pooler tests from GitHub Actions runner ==="
           sudo apt-get install -y --quiet postgresql-client 2>/dev/null || true
+
+          echo "--- Session pooler (port 5432) ---"
+          set +e
           PGCONNECT_TIMEOUT=10 PGPASSWORD="$DB_PASS" psql \
             --host="$DB_HOST" --port="$DB_PORT" --dbname="$DB_NAME" --username="$DB_USER" \
-            -c "SELECT 1;" 2>&1 | head -10 || true
-          PSQL_RC=$?
-          if [ "$PSQL_RC" = "0" ]; then
-            echo "✅ Credentials VALID from GitHub Actions — Docker networking is the blocker"
+            -c "SELECT 1;" 2>&1 | head -5
+          SESSION_RC=${PIPESTATUS[0]}
+          set -e
+          echo "Session pooler exit: $SESSION_RC"
+
+          echo "--- Transaction pooler (port 6543) ---"
+          set +e
+          PGCONNECT_TIMEOUT=10 PGPASSWORD="$DB_PASS" psql \
+            --host="$DB_HOST" --port=6543 --dbname="$DB_NAME" --username="$DB_USER" \
+            -c "SELECT 1;" 2>&1 | head -5
+          TXN_RC=${PIPESTATUS[0]}
+          set -e
+          echo "Transaction pooler exit: $TXN_RC"
+
+          if [ "$SESSION_RC" = "0" ]; then
+            echo "✅ Session pooler (5432): CONNECTED"
+          elif [ "$TXN_RC" = "0" ]; then
+            echo "⚠️  Session pooler failed; transaction pooler (6543): CONNECTED"
           else
-            echo "❌ Psql failed (exit $PSQL_RC) from GitHub Actions — credentials/SSL/Supabase restriction issue"
+            echo "❌ Both poolers failed — Supabase project config issue; see FQ-11"
           fi
 
       - name: Deploy (start) FreeScout
