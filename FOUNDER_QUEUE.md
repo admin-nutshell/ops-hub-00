@@ -49,78 +49,74 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-10 — VPS host port 5432 blocked: FreeScout PostgreSQL cannot start
+### FQ-10 — T-10 FreeScout: VPS directory permissions block PostgreSQL; architecture choice needed
 
 ```
-BLOCKING: [Production Manager] Every Coolify-managed PostgreSQL container crashes
-  immediately on startup. All API-level approaches exhausted (PRs #31–#34). Requires
-  one of the two founder actions below to unblock T-10.
+BLOCKING: [Production Manager] True root cause identified after PRs #25–#34.
+  Docker creates the bind-mount directory /data/coolify/databases/{uuid}/ as root:root.
+  Coolify then fails to write its README.md into that directory ("Permission denied:
+  /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw/README.md") before PostgreSQL even
+  starts — every fresh DB UUID hits this, systemic on this VPS.
+  Previous "port 5432" hypothesis in PRs #31–#34 was incorrect; the port change to 5433
+  the founder made in the Coolify UI surfaced the real error underneath.
 
-  CONFIRMED EVIDENCE:
-    - Brand-new containers (instant_deploy:false, fresh UUID) show exited:unhealthy
-      immediately — before any start command
-    - Identical behavior across 8+ runs spanning PRs #25–#34
-    - postgres_port:5433 at creation: HTTP 422 (field not accepted)
-    - PATCH /databases/{uuid} {"postgres_port":5433}: DB still exited:unhealthy (likely
-      ignored by StartPostgresql.php — PATCH may not update the runtime Docker run cmd)
-    - Something permanently holds host port 5432 on the VPS (Coolify's own DB or native)
+  WHY THIS NEEDS FOUNDER ACTION:
+    - Browser terminal not available (Chrome extension not connected in this session)
+    - No SSH key secret in GitHub Actions (gh secret list confirmed: no VPS_SSH_KEY)
+    - Coolify API has no server command-execution endpoint (routes/api.php confirmed)
+    - Every autonomous path is exhausted
 
-  FOUNDER ACTION — CHOOSE ONE (both take < 5 minutes):
+  RECOMMENDED: OPTION B — Revert to Supabase (open one outbound port)
+    This is the cleaner architecture. The internal-PG path has proven fragile
+    (10 PRs, port conflicts, then directory permission bugs — all VPS-specific).
+    Supabase is already provisioned and was the original design.
 
-  OPTION A — Coolify UI (no SSH required, recommended):
-    1. Log into https://coolify.inatechshell.ca
-    2. Navigate to: ops-hub-staging → Databases → freescout-postgres
-    3. Find the "PostgreSQL Port" field → change from 5432 to 5433
-    4. Click Save, then click Start
-    5. Wait for status to show "Running" in the UI
-    6. Reply APPROVED: port changed and DB is running
-    (After this, the workflow will reuse the healthy DB on all future runs — no manual
-    action needed again)
+    1. SSH into the VPS (or use Hostinger terminal), run:
+         sudo iptables -I OUTPUT -p tcp --dport 5432 -j ACCEPT
+         sudo iptables-save | sudo tee /etc/iptables/rules.v4
+       OR use the Coolify server firewall UI:
+         Servers → VPS → Firewall → Add outbound rule: TCP 5432 Allow
+    2. Reply: APPROVED: outbound 5432 open
+    3. Agents will revert the workflow to Supabase PostgreSQL — no other action needed
 
-  OPTION B — SSH into VPS (if Option A is unavailable):
-    # First, identify what holds port 5432:
-    docker ps -a | grep -E "5432|postgres"
-    lsof -i :5432 | head -10
-    # Then, based on findings:
-    # If native postgresql service: sudo systemctl stop postgresql && sudo systemctl disable postgresql
-    # (This frees port 5432 for our container; re-run the workflow after)
+    Cost impact: $0 (uses existing Supabase staging project).
+    This also resolves FQ-09 (VPS firewall blocks Supabase) permanently.
 
-  Impact if unresolved: T-10 FreeScout undeployed; T-19 blocked; M1 #6 blocked.
-  Linked: PRs #25–#34, DECISIONS.md T-10 entries
+  FALLBACK: OPTION A — Fix VPS directory permissions (keep internal PG)
+    If the firewall change is not feasible, run these diagnostics + fix on the VPS:
+
+    # Diagnose first (3 commands — covers all possible causes):
+    ls -la /data/coolify/databases/
+    lsattr -d /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw 2>/dev/null || echo "no lsattr"
+    df -h /data ; mount | grep ' /data'
+
+    # Fix (after diagnosing — run the matching command):
+    # Standard case (root-owned dir):
+    sudo chmod -R 777 /data/coolify/databases/
+    # If immutable flag (lsattr shows 'i'):
+    sudo chattr -i /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw
+    sudo chmod -R 777 /data/coolify/databases/asx8q5b3ztlu0mxmuxejvfdw
+
+    Then: in Coolify UI → ops-hub-staging → Databases → freescout-postgres → click Start
+    Wait for "Running" status, then reply: APPROVED: DB running, permissions fixed
+
+    Downside: fragile — every new DB UUID the workflow creates hits the same issue.
+    Agents will add a note to never delete-and-recreate this DB.
+
+  Impact if unresolved: T-10 FreeScout undeployed; M1 #6 blocked; T-19 blocked.
+  Linked: PRs #25–#34 (failed attempts), FQ-09 (Supabase firewall — same root fix)
 ```
 
 ---
 
-### FQ-09 — VPS firewall blocks outbound TCP:5432 — FreeScout cannot reach Supabase
+### ~~FQ-09 — VPS firewall blocks outbound TCP:5432~~ — SUPERSEDED BY FQ-10
 
 ```
-MONITORING: [Production Manager] Root cause confirmed (2026-06-21). Agent-owned workaround
-  in progress — founder action MAY NOT be needed.
-
-  EVIDENCE (confirmed closed):
-    - Port 5432 and port 6543 on aws-0-ca-central-1.pooler.supabase.com both DROP from VPS
-      container (~35s timeout, runs #27890237911 + #27890511141). VPS firewall blocks ALL
-      outbound PostgreSQL traffic to external hosts.
-
-  AGENT WORKAROUND — PR #25 (2026-06-21, in CI):
-    Switches FreeScout to a Coolify-managed internal PostgreSQL database (freescout-postgres).
-    All DB traffic stays on the Docker internal network — VPS outbound firewall is irrelevant.
-    If PR #25 deploy succeeds: FQ-09 is RESOLVED. No founder action needed.
-
-  FOUNDER ACTION — only required if PR #25 deploy FAILS:
-    Option A — Open outbound TCP:5432 via Coolify server settings (~2 min):
-      1. Log into https://coolify.inatechshell.ca
-      2. Servers → select VPS → Firewall (or Security)
-      3. Add outbound rule: Protocol TCP, Port 5432, Direction Outbound, Action Allow
-      4. Re-run deploy workflow (freescout-only)
-
-    Option B — Open via SSH:
-      sudo iptables -I OUTPUT -p tcp --dport 5432 -j ACCEPT
-      sudo iptables -I FORWARD -p tcp --dport 5432 -j ACCEPT
-      sudo netfilter-persistent save
-
-  Impact if PR #25 also fails: founder must open port 5432 (see above).
-  Linked: PR #25 (agent-owned fix), runs #27890237911 + #27890511141 (evidence)
+SUPERSEDED: [Production Manager] 2026-06-21 — the PR #25 agent workaround (internal PG)
+  ultimately failed due to VPS directory permission issues (see FQ-10). FQ-09's recommended
+  action (open outbound TCP 5432) is now the RECOMMENDED path in FQ-10 Option B.
+  This item is retained for reference. No separate founder action needed — FQ-10 covers it.
+  Linked: FQ-10 (active), PRs #25–#34
 ```
 
 ---

@@ -24,7 +24,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
 | 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367, run #12 re-confirmed healthy). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. Inngest: T-07 blocked on T-15 complete (done) — ready to start. |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
-| 6 | FreeScout deployed and connected as ticket intake | Production Manager | ⏳ **T-10 FreeScout: PR #31 merged — fix in staging, awaiting first clean run.** Root cause confirmed (PR #30 run #27895401460): Coolify DELETE /databases is async; old container holds port 5432 while new container starts → immediate crash. Fix: preserve freescout-postgres across runs (no delete). |
+| 6 | FreeScout deployed and connected as ticket intake | Production Manager | 🔒 **T-10 FreeScout: BLOCKED — awaiting founder action in FQ-10.** True root cause: Docker creates /data/coolify/databases/{uuid}/ as root:root; Coolify can't write README.md, PostgreSQL never starts. All autonomous fix paths exhausted (no browser terminal, no SSH key secret, no API execute endpoint). Founder must choose: (A) open outbound TCP:5432 → revert to Supabase [RECOMMENDED], or (B) SSH chmod on VPS. See FOUNDER_QUEUE.md FQ-10. |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **T-15 scaffold merged** (0860ff4, 2026-06-20); **branch protection fully active** — 3 required checks (lint, test, security), ≥1 approval, no direct push; eval gate lands with T-17 |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | 🔒 Blocked on #7 |
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ In progress — Sentry DSN in Coolify env vars; UptimeRobot setup starts now; completion after T-15 |
@@ -67,7 +67,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. | | | | 2026-06-20 |
 | ↳ **[PR #8](https://github.com/admin-nutshell/ops-hub-00/pull/8) — ✅ MERGED (2fea606).** Pre-flight diagnostics + full HTTP capture. Run #27887003804 confirmed root cause: Coolify API gate disabled (see FQ-07). | | | | 2026-06-20 |
 | T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | LangFuse UI reachable; first trace logged from LiteLLM after T-08 | Jul 2 |
-| T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | 🔒 **BLOCKED on FQ-10** — VPS host port 5432 permanently occupied; all API-level workarounds (PRs #31–#34) exhausted. Founder must change postgres port in Coolify UI or SSH-identify the port occupier. → FOUNDER_QUEUE.md FQ-10 | Jul 2 |
+| T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | 🔒 **BLOCKED on FQ-10** — True root cause: Docker bind-mount /data/coolify/databases/{uuid}/ created as root:root; Coolify permission denied (README.md). 10 PRs exhausted all autonomous fix paths. Founder must act: (A) open outbound TCP:5432 → revert workflow to Supabase PG [RECOMMENDED], or (B) SSH chmod -R 777 /data/coolify/databases/ on VPS. → FOUNDER_QUEUE.md FQ-10 | Jul 2 |
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`; Security Lead review required (gates migration 2); awaiting founder execution. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned | All secrets in Vault; zero keys in env files, git, or Coolify env vars | Jul 2 |
 | T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | First test error captured in Sentry | Jul 2 |
@@ -99,7 +99,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-10 (FreeScout) | FQ-10 raised — VPS host port 5432 permanently held (not our containers). All API workarounds exhausted. Founder needs to: change postgres port to 5433 in Coolify UI OR SSH-identify what holds port 5432. | M1 #6 blocked; T-19 blocked | Production Manager |
+| T-10 (FreeScout) | FQ-10 (updated 2026-06-21) — TRUE ROOT CAUSE: Docker bind-mount creates /data/coolify/databases/{uuid}/ as root:root; Coolify permission denied writing README.md. Previous "port 5432" diagnosis was incorrect. Founder action: (A) open outbound TCP:5432 + revert to Supabase [RECOMMENDED], or (B) SSH chmod -R 777 /data/coolify/databases/. Browser terminal unavailable; no SSH key in GH Actions secrets; no Coolify API execute endpoint. | M1 #6 blocked; T-19 blocked | Production Manager |
 | T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
 
 ---
