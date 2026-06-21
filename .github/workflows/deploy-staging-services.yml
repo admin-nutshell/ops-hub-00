@@ -441,9 +441,21 @@ jobs:
           DB_NAME="${DB_PORTDB##*/}"
           DB_NAME="${DB_NAME%%\?*}"
           [ -n "$DB_PASS" ] && echo "::add-mask::$DB_PASS"
-          echo "Supabase DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
+          echo "Supabase DB (parsed): host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
-          # Get app FQDN for SITE_URL (required by tiredofit/freescout SETUP_TYPE=AUTO)
+          # Supabase direct connection (db.[ref].supabase.co) uses IPv6 only.
+          # Docker containers on this VPS don't have IPv6 routing — use the
+          # session pooler (IPv4, port 5432) instead. Extract project ref from
+          # direct URL and construct the pooler address automatically.
+          if echo "$DB_HOST" | grep -qE '^db\.[^.]+\.supabase\.co$'; then
+            PROJECT_REF=$(echo "$DB_HOST" | sed 's/^db\.\([^.]*\)\.supabase\.co$/\1/')
+            echo "Direct URL detected — switching to session pooler (IPv4, same port 5432)"
+            DB_HOST="aws-0-ca-central-1.pooler.supabase.com"
+            DB_USER="postgres.${PROJECT_REF}"
+            echo "Pooler: host=$DB_HOST port=$DB_PORT user=$DB_USER"
+          fi
+
+          # Get app FQDN for SITE_URL (required by tiredofit/freescout entrypoint)
           APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_fqdn.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
