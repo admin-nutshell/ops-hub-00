@@ -425,6 +425,7 @@ jobs:
       - name: Set FreeScout environment variables
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
+
           # Parse Supabase DB URL: postgresql://user:pass@host:port/dbname[?params]
           DB_NO_PROTO="${DB_URL#postgresql://}"
           DB_NO_PROTO="${DB_NO_PROTO#postgres://}"
@@ -441,7 +442,21 @@ jobs:
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
           echo "Parsed DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
-          # Get app FQDN for APP_URL (required by SETUP_TYPE=AUTO for first-run installer)
+          # Supabase direct connections (db.*.supabase.co) are IPv6-only since 2024 and
+          # unreachable from IPv4-only VPS hosts. Switch to the Session-mode pooler
+          # (aws-0-<region>.pooler.supabase.com, port 5432), which is IPv4-accessible.
+          # Session mode (vs. Transaction mode port 6543) is required for Laravel because
+          # it uses persistent connections and prepared statements.
+          if echo "$DB_HOST" | grep -qE '^db\.[a-z0-9]+\.supabase\.co$'; then
+            PROJECT_REF="${DB_HOST#db.}"
+            PROJECT_REF="${PROJECT_REF%.supabase.co}"
+            DB_HOST="aws-0-ca-central-1.pooler.supabase.com"
+            DB_USER="postgres.${PROJECT_REF}"
+            DB_PORT="5432"
+            echo "Supabase direct→pooler (Session): $DB_HOST / $DB_USER"
+          fi
+
+          # Get app FQDN for APP_URL (required by SETUP_TYPE=AUTO first-run installer)
           APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_fqdn.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
@@ -450,56 +465,68 @@ jobs:
           [ -z "$APP_URL" ] && APP_URL="http://$UUID.187.124.76.235.sslip.io"
           echo "APP_URL: $APP_URL"
 
-          # tiredofit/freescout uses wrapper env vars (not standard Laravel names).
-          # Clear any stale keys from previous deploys before setting new ones.
+          # Fetch current env var list so upsert_env can PATCH existing keys.
+          # DELETE-then-POST was failing (DELETE returned 000; POST returned 409 conflict).
           ENV_HTTP=$(curl -s --max-time 30 -o /tmp/fs_envs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID/envs") || true
-          if [ "$ENV_HTTP" = "200" ]; then
-            for STALE_KEY in DB_CONNECTION DB_DATABASE DB_USERNAME DB_PASSWORD \
-                             DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS \
-                             DB_PGSQL_SSL_MODE SETUP_TYPE ADMIN_EMAIL ADMIN_PASS APP_URL; do
-              ENV_UUID=$(jq -r --arg k "$STALE_KEY" '.[] | select(.key == $k) | .uuid' \
-                /tmp/fs_envs.json 2>/dev/null || true)
-              if [ -n "$ENV_UUID" ] && [ "$ENV_UUID" != "null" ]; then
-                DEL_HTTP=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
-                  -H "Authorization: Bearer $TOKEN" \
-                  "$COOLIFY_BASE/applications/$UUID/envs/$ENV_UUID") || true
-                echo "  Cleared $STALE_KEY: HTTP $DEL_HTTP"
-              fi
-            done
-          else
-            echo "  GET /envs HTTP $ENV_HTTP — proceeding without pre-clear"
-          fi
+          [ "$ENV_HTTP" != "200" ] && echo '[]' > /tmp/fs_envs.json
 
-          # Set tiredofit/freescout env vars for PostgreSQL (Supabase)
-          set_env() {
+          # upsert_env: PATCH if key already exists (avoids 409), POST if new (avoids 000 from DELETE)
+          upsert_env() {
             local KEY="$1" VAL="$2"
-            local PAYLOAD
-            PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$VAL" '{key: $k, value: $v}')
-            local HTTP
-            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/applications/$UUID/envs" \
-              -d "$PAYLOAD") || true
-            echo "  $KEY → HTTP $HTTP"
+            local ENV_UUID PAYLOAD HTTP
+            ENV_UUID=$(jq -r --arg k "$KEY" 'map(select(.key == $k)) | first | .uuid // empty' \
+              /tmp/fs_envs.json 2>/dev/null || true)
+            if [ -n "$ENV_UUID" ] && [ "$ENV_UUID" != "null" ]; then
+              PAYLOAD=$(jq -n --arg u "$ENV_UUID" --arg k "$KEY" --arg v "$VAL" \
+                '{uuid: $u, key: $k, value: $v}')
+              HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X PATCH \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                "$COOLIFY_BASE/applications/$UUID/envs" \
+                -d "$PAYLOAD") || true
+              echo "  $KEY → PATCH $HTTP"
+            else
+              PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$VAL" '{key: $k, value: $v}')
+              HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                "$COOLIFY_BASE/applications/$UUID/envs" \
+                -d "$PAYLOAD") || true
+              echo "  $KEY → POST $HTTP"
+            fi
           }
-          set_env "DB_TYPE"           "pgsql"
-          set_env "DB_HOST"           "$DB_HOST"
-          set_env "DB_PORT"           "$DB_PORT"
-          set_env "DB_NAME"           "$DB_NAME"
-          set_env "DB_USER"           "$DB_USER"
-          [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
+
+          upsert_env "DB_TYPE"           "pgsql"
+          upsert_env "DB_HOST"           "$DB_HOST"
+          upsert_env "DB_PORT"           "$DB_PORT"
+          upsert_env "DB_NAME"           "$DB_NAME"
+          upsert_env "DB_USER"           "$DB_USER"
+          [ -n "$DB_PASS" ] && upsert_env "DB_PASS" "$DB_PASS" \
             || echo "  DB_PASS: skipped (no password in DB_URL)"
-          set_env "DB_PGSQL_SSL_MODE" "require"
-          set_env "SETUP_TYPE"        "AUTO"
-          set_env "APP_URL"           "$APP_URL"
-          set_env "ADMIN_EMAIL"       "mai@leelaecospa.com"
-          [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
+          upsert_env "DB_SSL"            "TRUE"
+          upsert_env "DB_PGSQL_SSL_MODE" "require"
+          upsert_env "SETUP_TYPE"        "AUTO"
+          upsert_env "APP_URL"           "$APP_URL"
+          upsert_env "ADMIN_EMAIL"       "mai@leelaecospa.com"
+          [ -n "$FREESCOUT_ADMIN_PASS" ] && upsert_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
+
+          # Remove stale MySQL-era keys that would confuse tiredofit's entrypoint
+          for STALE_KEY in DB_CONNECTION DB_DATABASE DB_USERNAME DB_PASSWORD; do
+            STALE_UUID=$(jq -r --arg k "$STALE_KEY" 'map(select(.key == $k)) | first | .uuid // empty' \
+              /tmp/fs_envs.json 2>/dev/null || true)
+            if [ -n "$STALE_UUID" ] && [ "$STALE_UUID" != "null" ]; then
+              DEL_HTTP=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$UUID/envs/$STALE_UUID") || true
+              echo "  Removed stale $STALE_KEY: HTTP $DEL_HTTP"
+            fi
+          done
 
       - name: Deploy (start) FreeScout
         run: |
@@ -514,8 +541,8 @@ jobs:
 
       - name: Verify FreeScout health
         run: |
-          echo "Waiting 120s for FreeScout to initialize (PostgreSQL migrations + first-run SETUP_TYPE=AUTO)..."
-          sleep 120
+          echo "Waiting 180s for FreeScout to initialize (PostgreSQL migrations + first-run SETUP_TYPE=AUTO)..."
+          sleep 180
           UUID="${{ steps.freescout.outputs.uuid }}"
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
@@ -537,4 +564,22 @@ jobs:
               || echo "⚠️  Not yet 200 (may still be starting — check Coolify logs)"
           else
             echo "⚠️  No FQDN assigned yet. FreeScout UUID: $UUID"
+          fi
+
+      - name: Fetch FreeScout container logs (diagnostic)
+        if: always()
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          UUID="${{ steps.freescout.outputs.uuid }}"
+          LOG_HTTP=$(curl -s --max-time 30 -o /tmp/fs_logs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/logs") || true
+          echo "=== FreeScout container logs (API HTTP $LOG_HTTP) ==="
+          if [ "$LOG_HTTP" = "200" ]; then
+            cat /tmp/fs_logs.json | tail -c 8000
+          else
+            echo "Logs endpoint returned HTTP $LOG_HTTP"
+            cat /tmp/fs_logs.json 2>/dev/null || true
           fi
