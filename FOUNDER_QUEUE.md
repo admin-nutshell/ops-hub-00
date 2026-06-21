@@ -49,41 +49,23 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-11 — T-10 FreeScout: Supabase Supavisor pooler rejects project — action needed in Supabase dashboard
+### ~~FQ-11 — T-10 FreeScout: Supabase Supavisor pooler rejects project~~ — RESOLVED
 
 ```
-BLOCKING: [Production Manager] CONFIRMED 2026-06-21 — both poolers fail. Run #27914003478.
+RESOLVED: [Production Manager] 2026-06-21 — Founder provided correct pooler hostname
+  (aws-1-ca-central-1.pooler.supabase.com, not aws-0) and updated SUPABASE_STAGING_DB_URL
+  GitHub secret to the pooler URL.
 
-  BOTH Supabase pooler endpoints return ENOTFOUND for project yocoljutbiizdbfraapx:
-    Session pooler    aws-0-ca-central-1.pooler.supabase.com:5432  → exit 2 (tenant not found)
-    Transaction pooler aws-0-ca-central-1.pooler.supabase.com:6543 → exit 2 (tenant not found)
+  Additional root causes found and fixed agent-side (no founder action needed):
+    - Pooler URL had no explicit :5432 port → URL parser put hostname in DB_PORT → fixed by
+      numeric guard + default-5432 fallback (PR #46, run #27916949231).
+    - laravel_db_is_populated() uses DB_SSL_MODE not FREESCOUT_DB_PGSQL_SSL_MODE → added
+      DB_SSL_MODE=require to container env (PR #46).
+    - tiredofit/freescout image had no SKIP_DB_READY → switched to nfrastack/freescout
+      (PR #45); SKIP_DB_READY=TRUE now bypasses the pg_isready loop.
 
-  This is NOT a VPS/Docker or network issue — tested directly from GitHub Actions (Azure East US).
-  TCP connects, TLS succeeds, Supavisor rejects at auth phase. Project is not registered
-  with the Supavisor pooler at aws-0-ca-central-1.pooler.supabase.com.
-
-  Likely causes (one of):
-    1. Project region is NOT ca-central-1 → pooler hostname is wrong
-    2. Connection Pooling was never enabled for this project → Supavisor never registered it
-    3. Project is paused (free tier) → Supavisor removes paused tenants
-
-  ACTION NEEDED (< 5 minutes in the Supabase dashboard):
-
-  Please open https://supabase.com/dashboard → ops-hub project → Project Settings → Database.
-  Look for the "Connection pooling" section and the "Poolers" section.
-
-  Report back ONE of the following (no password needed):
-    A) Copy the "Session mode" connection string HOST only from the dashboard
-       (it will look like: aws-0-{region}.pooler.supabase.com)
-       If it differs from aws-0-ca-central-1.pooler.supabase.com → that's the fix
-    B) If the project shows "Paused" → click Resume Project, then reply "project was paused"
-    C) If Connection Pooling section shows a toggle → confirm it is ON
-
-  This is a single dashboard check. Once the correct hostname or status is confirmed,
-  agents will update the workflow without further founder input.
-
-  Impact if delayed: T-10 FreeScout undeployed; M1 #6 blocked.
-  Linked: FQ-10 (resolved), runs #27913431979 (#39) + #27914003478 (#40), DECISIONS.md
+  T-10 FreeScout DEPLOYED. Health check green. Run #27916949231 ✓ all steps, 3m50s.
+  Linked: PRs #42–#46, FQ-10 (resolved), DECISIONS.md
 ```
 
 ---
