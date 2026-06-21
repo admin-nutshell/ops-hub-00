@@ -458,12 +458,14 @@ jobs:
           # Docker containers on this VPS don't have IPv6 routing — use the
           # session pooler (IPv4, port 5432) instead. Extract project ref from
           # direct URL and construct the pooler address automatically.
+          # Confirmed hostname: aws-1-ca-central-1 (not aws-0) — FQ-11 resolved 2026-06-21.
           if echo "$DB_HOST" | grep -qE '^db\.[^.]+\.supabase\.co$'; then
             PROJECT_REF=$(echo "$DB_HOST" | sed 's/^db\.\([^.]*\)\.supabase\.co$/\1/')
-            echo "Direct URL detected — switching to session pooler (IPv4, same port 5432)"
-            DB_HOST="aws-0-ca-central-1.pooler.supabase.com"
+            echo "Direct URL detected — switching to session pooler (IPv4, port 5432)"
+            DB_HOST="aws-1-ca-central-1.pooler.supabase.com"
             DB_USER="postgres.${PROJECT_REF}"
             echo "Pooler: host=$DB_HOST port=$DB_PORT user=$DB_USER"
+            sudo apt-get install -y --quiet postgresql-client 2>/dev/null || true
           fi
 
           # Get app FQDN for SITE_URL (required by tiredofit/freescout entrypoint)
@@ -505,37 +507,21 @@ jobs:
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
           set_env "DEBUG_MODE"  "TRUE"
 
-          # ── Verify pooler connectivity from GitHub Actions BEFORE container starts ──
-          # Session pooler (port 5432) confirmed "tenant not found" in run #27913431979.
-          # Testing transaction pooler (port 6543) — separate PgBouncer, may be registered.
+          # ── Final connectivity check with discovered pooler ──
           echo ""
-          echo "=== Psql pooler tests from GitHub Actions runner ==="
-          sudo apt-get install -y --quiet postgresql-client 2>/dev/null || true
-
-          echo "--- Session pooler (port 5432) ---"
-          set +e
-          PGCONNECT_TIMEOUT=10 PGPASSWORD="$DB_PASS" psql \
-            --host="$DB_HOST" --port="$DB_PORT" --dbname="$DB_NAME" --username="$DB_USER" \
-            -c "SELECT 1;" 2>&1 | head -5
-          SESSION_RC=${PIPESTATUS[0]}
-          set -e
-          echo "Session pooler exit: $SESSION_RC"
-
-          echo "--- Transaction pooler (port 6543) ---"
-          set +e
-          PGCONNECT_TIMEOUT=10 PGPASSWORD="$DB_PASS" psql \
-            --host="$DB_HOST" --port=6543 --dbname="$DB_NAME" --username="$DB_USER" \
-            -c "SELECT 1;" 2>&1 | head -5
-          TXN_RC=${PIPESTATUS[0]}
-          set -e
-          echo "Transaction pooler exit: $TXN_RC"
-
-          if [ "$SESSION_RC" = "0" ]; then
-            echo "✅ Session pooler (5432): CONNECTED"
-          elif [ "$TXN_RC" = "0" ]; then
-            echo "⚠️  Session pooler failed; transaction pooler (6543): CONNECTED"
+          echo "=== Final DB connectivity check ==="
+          if command -v psql > /dev/null 2>&1; then
+            set +e
+            PGCONNECT_TIMEOUT=10 PGPASSWORD="$DB_PASS" psql \
+              --host="$DB_HOST" --port="$DB_PORT" --dbname="$DB_NAME" --username="$DB_USER" \
+              -c "SELECT 1;" 2>&1 | head -5
+            FINAL_RC=${PIPESTATUS[0]}
+            set -e
+            [ "$FINAL_RC" = "0" ] \
+              && echo "DB connectivity verified (exit 0)" \
+              || echo "DB connection failed (exit $FINAL_RC) — FreeScout will start but may not reach DB"
           else
-            echo "❌ Both poolers failed — Supabase project config issue; see FQ-11"
+            echo "psql not installed (URL was not a direct Supabase URL) — skipping"
           fi
 
       - name: Deploy (start) FreeScout
