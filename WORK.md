@@ -27,7 +27,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **T-10 DONE (2026-06-21).** FreeScout v2.1.2 running on Coolify staging; health check green; Supabase Postgres connected via session pooler (aws-1-ca-central-1). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **T-15 scaffold merged** (0860ff4, 2026-06-20); **branch protection fully active** — 3 required checks (lint, test, security), ≥1 approval, no direct push; eval gate lands with T-17 |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | 🔒 Blocked on #7 |
-| 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ In progress — Sentry DSN in Coolify env vars; UptimeRobot setup starts now; completion after T-15 |
+| 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ Partial — **Sentry SDK deployed** (PR #60, 2026-06-21); UptimeRobot setup blocked on FQ-14 (API key needed). |
 | 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | 🔒 Blocked on #4, #6, #7 |
 | 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🔒 Blocked on #10 |
 | 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Blocked on #10 |
@@ -72,8 +72,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | ↳ PRs #42–#46: tiredofit→nfrastack image, SKIP_DB_READY, DB_SSL_MODE=require, URL port-parse guard. Run #27916949231 ✅. | | | | 2026-06-21 |
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`; Security Lead review required (gates migration 2); awaiting founder execution. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned | All secrets in Vault; zero keys in env files, git, or Coolify env vars | Jul 2 |
-| T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | First test error captured in Sentry | Jul 2 |
-| T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | Monitors active; test alert fires and clears | Jul 2 |
+| T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | **⏳ SDK deployed (2026-06-21, PR #60, run #27921393191).** `SENTRY_DSN` already set in Coolify env. Pending: verify first error in Sentry dashboard. | Jul 2 |
+| T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **⏳ Blocked — FQ-14**: no UptimeRobot API key available. See FOUNDER_QUEUE.md FQ-14. | Jul 2 |
 
 ### Track C — CI/CD & Eval Gate (starts after T-05 + infra available)
 

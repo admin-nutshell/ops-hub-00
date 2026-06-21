@@ -49,6 +49,36 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-14 — One-time action: UptimeRobot monitor setup (3 staging URLs)
+
+```
+[Production Manager] UptimeRobot API key needed to complete T-14.
+
+Context: Three staging services are live and should be monitored:
+  1. ops-hub-app:   http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/health
+  2. LiteLLM:       http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health
+  3. FreeScout:     http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io
+  No UptimeRobot API key is configured in GitHub secrets.
+
+Option A (recommended — agent-owned after this step):
+  1. Sign in at https://uptimerobot.com → My Settings → API Settings
+  2. Create (or copy) the "Main API Key"
+  3. Add it to GitHub secrets: gh secret set UPTIMEROBOT_API_KEY --body "<key>"
+  Agents will then create all 3 monitors automatically.
+
+Option B (self-service, 5 min):
+  Sign in to UptimeRobot dashboard and manually add HTTP monitors for the 3 URLs above
+  with check interval 5 min, alert to mai@leelaecospa.com.
+
+Reply: RESOLVED: [date] — Option A/B complete; monitors active.
+
+Impact if delayed: No uptime alerts for staging services (non-blocking for Sprint 1 dev
+  work; blocking for M1 criterion #9).
+Linked: T-14, WORK.md
+```
+
+---
+
 ### FQ-13 — One-time action: Inngest Cloud app provisioning (signing key + event key)
 
 ```
