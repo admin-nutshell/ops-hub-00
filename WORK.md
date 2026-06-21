@@ -24,7 +24,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
 | 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367, run #12 re-confirmed healthy). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. Inngest: T-07 blocked on T-15 complete (done) — ready to start. |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
-| 6 | FreeScout deployed and connected as ticket intake | Production Manager | 🔒 **T-10 FreeScout: BLOCKED — VPS firewall blocks outbound TCP:5432 (FQ-09).** Image: `tiredofit/freescout`. DB: Supabase PostgreSQL via Session pooler. Root cause chain: wrong image (PR #18) → SITE_URL missing (PR #21) → force-recreate strategy (PRs #21-22) → DB connection failure confirmed as VPS outbound 5432 blocked (PR #23 connectivity probe, run #27890237911). PR #24 tries transaction pooler port 6543 as workaround. FQ-09 open for founder to open VPS outbound port 5432. |
+| 6 | FreeScout deployed and connected as ticket intake | Production Manager | ⏳ **T-10 FreeScout: PR #25 in review — switching to Coolify-managed internal PostgreSQL.** VPS firewall blocks ALL outbound PostgreSQL (5432 + 6543 confirmed DROP). PR #25 creates `freescout-postgres` via Coolify API (Docker internal network, no external connectivity). If PR #25 deploy succeeds, FQ-09 resolved without founder action. |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **T-15 scaffold merged** (0860ff4, 2026-06-20); **branch protection fully active** — 3 required checks (lint, test, security), ≥1 approval, no direct push; eval gate lands with T-17 |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | 🔒 Blocked on #7 |
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ In progress — Sentry DSN in Coolify env vars; UptimeRobot setup starts now; completion after T-15 |
@@ -99,7 +99,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-10 (FreeScout) | FQ-09: VPS firewall blocks outbound TCP:5432. PR #24 testing port 6543 workaround. If 6543 also blocked or breaks Laravel prepared statements, founder must open port 5432 in VPS/Coolify firewall (see FQ-09 for exact steps). | M1 #6 blocked; T-19 blocked downstream | Production Manager |
+| T-10 (FreeScout) | PR #25 in CI — switching to Coolify-managed internal PostgreSQL to bypass VPS firewall entirely. If PR #25 deploy succeeds, FQ-09 resolves without founder action. FQ-09 remains open until confirmed. | M1 #6 blocked; T-19 blocked downstream | Production Manager |
 | T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
 
 ---
