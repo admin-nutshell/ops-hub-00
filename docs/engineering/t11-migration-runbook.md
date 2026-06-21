@@ -12,21 +12,23 @@
 
 ---
 
-## ⛔ STOP — Read before running
+## ✅ Security Lead sign-off recorded — migration 2 is cleared to run
 
-> ### SECURITY LEAD SIGN-OFF IS REQUIRED BEFORE MIGRATION 2
+> **Security Lead RLS sign-off — `20260618120100_enable_rls_policies.sql`
+> (T-03, 2026-06-21): APPROVED WITH CONDITIONS.**
 >
-> The second migration, `20260618120100_enable_rls_policies.sql`, carries the
-> banner `*** SECURITY LEAD REVIEW REQUIRED (T-03, gates T-18) ***` at the top.
-> It establishes the entire multi-tenant Row-Level-Security (RLS) model.
+> Cross-tenant read isolation on the `ops_hub_app` path is correct and
+> fail-closed. Blocking condition C1 applied: `authenticated` removed from
+> `audit_log_insert` (portal users must not forge audit entries for other
+> tenants via `with check (true)`; SOC-2 evidence integrity violation).
+> C1 fix is in the migration file as of the fix/dockerfile-ci-env-rls-c1 commit.
+> Follow-ups C2/F1-F6 tracked for M2/prod. T-18 must verify agent-path
+> isolation + C1/C2/F2 items.
 >
-> **Do NOT apply migration 2 until the Security Lead has reviewed and signed
-> off on the RLS model** (schema doc `docs/engineering/database-schema.md` §6).
+> The gate is cleared. Both migrations may be applied per this runbook.
 >
-> Migration 1 (`initial_schema.sql`) creates tables only and may be applied
-> first. Migration 2 must be gated behind sign-off. This is why this runbook
-> applies them as **two separate, individually-gated steps** — and why the
-> per-file `psql -f` path is the recommended one (see note in Step 2).
+> Migration 1 (`initial_schema.sql`) creates tables only. Migration 2 applies
+> the RLS model. Apply them individually with `psql -f` (see Step 2 note).
 
 ---
 
@@ -46,8 +48,8 @@
 
 ## 1. Prerequisites
 
-- [ ] **Security Lead sign-off** obtained for `20260618120100_enable_rls_policies.sql`
-      (gates Step 3). Migration 1 may proceed without it; migration 2 may not.
+- [x] **Security Lead sign-off** obtained for `20260618120100_enable_rls_policies.sql`
+      (APPROVED WITH CONDITIONS, 2026-06-21; C1 fix applied — see sign-off block above).
 - [ ] **`psql` available** (recommended), OR the Supabase CLI installed
       (see the caveat in Step 2 before using the CLI).
 - [ ] **Connection string** ready. Use the `DATABASE_URL` (service_role /
@@ -127,9 +129,9 @@ psql "$SUPABASE_DB_URL" -f supabase/migrations/20260618120000_initial_schema.sql
 
 ---
 
-## 4. Step 3 — Apply migration 2 (RLS policies) — GATED
+## 4. Step 3 — Apply migration 2 (RLS policies)
 
-> **Confirm Security Lead sign-off is recorded before running this step.**
+> **Security Lead sign-off is recorded (2026-06-21). C1 fix applied. This step is cleared.**
 
 Enables RLS on all 6 tables, creates the non-superuser `ops_hub_app` role and
 grants, creates the `current_tenant_id()` / `current_project_id()` resolver

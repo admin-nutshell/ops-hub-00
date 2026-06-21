@@ -214,3 +214,23 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   via session pooler aws-1-ca-central-1.pooler.supabase.com:5432. M1 criterion #6 met.
   FQ-11 archived as resolved.
 ```
+
+### 2026-06-21 — T-11 RLS Security Lead sign-off + T-07 Inngest SDK + CI Docker fix
+
+```
+2026-06-21 [Security Lead] T-11 RLS migration sign-off — 20260618120100_enable_rls_policies.sql
+  APPROVED WITH CONDITIONS. Cross-tenant read isolation on the ops_hub_app path is correct and
+  fail-closed. Blocking condition C1 applied (remove `authenticated` from audit_log_insert —
+  portal users could forge audit entries for any tenant/actor via `with check (true)`;
+  SOC-2 evidence integrity violation). C1 fix committed on fix/dockerfile-ci-env-rls-c1.
+  Follow-ups C2/F1-F6 tracked for M2/prod. T-18 must verify agent-path isolation + C1/C2/F2.
+
+2026-06-21 [Tech Lead] T-07 Inngest SDK: inngest@4.7.0 added (PR #49 merged). Client + function
+  (triggers in config per v4 API), /api/inngest serve endpoint on http.createServer. main-deploy.yml
+  staging auto-deploy added: build GHCR image, push ghcr.io/admin-nutshell/ops-hub-00:latest,
+  trigger COOLIFY_STAGING_DEPLOY_HOOK, poll /health (conditional on COOLIFY_STAGING_APP_URL).
+
+2026-06-21 [Tech Lead] Dockerfile CI=1 fix (fix/dockerfile-ci-env-rls-c1): main-deploy.yml first
+  run failed — pnpm install in Docker build context (no .git dir) triggered prepare script
+  `git config core.hooksPath` → exit 1. Fix: RUN CI=1 pnpm install --frozen-lockfile --prod=false.
+```
