@@ -451,6 +451,15 @@ jobs:
           DB_PORT="${DB_PORTDB%%/*}"
           DB_NAME="${DB_PORTDB##*/}"
           DB_NAME="${DB_NAME%%\?*}"
+          # Guard: when URL has no explicit :port (e.g. pooler URL copied without port),
+          # the parser puts the hostname into DB_PORT (no colon found → DB_PORTDB = full
+          # hostpath, DB_PORT = hostname). Strip any /dbname suffix from DB_HOST and
+          # default DB_PORT to 5432 when the extracted value is not a number.
+          DB_HOST="${DB_HOST%%/*}"
+          if ! echo "$DB_PORT" | grep -qE '^[0-9]+$'; then
+            echo "No numeric port found in URL — defaulting DB_PORT to 5432"
+            DB_PORT="5432"
+          fi
           [ -n "$DB_PASS" ] && echo "::add-mask::$DB_PASS"
           echo "Supabase DB (parsed): host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
@@ -501,9 +510,12 @@ jobs:
           set_env "DB_USER"     "$DB_USER"
           [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
             || echo "  DB_PASS: skipped (no password in SUPABASE_STAGING_DB_URL)"
-          # nfrastack/freescout uses FREESCOUT_DB_PGSQL_SSL_MODE for Postgres SSL
-          # (DB_SSL only applies to MySQL/MariaDB in nfrastack)
+          # FREESCOUT_DB_PGSQL_SSL_MODE writes sslmode into FreeScout's .env file.
+          # DB_SSL_MODE is the *bash-level* variable laravel_db_is_populated() uses for
+          # its own psql connectivity check (nfrastack/container-laravel 30-laravel);
+          # without it the check defaults to sslmode=prefer instead of require.
           set_env "FREESCOUT_DB_PGSQL_SSL_MODE" "require"
+          set_env "DB_SSL_MODE"                 "require"
           # SKIP_DB_READY=TRUE bypasses the pg_isready pre-flight loop in
           # nfrastack/container-base. That loop retries forever because pg_isready
           # doesn't complete TLS auth and Supavisor rejects bare startup packets.
