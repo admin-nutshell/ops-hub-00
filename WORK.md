@@ -100,8 +100,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-10 (FreeScout) | FQ-11 (CONFIRMED, 2026-06-21) — Both Supabase poolers (5432 + 6543) return ENOTFOUND (run #27914003478). Project not registered with Supavisor. Founder must check Supabase dashboard: Connection Pooling toggle, pooler hostname, or project paused. | M1 #6 blocked; T-19 blocked | Production Manager |
 | T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
+| T-07 (Inngest) | ops-hub Node.js app not yet created in Coolify staging — only litellm-staging + freescout-staging exist (confirmed via API, run #27916949231). App creation + `main-deploy.yml` required before Inngest serve endpoint is reachable. | M1 #4 partial; T-09 trace test blocked | Production Manager |
 
 ---
 
@@ -146,69 +146,43 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 **Active.** T-06 (test plan) starts immediately. T-19 (integration test) blocked until FreeScout + Supabase staging are live.
 
 ### Production Manager
-**🟢 ACTIVE (2026-06-20) — 34 env vars loaded in Coolify staging; 6 GitHub Actions secrets set.**
+**🟢 ACTIVE (2026-06-21)**
 
-**2026-06-20 — T-08 + T-10 deploy attempt #3: root cause confirmed — Coolify API gate disabled.**
+**T-08: LiteLLM — ✅ DEPLOYED** (run #27887445367 + re-confirmed healthy). `litellm-staging` running at `http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io`.
 
-Run #27887003804 — diagnostic workflow (PR #8, pre-flight step). Full headers + body captured:
+**T-10: FreeScout — ✅ DEPLOYED (2026-06-21)** — see task row + FQ-11. `freescout-staging` running at `http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io`. Image: `nfrastack/freescout:latest`. Run #27916949231 all steps green.
 
-  Unauthenticated: HTTP 401 {"message":"Unauthenticated."} ← expected
-  Authenticated:   HTTP 403 {"success":true,"message":"You are not allowed to access the API."}
-  Server header:   nginx (reverse proxy for Coolify — 403 IS from Coolify, not a firewall)
-  Rate-limit:      x-ratelimit-remaining: 199 — Coolify processed the request, rate-counting it
-
-**Root cause: Coolify's "Enable API" feature is disabled at the instance/team level.**
-The COOLIFY_API_TOKEN is valid and recognised. This is a one-time ~1 min fix in Coolify
-Settings → API → Enable API Access toggle. Token does NOT need to be regenerated.
-
-**See FQ-07 for exact steps.** After enabling, re-run: Actions → Deploy Staging Services → Run workflow.
+**ADR-0001 sign-off — now eligible.** T-08 + T-10 both live. Will sign off when ADR-0001 §6 is reviewed against current VPS utilisation.
 
 ---
 
-**T-08: LiteLLM — READY TO DEPLOY (needs Coolify browser session)**
+**T-07: Inngest — NEXT (blocked pending ops-hub app creation in Coolify)**
 
-- Project: `ops-hub-staging`
-- Service type: Docker image (public registry)
-- Image: `ghcr.io/berriai/litellm:main-latest`
-- Port: 4000
-- Env vars: pre-loaded (`LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY`, `DATABASE_URL`, `ANTHROPIC_API_KEY`, `STORE_MODEL_IN_DB=True`)
-- Rollback path: delete the Coolify service (no prior version exists in staging; rollback is a no-op remove)
-- Post-deploy verification: `GET https://<litellm-staging-url>/health` — expect HTTP 200; body will contain per-model status. The master key may be required as a Bearer token header (`Authorization: Bearer $LITELLM_MASTER_KEY`) if the `/health` endpoint is protected.
-- Canary window: 24 hours before marking T-08 fully done
-- Known first-boot issue: DB connectivity errors in Coolify logs are non-fatal if Postgres migrations have not yet run; LiteLLM will retry. If startup stalls beyond 5 minutes, check `DATABASE_URL` format (must be `postgresql://` not `postgres://` for some LiteLLM versions).
+Coolify staging state confirmed via API (run #27916949231 "List existing applications"):
+- `litellm-staging` ✅ running
+- `freescout-staging` ✅ running
+- No ops-hub app deployed yet
 
-**T-10: FreeScout — READY TO DEPLOY (needs Coolify browser session)**
+Inngest requires the ops-hub Node.js app to be running with a public HTTPS URL (serve endpoint `/api/inngest`). Deployment plan (agent-owned):
+1. Add `inngest` SDK to app code: `src/inngest/client.ts` + serve endpoint in `src/index.ts`
+2. Add ops-hub app creation to `deploy-staging-services.yml` workflow (GitHub-source app via Coolify API)
+3. Create `main-deploy.yml` — triggers `COOLIFY_STAGING_DEPLOY_HOOK` on push to main
+4. After app is live: register staging URL with Inngest Cloud; verify test event processed
 
-- Project: `ops-hub-staging`
-- Service type: Docker image (public registry)
-- Image: `thatwebagency/freescout` (official image, port 80)
-- Port: 80
-- Env vars: pre-loaded (DB + mail vars already in Coolify staging)
-- DB decision (agent-owned, pre-decided): FreeScout officially supports MySQL/MariaDB only. Two options evaluated:
-  - **Option A (recommended): Add a MariaDB sidecar container in Coolify** — this is the officially-supported path, no supply-chain risk, straightforward. Point FreeScout `DB_CONNECTION=mysql`, `DB_HOST=<mariadb-sidecar-hostname>`, `DB_PORT=3306`.
-  - Option B: Use `rrpadilha/freescout` (PostgreSQL fork) — not recommended; fork maintenance risk, not officially supported.
-  - Decision: **Option A**. If `DB_CONNECTION=pgsql` is already set in Coolify staging env vars and FreeScout fails startup (check Coolify logs for MySQL/MariaDB errors), add a MariaDB service in the same `ops-hub-staging` project, then update FreeScout env vars to point at it.
-- Rollback path: delete the Coolify FreeScout service (and MariaDB sidecar if added); no prior version in staging
-- Post-deploy verification: FreeScout setup/login page loads at staging URL; submit one test ticket via the UI
-- Canary window: 24 hours
+Inngest env vars (`INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`) expected to already be in Coolify staging env vars (part of the 34 vars configured 2026-06-20).
 
-**ADR-0001 sign-off: deferred.** Will sign off on `docs/adr/0001-environment-topology.md` only after T-08 + T-10 deploys are confirmed live with verified health checks.
+**T-09: LangFuse Cloud** — Already provisioned (US region). Blocked on T-08 canary → send test trace from LiteLLM after T-07 live.
 
-**Next action required from Founder or operator:**
-Grant `coolify.inatechshell.ca` site permission in the Claude-in-Chrome extension (extension settings > Site Permissions > add domain), then re-invoke the Production Manager agent to execute T-08 + T-10. No other input needed — all decisions above are agent-owned.
+**T-13: Sentry** — `SENTRY_DSN` already in Coolify env vars. Needs Sentry SDK init in app code — begins with T-07 app code changes.
 
----
+**T-14: UptimeRobot** — Set up monitors for LiteLLM + FreeScout staging URLs. Start now (URLs known). Add ops-hub app URL monitor after T-07 deploy.
 
-Remaining deploy order (unchanged):
-
-1. **T-08: LiteLLM** — see spec above
-2. **T-10: FreeScout** — see spec above
-3. **T-09 (verify): LangFuse Cloud** — Already provisioned (US region). After T-08, send a test trace from LiteLLM and confirm it appears in the LangFuse dashboard. No Coolify deploy needed.
-4. **T-11: Supabase migrations** — Coordinate with Tech Lead. Run `supabase/migrations/20260618120000_initial_schema.sql` then `20260618120100_enable_rls_policies.sql` against the Ops Hub Supabase project. Real connection string in Coolify env vars (`DATABASE_URL`).
-5. **T-12: Vault setup** — After T-11; coordinate with Security Lead. Move `ANTHROPIC_API_KEY` from Coolify env vars into Supabase Vault. This is Sprint 1 target; Sprint 2 completes the migration for all keys.
-6. **T-14: UptimeRobot** — Set up monitors for LiteLLM + FreeScout staging URLs after deploys confirm. Add ops-hub app URL monitor after T-15 scaffold + deploy.
-7. **T-13: Sentry** — `SENTRY_DSN` already in Coolify env vars. Completion requires Sentry SDK init in app code — resume after T-15 scaffold lands.
-8. **T-07: Inngest** — After T-15 app scaffold. Inngest Cloud credentials already in Coolify env vars; SDK must be initialized in `src/inngest/client.ts`.
+Remaining deploy order:
+1. **T-07: Inngest** — ops-hub app creation + Inngest SDK init (next)
+2. **T-11: Supabase migrations** — awaiting Security Lead sign-off + founder execution of runbook
+3. **T-12: Vault setup** — after T-11; Security Lead coordinates
+4. **T-14: UptimeRobot** — can start immediately for LiteLLM + FreeScout URLs
+5. **T-13: Sentry** — SDK init in app code (with T-07)
 
 ### Security Lead
 **Active.** Review T-03 schema when Tech Lead publishes (target Jun 27). T-12 + T-18 blocked on Supabase. Confirm secrets hygiene plan for GitHub Actions env vars now.
