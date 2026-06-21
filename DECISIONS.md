@@ -81,6 +81,32 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 2026-06-21 [Production Manager] T-10 FreeScout: PR #25 switches to Coolify-managed internal PostgreSQL (freescout-postgres). VPS firewall blocks ALL outbound PostgreSQL traffic (both port 5432 and 6543 confirmed DROP — 35s timeouts in runs #27890237911 + #27890511141). Coolify-managed DB runs on Docker internal network — bypasses firewall entirely. DB is idempotent (persists across app force-recreates); internal_db_url fetched from Coolify API; DB_SSL=FALSE (no TLS on internal network). If PR #25 deploy succeeds, FQ-09 is resolved without any founder action.
 ```
 
+### 2026-06-21 — T-10 FreeScout final fix sequence (PRs #27–#29)
+
+```
+2026-06-21 [Production Manager] T-10 FreeScout PR #27: added 3-retry + 20s backoff on Coolify
+  /databases API calls after transient HTTP 000 timeouts in run #27891164266 (Coolify unreachable
+  during DB startup window). Retry logic already present on /applications calls extended to /databases.
+2026-06-21 [Production Manager] T-10 FreeScout PR #28 (Docker Compose attempt): switched to
+  POST /applications/dockercompose to co-locate freescout + postgres on a shared compose network.
+  Result: HTTP 404 — endpoint does not exist in this Coolify version (routes/api.php has no compose
+  route, confirmed by reading Coolify open-source code). Cleanup step succeeded (deleted
+  freescout-staging app + freescout-postgres DB cbm2359em7f5aw5vqsb7vgtl).
+2026-06-21 [Production Manager] T-10 FreeScout PR #29 (FAILED): connect_to_docker_network: true
+  had NO effect. Field is stored in application.settings (ApplicationsController.php) but is
+  completely absent from ApplicationDeploymentJob.php — never applied to the runtime Docker Compose
+  network config. Container logs still show DB unreachable for 65s (TCP-timeout pattern: 10s retry
+  interval, not 5s). Run #27892270211: all CI steps green, FreeScout HTTP 502, DB unreachable.
+2026-06-21 [Production Manager] T-10 FreeScout PR #30 (diagnostic): root cause not yet confirmed.
+  TCP-timeout retry pattern (10s = 5s SYN timeout + 5s sleep) indicates DNS resolves but packets
+  are dropped — consistent with network isolation (different Docker subnets), not DB timing.
+  Exhausted API-level network flags: connect_to_docker_network no-op, --network silently ignored
+  by convertDockerRunToCompose, dockercompose endpoint 404. PR #30 adds full destination_uuid/
+  destination JSON dumps for both app and DB + server network probe + DB status polling — to
+  confirm whether app and DB share the same Coolify destination (and therefore Docker network).
+  Fix strategy determined by diagnostic output.
+```
+
 ---
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*
