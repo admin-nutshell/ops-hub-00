@@ -304,20 +304,16 @@ jobs:
             echo "LiteLLM UUID for dashboard lookup: $UUID"
           fi
 
-  # ─── T-10: FreeScout (dockerimage + Coolify PostgreSQL on shared coolify Docker network) ─
-  # DB approach: Coolify-managed PostgreSQL (on "coolify" Docker network by default) +
-  #   FreeScout app with connect_to_docker_network: true (joins same "coolify" network).
+  # ─── T-10: FreeScout (PR #30: diagnostic pass — confirm root cause before any fix) ────────
   # Prior attempts:
-  #   - Supabase (5432/6543): VPS firewall blocks ALL outbound PostgreSQL traffic
-  #     (confirmed runs #27890237911 + #27890511141)
-  #   - Coolify standalone DB + standalone app (no network flag): Docker network isolation —
-  #     app on project network, DB on "coolify" network — unreachable from app container
-  #     (confirmed run #27891164266: 75s "Postgres Host ... is not accessible")
+  #   - Supabase (5432/6543): VPS firewall blocks ALL outbound PostgreSQL traffic (#25)
+  #   - connect_to_docker_network: true — stored in application.settings but absent from
+  #     ApplicationDeploymentJob.php; has NO effect on runtime Docker Compose network (#29)
+  #   - custom_docker_run_options "--network=X": silently ignored (not in convertDockerRunToCompose)
   #   - POST /applications/dockercompose: 404 — endpoint does not exist in this Coolify version
-  #     (confirmed run #27891680197; routes/api.php has no compose route)
-  # Fix: connect_to_docker_network: true on the FreeScout dockerimage app joins the shared
-  #   "coolify" network where the Coolify-managed PostgreSQL already lives. DB_HOST is the
-  #   DB UUID (Docker DNS alias on the coolify network, from internal_db_url).
+  # PR #30 goal: capture full JSON for both app and DB to confirm whether they share the same
+  # destination_uuid/network. TCP-timeout retry pattern (10s interval, not 5s) suggests DNS
+  # resolves but TCP SYN is dropped — consistent with different-subnet isolation, not timing.
   deploy-freescout:
     name: T-10 — FreeScout staging
     needs: discover
@@ -425,6 +421,15 @@ jobs:
           fi
           echo "db_uuid=$DB_UUID" >> "$GITHUB_OUTPUT"
           echo "Created freescout-postgres: $DB_UUID"
+          # DIAGNOSTIC: capture full DB detail — specifically destination_uuid and network
+          sleep 3
+          echo "=== DIAGNOSTIC: Full DB resource detail ==="
+          DB_DIAG=$(curl -s --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases/$DB_UUID") || true
+          echo "$DB_DIAG" | jq '{uuid, name, status, type, destination_uuid, destination}' \
+            2>/dev/null || echo "$DB_DIAG"
 
       - name: Create FreeScout app (connect to Docker network)
         id: freescout
@@ -468,6 +473,23 @@ jobs:
           fi
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
           echo "Created FreeScout: $UUID"
+          # DIAGNOSTIC: capture full app detail — destination_uuid, settings.connect_to_docker_network
+          echo "=== DIAGNOSTIC: Full app resource detail ==="
+          APP_DIAG=$(curl -s --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID") || true
+          echo "$APP_DIAG" | jq \
+            '{uuid, name, status, destination_uuid, destination, settings}' \
+            2>/dev/null || echo "$APP_DIAG"
+          # DIAGNOSTIC: server destinations — lists all Docker networks on this server
+          echo "=== DIAGNOSTIC: Server destinations/networks ==="
+          curl -s --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers/$SERVER_UUID" \
+            | jq '{uuid, name, ip, destinations}' 2>/dev/null \
+            || echo "(server endpoint unavailable or returned non-JSON)"
 
       - name: Set FreeScout environment variables
         run: |
@@ -481,10 +503,28 @@ jobs:
           curl -s --max-time 30 -o /dev/null -X POST \
             -H "Authorization: Bearer $TOKEN" \
             "$COOLIFY_BASE/databases/$DB_UUID/start" || true
-          echo "Waiting 30s for PostgreSQL to be ready..."
-          sleep 30
 
-          # Fetch internal connection URL (only available once DB container is running)
+          # Poll for DB status — max 90s, checking every 10s
+          echo "Polling freescout-postgres status (max 90s)..."
+          DB_READY=false
+          for i in $(seq 1 9); do
+            DB_HTTP=$(curl -s --max-time 30 -o /tmp/db_detail.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/databases/$DB_UUID") || true
+            DB_STATUS=$(jq -r '.status // "unknown"' /tmp/db_detail.json 2>/dev/null)
+            echo "  DB poll $i/9: status=$DB_STATUS (HTTP $DB_HTTP)"
+            case "$DB_STATUS" in running*|healthy*) DB_READY=true; break ;; esac
+            sleep 10
+          done
+          echo "=== DIAGNOSTIC: Full DB detail after poll ==="
+          jq 'del(.postgres_password, .internal_db_url)' /tmp/db_detail.json 2>/dev/null \
+            || cat /tmp/db_detail.json
+          if [ "$DB_READY" = "false" ]; then
+            echo "WARNING: DB did not reach running status after 90s — proceeding (last: $DB_STATUS)"
+          fi
+
+          # Fetch internal connection URL
           DB_HTTP=$(curl -s --max-time 30 -o /tmp/db_detail.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
@@ -573,12 +613,22 @@ jobs:
           echo "Waiting 180s for FreeScout to initialize (SETUP_TYPE=AUTO first-run + DB migrations)..."
           sleep 180
           UUID="${{ steps.freescout.outputs.uuid }}"
+          DB_UUID="${{ steps.freescout_db.outputs.db_uuid }}"
+          # DIAGNOSTIC: full DB state — confirms whether DB is actually running/healthy
+          echo "=== DIAGNOSTIC: DB state after 180s ==="
+          curl -s --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases/$DB_UUID" \
+            | jq '{uuid, name, status, destination_uuid, destination}' 2>/dev/null || true
+          # DIAGNOSTIC: full app state — includes destination and settings
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID")
-          echo "=== FreeScout state (HTTP $HTTP_CODE) ==="
-          jq '{name, status, fqdn}' /tmp/fs_state.json 2>/dev/null || cat /tmp/fs_state.json
+          echo "=== DIAGNOSTIC: Full app state after 180s (HTTP $HTTP_CODE) ==="
+          jq '{uuid, name, status, fqdn, destination_uuid, destination, settings}' \
+            /tmp/fs_state.json 2>/dev/null || cat /tmp/fs_state.json
 
           FQDN=$(jq -r '.fqdn // empty' /tmp/fs_state.json 2>/dev/null | sed 's|/$||')
           if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
