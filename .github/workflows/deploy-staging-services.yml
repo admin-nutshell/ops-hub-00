@@ -435,18 +435,22 @@ jobs:
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
           echo "Parsed DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
 
-          # Supabase direct connections (db.*.supabase.co) are IPv6-only since 2024 and
-          # unreachable from IPv4-only VPS hosts. Switch to the Session-mode pooler
-          # (aws-0-<region>.pooler.supabase.com, port 5432), which is IPv4-accessible.
-          # Session mode (vs. Transaction mode port 6543) is required for Laravel because
-          # it uses persistent connections and prepared statements.
+          # Supabase direct connections (db.*.supabase.co) are IPv6-only since 2024.
+          # Session pooler (port 5432) is IPv4-accessible but confirmed blocked by VPS
+          # firewall (run #27890237911 diagnostic: DNS resolves, TCP:5432 reachable from
+          # internet, but psql in container times out after ~35s — textbook outbound
+          # firewall drop). Trying transaction pooler on port 6543 which uses the same
+          # hostname but a different port that may not be blocked.
+          # NOTE: Supabase transaction mode does not support prepared statements — if
+          # FreeScout/Laravel fails with prepared-statement errors, fix is to open port
+          # 5432 on the VPS firewall (see FOUNDER_QUEUE FQ-09).
           if echo "$DB_HOST" | grep -qE '^db\.[a-z0-9]+\.supabase\.co$'; then
             PROJECT_REF="${DB_HOST#db.}"
             PROJECT_REF="${PROJECT_REF%.supabase.co}"
             DB_HOST="aws-0-ca-central-1.pooler.supabase.com"
             DB_USER="postgres.${PROJECT_REF}"
-            DB_PORT="5432"
-            echo "Supabase direct→pooler (Session): $DB_HOST / $DB_USER"
+            DB_PORT="6543"
+            echo "Supabase direct→transaction-pooler port 6543: $DB_HOST / $DB_USER"
           fi
 
           # Get app FQDN for APP_URL (required by SETUP_TYPE=AUTO first-run installer)
