@@ -304,16 +304,20 @@ jobs:
             echo "LiteLLM UUID for dashboard lookup: $UUID"
           fi
 
-  # ─── T-10: FreeScout (Docker Compose: freescout + postgres on shared compose network) ─
-  # DB approach: Docker Compose stack so both services share the same compose network.
+  # ─── T-10: FreeScout (dockerimage + Coolify PostgreSQL on shared coolify Docker network) ─
+  # DB approach: Coolify-managed PostgreSQL (on "coolify" Docker network by default) +
+  #   FreeScout app with connect_to_docker_network: true (joins same "coolify" network).
   # Prior attempts:
   #   - Supabase (5432/6543): VPS firewall blocks ALL outbound PostgreSQL traffic
   #     (confirmed runs #27890237911 + #27890511141)
-  #   - Coolify standalone DB + standalone app: different Docker networks —
-  #     DB hostname (cbm2359em7f5aw5vqsb7vgtl) not resolvable from freescout container
-  #     (confirmed run #27891164266: 75s of "Postgres Host ... is not accessible")
-  # Fix: Docker Compose guarantees both services share a compose network.
-  # DB_HOST=postgres resolves via Docker's built-in DNS. No external connectivity needed.
+  #   - Coolify standalone DB + standalone app (no network flag): Docker network isolation —
+  #     app on project network, DB on "coolify" network — unreachable from app container
+  #     (confirmed run #27891164266: 75s "Postgres Host ... is not accessible")
+  #   - POST /applications/dockercompose: 404 — endpoint does not exist in this Coolify version
+  #     (confirmed run #27891680197; routes/api.php has no compose route)
+  # Fix: connect_to_docker_network: true on the FreeScout dockerimage app joins the shared
+  #   "coolify" network where the Coolify-managed PostgreSQL already lives. DB_HOST is the
+  #   DB UUID (Docker DNS alias on the coolify network, from internal_db_url).
   deploy-freescout:
     name: T-10 — FreeScout staging
     needs: discover
@@ -329,10 +333,7 @@ jobs:
     steps:
       - name: Clean up existing FreeScout resources
         run: |
-          # Delete any existing freescout-staging app (standalone dockerimage from prior runs).
-          # Delete orphaned freescout-postgres standalone DB (created by PR #25, superseded here).
-          # Best-effort — failures don't block the fresh compose create below.
-
+          # Best-effort cleanup: delete existing app and standalone DB from prior runs.
           for attempt in 1 2 3; do
             HTTP_CODE=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
               -H "Authorization: Bearer $TOKEN" \
@@ -372,120 +373,161 @@ jobs:
             EXISTING_DB=$(jq -r '.[] | select(.name == "freescout-postgres") | .uuid' \
               /tmp/dbs.json 2>/dev/null || true)
             if [ -n "$EXISTING_DB" ] && [ "$EXISTING_DB" != "null" ]; then
-              echo "Deleting orphaned standalone freescout-postgres DB ($EXISTING_DB)..."
+              echo "Deleting freescout-postgres ($EXISTING_DB)..."
               DEL_HTTP=$(curl -s --max-time 30 -o /tmp/db_del_resp.json -w "%{http_code}" -X DELETE \
                 -H "Authorization: Bearer $TOKEN" \
                 "$COOLIFY_BASE/databases/$EXISTING_DB") || true
               echo "Delete DB HTTP $DEL_HTTP"
               cat /tmp/db_del_resp.json 2>/dev/null || true
             else
-              echo "No standalone freescout-postgres DB found"
+              echo "No freescout-postgres DB found"
             fi
           else
             echo "Could not list databases (HTTP $HTTP_CODE) — skipping DB cleanup"
           fi
 
-      - name: Create FreeScout Docker Compose stack
-        id: freescout
+      - name: Create FreeScout PostgreSQL DB
+        id: freescout_db
         run: |
-          COMPOSE_YAML=$(cat << 'COMPOSE_EOF'
-          services:
-            freescout:
-              image: tiredofit/freescout:latest
-              ports:
-                - "80"
-              environment:
-                - DB_HOST=postgres
-                - DB_PORT=5432
-                - DB_TYPE=pgsql
-                - DB_NAME=freescout
-                - DB_USER=freescout
-                - DB_PASS=${FREESCOUT_DB_PASS}
-                - SITE_URL=${SITE_URL}
-                - APP_URL=${SITE_URL}
-                - ADMIN_EMAIL=mai@leelaecospa.com
-                - ADMIN_PASS=${ADMIN_PASS}
-                - SETUP_TYPE=AUTO
-                - DB_SSL=FALSE
-              depends_on:
-                postgres:
-                  condition: service_healthy
-              restart: unless-stopped
-            postgres:
-              image: postgres:16-alpine
-              environment:
-                - POSTGRES_DB=freescout
-                - POSTGRES_USER=freescout
-                - POSTGRES_PASSWORD=${FREESCOUT_DB_PASS}
-              volumes:
-                - postgres_data:/var/lib/postgresql/data
-              healthcheck:
-                test: ["CMD-SHELL", "pg_isready -U freescout"]
-                interval: 5s
-                timeout: 5s
-                retries: 10
-              restart: unless-stopped
-          volumes:
-            postgres_data:
-          COMPOSE_EOF
-          )
-
+          echo "Creating freescout-postgres (Coolify-managed PostgreSQL)..."
           PAYLOAD=$(jq -n \
-            --arg proj    "$PROJECT_UUID" \
-            --arg srv     "$SERVER_UUID" \
-            --arg env     "$ENV_NAME" \
-            --arg compose "$COMPOSE_YAML" \
+            --arg proj "$PROJECT_UUID" \
+            --arg srv  "$SERVER_UUID" \
+            --arg env  "$ENV_NAME" \
             '{
-              project_uuid:       $proj,
-              server_uuid:        $srv,
-              environment_name:   $env,
-              name:               "freescout-staging",
-              docker_compose_raw: $compose,
-              instant_deploy:     false
+              project_uuid:     $proj,
+              server_uuid:      $srv,
+              environment_name: $env,
+              name:             "freescout-postgres",
+              instant_deploy:   true
             }')
           for attempt in 1 2 3; do
-            HTTP_CODE=$(curl -s --max-time 60 -o /tmp/fs_create_resp.json -w "%{http_code}" -X POST \
+            HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" \
               -H "Content-Type: application/json" \
               -H "Accept: application/json" \
-              "$COOLIFY_BASE/applications/dockercompose" \
+              "$COOLIFY_BASE/databases/postgresql" \
               -d "$PAYLOAD") || true
             [ "$HTTP_CODE" != "000" ] && break
-            echo "Attempt $attempt/3: Coolify unreachable (timeout), waiting 20s..."
+            echo "Attempt $attempt/3: Coolify unreachable, waiting 20s..."
             sleep 20
           done
-          echo "FreeScout compose create HTTP $HTTP_CODE"
+          echo "DB create HTTP $HTTP_CODE"
+          jq . /tmp/db_create_resp.json 2>/dev/null || cat /tmp/db_create_resp.json
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "ERROR: failed to create freescout-postgres (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          DB_UUID=$(jq -r '.uuid // .database_uuid // empty' /tmp/db_create_resp.json 2>/dev/null)
+          if [ -z "$DB_UUID" ] || [ "$DB_UUID" = "null" ]; then
+            echo "ERROR: no UUID in DB create response"
+            exit 1
+          fi
+          echo "db_uuid=$DB_UUID" >> "$GITHUB_OUTPUT"
+          echo "Created freescout-postgres: $DB_UUID"
+
+      - name: Create FreeScout app (connect to Docker network)
+        id: freescout
+        run: |
+          echo "Creating FreeScout application (tiredofit/freescout + connect_to_docker_network)..."
+          PAYLOAD=$(jq -n \
+            --arg proj "$PROJECT_UUID" \
+            --arg srv  "$SERVER_UUID" \
+            --arg env  "$ENV_NAME" \
+            '{
+              project_uuid:               $proj,
+              server_uuid:                $srv,
+              environment_name:           $env,
+              name:                       "freescout-staging",
+              docker_registry_image_name: "tiredofit/freescout",
+              ports_exposes:              "80",
+              connect_to_docker_network:  true,
+              instant_deploy:             false
+            }')
+          for attempt in 1 2 3; do
+            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_create_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/dockerimage" \
+              -d "$PAYLOAD") || true
+            [ "$HTTP_CODE" != "000" ] && break
+            echo "Attempt $attempt/3: Coolify unreachable, waiting 20s..."
+            sleep 20
+          done
+          echo "FreeScout create HTTP $HTTP_CODE"
           jq . /tmp/fs_create_resp.json 2>/dev/null || cat /tmp/fs_create_resp.json
           if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-            echo "ERROR: failed to create FreeScout compose stack (HTTP $HTTP_CODE)"
+            echo "ERROR: failed to create FreeScout (HTTP $HTTP_CODE)"
             exit 1
           fi
           UUID=$(jq -r '.uuid // .application_uuid // empty' /tmp/fs_create_resp.json 2>/dev/null)
           if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
             echo "ERROR: no UUID in create response"
-            jq . /tmp/fs_create_resp.json 2>/dev/null || cat /tmp/fs_create_resp.json
             exit 1
           fi
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
-          echo "Created FreeScout compose stack: $UUID"
+          echo "Created FreeScout: $UUID"
 
       - name: Set FreeScout environment variables
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
+          DB_UUID="${{ steps.freescout_db.outputs.db_uuid }}"
+
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
 
-          # Fetch assigned FQDN for SITE_URL (required by SETUP_TYPE=AUTO first-run installer)
+          # Ensure DB is running (start is idempotent on already-running DBs)
+          echo "Starting freescout-postgres ($DB_UUID)..."
+          curl -s --max-time 30 -o /dev/null -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/databases/$DB_UUID/start" || true
+          echo "Waiting 30s for PostgreSQL to be ready..."
+          sleep 30
+
+          # Fetch internal connection URL (only available once DB container is running)
+          DB_HTTP=$(curl -s --max-time 30 -o /tmp/db_detail.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases/$DB_UUID") || true
+          echo "DB detail HTTP $DB_HTTP"
+          if [ "$DB_HTTP" != "200" ]; then
+            echo "ERROR: could not fetch DB detail (HTTP $DB_HTTP)"
+            jq . /tmp/db_detail.json 2>/dev/null || cat /tmp/db_detail.json
+            exit 1
+          fi
+
+          INTERNAL_URL=$(jq -r '.internal_db_url // empty' /tmp/db_detail.json 2>/dev/null)
+          if [ -z "$INTERNAL_URL" ] || [ "$INTERNAL_URL" = "null" ]; then
+            echo "ERROR: internal_db_url missing — DB may not be running yet"
+            jq '{uuid, name, status, type}' /tmp/db_detail.json 2>/dev/null || cat /tmp/db_detail.json
+            exit 1
+          fi
+
+          # Parse internal_db_url: postgresql://user:pass@hostname:port/dbname
+          DB_NO_PROTO="${INTERNAL_URL#postgresql://}"
+          DB_NO_PROTO="${DB_NO_PROTO#postgres://}"
+          DB_USERPASS="${DB_NO_PROTO%%@*}"
+          DB_USER="${DB_USERPASS%%:*}"
+          DB_PASS="${DB_USERPASS#*:}"
+          DB_HOSTPORTDB="${DB_NO_PROTO##*@}"
+          DB_HOST="${DB_HOSTPORTDB%%:*}"
+          DB_PORTDB="${DB_HOSTPORTDB#*:}"
+          DB_PORT="${DB_PORTDB%%/*}"
+          DB_NAME="${DB_PORTDB##*/}"
+          DB_NAME="${DB_NAME%%\?*}"
+          [ -n "$DB_PASS" ] && echo "::add-mask::$DB_PASS"
+          echo "Internal DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
+
+          # Get app FQDN for SITE_URL (required by tiredofit/freescout SETUP_TYPE=AUTO)
           APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_fqdn.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID") || true
           APP_URL=$(jq -r '.fqdn // empty' /tmp/app_fqdn.json 2>/dev/null | sed 's|/$||' || true)
           [ -z "$APP_URL" ] && APP_URL="http://$UUID.187.124.76.235.sslip.io"
-          echo "SITE_URL: $APP_URL"
+          echo "APP_URL: $APP_URL"
 
-          # Fresh compose stack — simple POST for each env var; no 409 conflicts possible.
-          # Coolify substitutes ${FREESCOUT_DB_PASS}, ${SITE_URL}, ${ADMIN_PASS} in the
-          # compose YAML when starting the stack.
+          # Fresh app (always recreated above) — simple POST; no 409 conflicts possible.
           set_env() {
             local KEY="$1" VAL="$2"
             local PAYLOAD HTTP
@@ -500,14 +542,25 @@ jobs:
             [ "$HTTP" != "201" ] && cat /tmp/env_resp.json 2>/dev/null || true
           }
 
-          set_env "FREESCOUT_DB_PASS" "$FREESCOUT_ADMIN_PASS"
-          set_env "SITE_URL"          "$APP_URL"
-          set_env "ADMIN_PASS"        "$FREESCOUT_ADMIN_PASS"
+          set_env "DB_TYPE"     "pgsql"
+          set_env "DB_HOST"     "$DB_HOST"
+          set_env "DB_PORT"     "$DB_PORT"
+          set_env "DB_NAME"     "$DB_NAME"
+          set_env "DB_USER"     "$DB_USER"
+          [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
+            || echo "  DB_PASS: skipped (no password in internal_db_url)"
+          set_env "DB_SSL"      "FALSE"
+          set_env "SETUP_TYPE"  "AUTO"
+          set_env "SITE_URL"    "$APP_URL"
+          set_env "APP_URL"     "$APP_URL"
+          set_env "ADMIN_EMAIL" "mai@leelaecospa.com"
+          [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
+            || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
 
       - name: Deploy (start) FreeScout
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
-          echo "Starting FreeScout $UUID (Docker Compose: freescout + postgres)..."
+          echo "Starting FreeScout $UUID (tiredofit/freescout + Coolify PostgreSQL on coolify network)..."
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
@@ -517,7 +570,7 @@ jobs:
 
       - name: Verify FreeScout health
         run: |
-          echo "Waiting 180s for FreeScout to initialize (postgres healthcheck + SETUP_TYPE=AUTO first-run)..."
+          echo "Waiting 180s for FreeScout to initialize (SETUP_TYPE=AUTO first-run + DB migrations)..."
           sleep 180
           UUID="${{ steps.freescout.outputs.uuid }}"
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_state.json -w "%{http_code}" \
