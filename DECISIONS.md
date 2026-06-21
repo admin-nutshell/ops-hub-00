@@ -178,3 +178,39 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 ---
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*
+
+### 2026-06-21 — T-10 FreeScout deployment (continued resolution)
+
+```
+2026-06-21 [Founder] FQ-11 resolved: correct Supabase session pooler hostname is
+  aws-1-ca-central-1.pooler.supabase.com (not aws-0). Founder updated
+  SUPABASE_STAGING_DB_URL GitHub secret to the pooler URL.
+
+2026-06-21 [Production Manager] T-10 FreeScout: PR #42 switched SKIP_DB_READY approach.
+  Root cause discovered: tiredofit/freescout's db_ready() has NO skip variable (old image).
+  Replaced DB_TIMEOUT=0 with SKIP_DB_READY=TRUE but on the wrong image.
+
+2026-06-21 [Production Manager] T-10 FreeScout: PR #43 confirmed DB_TIMEOUT=0 was wrong
+  variable — tiredofit/freescout codebase has no DB_TIMEOUT in db_ready(). Reverted cleanly.
+
+2026-06-21 [Production Manager] T-10 FreeScout: PR #44 replaced DB_TIMEOUT with SKIP_DB_READY.
+  Run #27915482416 confirmed SKIP_DB_READY still had no effect on tiredofit image —
+  the Docker Hub image was NOT updated when the GitHub repo was rewritten by nfrastack.
+
+2026-06-21 [Production Manager] T-10 FreeScout: PR #45 switched from tiredofit/freescout to
+  nfrastack/freescout:latest (maintained successor, same author). SKIP_DB_READY=TRUE now works
+  (confirmed in logs). Also replaced DB_SSL=TRUE with FREESCOUT_DB_PGSQL_SSL_MODE=require
+  (correct nfrastack variable for FreeScout's .env SSL config).
+
+2026-06-21 [Production Manager] T-10 FreeScout: PR #46 fixed two URL-parsing bugs.
+  Root cause 1: SUPABASE_STAGING_DB_URL (pooler URL) had no explicit :5432 port — the bash
+  parser put the hostname into DB_PORT, causing psql error "invalid integer value for port".
+  Fix: strip /dbname suffix from DB_HOST; default DB_PORT to 5432 when not numeric.
+  Root cause 2: laravel_db_is_populated() reads DB_SSL_MODE (bash-level), not
+  FREESCOUT_DB_PGSQL_SSL_MODE — added DB_SSL_MODE=require to container env vars.
+
+2026-06-21 [Production Manager] T-10 FreeScout: DEPLOYED. Run #27916949231, all steps green,
+  3m50s. FreeScout v2.1.2 (nfrastack/freescout:latest) on Coolify staging. Supabase Postgres
+  via session pooler aws-1-ca-central-1.pooler.supabase.com:5432. M1 criterion #6 met.
+  FQ-11 archived as resolved.
+```
