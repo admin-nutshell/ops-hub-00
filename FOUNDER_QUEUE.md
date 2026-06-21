@@ -70,7 +70,7 @@ RESOLVED: [Production Manager] 2026-06-20 — no founder action required.
   Staging trade-off accepted: FreeScout tables co-tenant in Ops Hub Supabase public schema
   for Sprint 1 staging only; production will use a dedicated database.
 
-  Linked: PR #17, DECISIONS.md 2026-06-20 [Production Manager] entry.
+  Linked: PR #18, DECISIONS.md 2026-06-20 [Production Manager] entry.
 ```
 
 ---
