@@ -49,35 +49,43 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-10 — VPS host port 5432 blocked: FreeScout PostgreSQL container crashes on startup
+### FQ-10 — VPS host port 5432 blocked: FreeScout PostgreSQL cannot start
 
 ```
-BLOCKING: [Production Manager] Every Coolify-managed PostgreSQL container we create
-  immediately exits (exited:unhealthy) before any /start call. Root cause: something on
-  the VPS permanently holds host port 5432, so Docker can't bind 5432:5432.
+BLOCKING: [Production Manager] Every Coolify-managed PostgreSQL container crashes
+  immediately on startup. All API-level approaches exhausted (PRs #31–#34). Requires
+  one of the two founder actions below to unblock T-10.
 
-  EVIDENCE:
-    - Brand-new containers (instant_deploy:false) show exited:unhealthy right after creation
-    - 30s wait after deleting old container → fresh container still crashes immediately
-    - All PostgreSQL containers from PRs #25–#33 exhibit identical behavior
-    - postgres_port: 5433 rejected at creation time (API HTTP 422)
-    - PATCH attempt in progress (PR #34 — if it works, this item auto-resolves)
+  CONFIRMED EVIDENCE:
+    - Brand-new containers (instant_deploy:false, fresh UUID) show exited:unhealthy
+      immediately — before any start command
+    - Identical behavior across 8+ runs spanning PRs #25–#34
+    - postgres_port:5433 at creation: HTTP 422 (field not accepted)
+    - PATCH /databases/{uuid} {"postgres_port":5433}: DB still exited:unhealthy (likely
+      ignored by StartPostgresql.php — PATCH may not update the runtime Docker run cmd)
+    - Something permanently holds host port 5432 on the VPS (Coolify's own DB or native)
 
-  AGENT ACTION IN PROGRESS:
-    PR #34 attempts PATCH /databases/{uuid} with {"postgres_port": 5433} after creation.
-    If this succeeds, no founder action needed.
+  FOUNDER ACTION — CHOOSE ONE (both take < 5 minutes):
 
-  FOUNDER ACTION — only if PR #34 ALSO fails:
-    SSH into the VPS and run:
-      docker ps -a | grep -E "5432|postgres"
-      lsof -i :5432 | head -20
-      netstat -tlnp | grep 5432
-    Report which process/container holds port 5432. Options once identified:
-      A) If it's Coolify's own DB: it can't be moved; we use PATCH (need Coolify to accept it)
-      B) If it's a native PostgreSQL service: sudo systemctl stop postgresql && sudo systemctl disable postgresql
-      C) If it's another container: identify and stop it
+  OPTION A — Coolify UI (no SSH required, recommended):
+    1. Log into https://coolify.inatechshell.ca
+    2. Navigate to: ops-hub-staging → Databases → freescout-postgres
+    3. Find the "PostgreSQL Port" field → change from 5432 to 5433
+    4. Click Save, then click Start
+    5. Wait for status to show "Running" in the UI
+    6. Reply APPROVED: port changed and DB is running
+    (After this, the workflow will reuse the healthy DB on all future runs — no manual
+    action needed again)
 
-  Impact if unresolved: T-10 FreeScout remains undeployed; T-19 blocked downstream.
+  OPTION B — SSH into VPS (if Option A is unavailable):
+    # First, identify what holds port 5432:
+    docker ps -a | grep -E "5432|postgres"
+    lsof -i :5432 | head -10
+    # Then, based on findings:
+    # If native postgresql service: sudo systemctl stop postgresql && sudo systemctl disable postgresql
+    # (This frees port 5432 for our container; re-run the workflow after)
+
+  Impact if unresolved: T-10 FreeScout undeployed; T-19 blocked; M1 #6 blocked.
   Linked: PRs #25–#34, DECISIONS.md T-10 entries
 ```
 

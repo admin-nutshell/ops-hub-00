@@ -117,11 +117,13 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   DELETE /databases is async ("request queued") — old container holds port 5432 while new
   container tries to bind → immediate exit. All FreeScout failures from PRs #25–#30 trace
   to this same race: delete-and-immediately-recreate under async deletion.
-2026-06-21 [Production Manager] T-10 FreeScout PR #31: fix async deletion race by preserving
-  freescout-postgres across runs. Cleanup step no longer deletes the DB. Provision step
-  reuses existing DB if present (instant_deploy:false), creates only if absent. Polling
-  timeout extended 90s→180s; WARNING changed to exit 1 to prevent FreeScout starting
-  against a non-running DB. → PR #31
+2026-06-21 [Production Manager] T-10 FreeScout PRs #31–#34: all API-level port-conflict
+  workarounds exhausted. Summary: every Coolify-managed PostgreSQL container crashes
+  immediately on startup (exited:unhealthy), regardless of deletion timing or container
+  freshness. Root cause: something on the VPS permanently holds host port 5432 (Coolify's
+  own internal DB or a native PostgreSQL service). postgres_port:5433 rejected at creation
+  (HTTP 422); PATCH approach didn't resolve the crash. Escalated to founder via FQ-10:
+  either change port via Coolify UI or SSH-identify the process holding 5432.
 ```
 
 ---
