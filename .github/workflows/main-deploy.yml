@@ -74,33 +74,17 @@ jobs:
           docker push "$IMAGE:${{ github.sha }}"
           echo "Pushed $IMAGE:latest (${{ github.sha }})"
 
-      # Make the ops-hub-00 package public so Coolify can pull it without auth.
-      # The image contains only compiled TS + production deps — no secrets.
-      # This is idempotent: a no-op if the package is already public.
-      - name: Make GHCR package public
-        run: |
-          PKG_NAME="${{ github.event.repository.name }}"
-          HTTP=$(gh api --method PATCH \
-            "/orgs/${{ github.repository_owner }}/packages/container/$PKG_NAME" \
-            -f visibility=public \
-            --silent -w "%{http_code}" 2>/dev/null || echo "000")
-          if [ "$HTTP" = "200" ] || [ "$HTTP" = "204" ]; then
-            echo "Package visibility set to public."
-          else
-            echo "WARNING: Could not set package visibility (HTTP $HTTP)."
-            echo "Coolify may fail to pull the private image."
-            echo "To fix: make ghcr.io/${{ github.repository }} public in GitHub → Packages → Settings."
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       # ── Deploy to Coolify staging ─────────────────────────────────────────────
       # Idempotent: creates the ops-hub-app in ops-hub-staging if it does not yet
-      # exist, then starts/restarts it. No pre-configured webhook URL needed.
+      # exist, then starts/restarts it.
+      # GHCR auth: GITHUB_TOKEN is passed as docker_registry_token so Coolify's
+      # Docker daemon can pull the private image. This refreshes on every deploy.
       - name: Create or deploy ops-hub on Coolify
         id: coolify
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
         run: |
           set -euo pipefail
 
@@ -131,18 +115,26 @@ jobs:
             | jq -r '.environments[0].name // "production"')
           echo "Project: $PROJECT_UUID  env: $ENV_NAME"
 
-          # 3. Check if ops-hub-app already exists
+          # 3. Create or update ops-hub-app
+          # Pass docker_registry_username + docker_registry_token so Coolify can
+          # docker login ghcr.io with the GITHUB_TOKEN before pulling the image.
           HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications")
           EXISTING=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null || true)
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            echo "ops-hub-app exists ($EXISTING) — updating image to $IMAGE:${{ github.sha }}"
+            echo "ops-hub-app exists ($EXISTING) — patching image + GHCR credentials..."
+            PATCH_BODY=$(jq -n \
+              --arg img "$IMAGE:${{ github.sha }}" \
+              --arg usr "$GHCR_USER" \
+              --arg tok "$GHCR_TOKEN" \
+              '{docker_registry_image_name:$img,
+                docker_registry_username:$usr,
+                docker_registry_token:$tok}')
             PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
               -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-              "$COOLIFY_BASE/applications/$EXISTING" \
-              -d "{\"docker_registry_image_name\": \"$IMAGE:${{ github.sha }}\"}")
+              "$COOLIFY_BASE/applications/$EXISTING" -d "$PATCH_BODY")
             echo "PATCH HTTP $PATCH_HTTP"
             jq . /tmp/patch.json 2>/dev/null || cat /tmp/patch.json
             APP_UUID="$EXISTING"
@@ -151,8 +143,11 @@ jobs:
             PAYLOAD=$(jq -n \
               --arg proj "$PROJECT_UUID" --arg srv "$SERVER_UUID" --arg env "$ENV_NAME" \
               --arg img "$IMAGE:${{ github.sha }}" \
+              --arg usr "$GHCR_USER" \
+              --arg tok "$GHCR_TOKEN" \
               '{project_uuid:$proj, server_uuid:$srv, environment_name:$env,
                 name:"ops-hub-app", docker_registry_image_name:$img,
+                docker_registry_username:$usr, docker_registry_token:$tok,
                 ports_exposes:"3000", instant_deploy:false}')
             CREATE_HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -177,13 +172,54 @@ jobs:
           echo "Start HTTP $START_HTTP"
           jq . /tmp/start.json 2>/dev/null || cat /tmp/start.json
 
+          DEPLOYMENT_UUID=$(jq -r '.deployment_uuid // empty' /tmp/start.json 2>/dev/null || true)
           echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
-          echo "Deploy triggered for $APP_UUID"
+          echo "deployment_uuid=$DEPLOYMENT_UUID" >> "$GITHUB_OUTPUT"
+          echo "Deploy queued: app=$APP_UUID deployment=$DEPLOYMENT_UUID"
+
+      # ── Deployment status + container logs ────────────────────────────────────
+      # Poll Coolify deployment status before attempting the HTTP health check.
+      # This surfaces image-pull errors and other Coolify-side failures early.
+      - name: Wait for Coolify deployment to complete
+        id: deploy_status
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          DEPLOYMENT_UUID: ${{ steps.coolify.outputs.deployment_uuid }}
+          APP_UUID: ${{ steps.coolify.outputs.app_uuid }}
+        run: |
+          if [ -z "$DEPLOYMENT_UUID" ]; then
+            echo "No deployment UUID — skipping deployment poll."
+            exit 0
+          fi
+          echo "Polling deployment $DEPLOYMENT_UUID ..."
+          for i in $(seq 1 30); do
+            STATUS_HTTP=$(curl -s --max-time 15 -o /tmp/dep.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/deployments/$DEPLOYMENT_UUID" 2>/dev/null || true)
+            if [ "$STATUS_HTTP" = "200" ]; then
+              STATUS=$(jq -r '.status // empty' /tmp/dep.json 2>/dev/null || true)
+              echo "Attempt $i: deployment status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Deployment finished."; exit 0 ;;
+                failed|error)
+                  echo "=== Deployment FAILED ==="
+                  jq . /tmp/dep.json 2>/dev/null || cat /tmp/dep.json
+                  echo "=== Container logs ==="
+                  curl -s --max-time 30 \
+                    -H "Authorization: Bearer $TOKEN" \
+                    "$COOLIFY_BASE/applications/$APP_UUID/logs" \
+                    2>/dev/null | tail -c 4000 || true
+                  exit 1
+                  ;;
+              esac
+            else
+              echo "Attempt $i: deployment API HTTP $STATUS_HTTP — waiting 10s"
+            fi
+            sleep 10
+          done
+          echo "WARNING: deployment status poll timed out — proceeding to health check"
 
       # ── Staging health check ──────────────────────────────────────────────────
-      # Poll the app FQDN assigned by Coolify. Uses COOLIFY_STAGING_APP_URL secret
-      # if set; falls back to fetching the FQDN from the Coolify API using the
-      # app UUID from the deploy step. Skips gracefully if neither is available.
       - name: Wait for staging health check
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
@@ -206,7 +242,7 @@ jobs:
             exit 0
           fi
           echo "Polling $STAGING_URL/health ..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 18); do
             HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
               "$STAGING_URL/health" || true)
             if [ "$HTTP" = "200" ]; then
@@ -216,5 +252,5 @@ jobs:
             echo "Attempt $i: HTTP $HTTP — waiting 10s"
             sleep 10
           done
-          echo "ERROR: health check timed out after 5 minutes"
+          echo "ERROR: health check timed out after 3 minutes"
           exit 1
