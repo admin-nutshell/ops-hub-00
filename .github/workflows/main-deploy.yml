@@ -75,35 +75,114 @@ jobs:
           echo "Pushed $IMAGE:latest (${{ github.sha }})"
 
       # ── Deploy to Coolify staging ─────────────────────────────────────────────
-      # COOLIFY_STAGING_DEPLOY_HOOK: Coolify-generated deploy webhook URL for the
-      # ops-hub app in ops-hub-staging. Set by founder on 2026-06-20.
-      # If this step returns non-200, the ops-hub app is not yet configured in
-      # Coolify; run deploy-staging-services.yml with target=ops-hub to create it.
-      - name: Trigger Coolify staging deploy
+      # Idempotent: creates the ops-hub-app in ops-hub-staging if it does not yet
+      # exist, then starts/restarts it. No pre-configured webhook URL needed.
+      - name: Create or deploy ops-hub on Coolify
+        id: coolify
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
-          HTTP=$(curl -s --max-time 30 -o /tmp/deploy_resp.json -w "%{http_code}" \
-            -X GET "${{ secrets.COOLIFY_STAGING_DEPLOY_HOOK }}")
-          echo "=== Coolify deploy response (HTTP $HTTP) ==="
-          cat /tmp/deploy_resp.json 2>/dev/null || true
+          set -euo pipefail
+
+          # 1. Discover server
+          HTTP=$(curl -s --max-time 30 -o /tmp/servers.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers")
           if [ "$HTTP" != "200" ]; then
-            echo "ERROR: Coolify deploy webhook returned HTTP $HTTP"
-            echo "If the ops-hub app is not yet created in Coolify, run:"
-            echo "  Actions → Deploy Staging Services → target=ops-hub-app"
-            exit 1
+            echo "ERROR: /servers returned HTTP $HTTP"; cat /tmp/servers.json; exit 1
           fi
-          echo "Staging deploy triggered."
+          SERVER_UUID=$(jq -r '.[0].uuid' /tmp/servers.json)
+          echo "Server: $SERVER_UUID"
+
+          # 2. Discover project
+          HTTP=$(curl -s --max-time 30 -o /tmp/projects.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects")
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /projects returned HTTP $HTTP"; cat /tmp/projects.json; exit 1
+          fi
+          PROJECT_UUID=$(jq -r '.[] | select(.name == "ops-hub-staging") | .uuid' /tmp/projects.json)
+          if [ -z "$PROJECT_UUID" ] || [ "$PROJECT_UUID" = "null" ]; then
+            echo "ERROR: ops-hub-staging project not found. Projects:"; jq -r '.[].name' /tmp/projects.json; exit 1
+          fi
+          ENV_NAME=$(curl -s --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/projects/$PROJECT_UUID" \
+            | jq -r '.environments[0].name // "production"')
+          echo "Project: $PROJECT_UUID  env: $ENV_NAME"
+
+          # 3. Check if ops-hub-app already exists
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          EXISTING=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null || true)
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            echo "ops-hub-app exists ($EXISTING) — updating image to $IMAGE:${{ github.sha }}"
+            PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+              "$COOLIFY_BASE/applications/$EXISTING" \
+              -d "{\"docker_registry_image_name\": \"$IMAGE:${{ github.sha }}\"}")
+            echo "PATCH HTTP $PATCH_HTTP"
+            jq . /tmp/patch.json 2>/dev/null || cat /tmp/patch.json
+            APP_UUID="$EXISTING"
+          else
+            echo "Creating ops-hub-app in Coolify ($PROJECT_UUID)..."
+            PAYLOAD=$(jq -n \
+              --arg proj "$PROJECT_UUID" --arg srv "$SERVER_UUID" --arg env "$ENV_NAME" \
+              --arg img "$IMAGE:${{ github.sha }}" \
+              '{project_uuid:$proj, server_uuid:$srv, environment_name:$env,
+                name:"ops-hub-app", docker_registry_image_name:$img,
+                ports_exposes:"3000", instant_deploy:false}')
+            CREATE_HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+              "$COOLIFY_BASE/applications/dockerimage" -d "$PAYLOAD")
+            echo "Create HTTP $CREATE_HTTP"
+            jq . /tmp/create.json 2>/dev/null || cat /tmp/create.json
+            if [ "$CREATE_HTTP" != "200" ] && [ "$CREATE_HTTP" != "201" ]; then
+              echo "ERROR: create failed (HTTP $CREATE_HTTP)"; exit 1
+            fi
+            APP_UUID=$(jq -r '.uuid // .application_uuid // empty' /tmp/create.json 2>/dev/null)
+            if [ -z "$APP_UUID" ] || [ "$APP_UUID" = "null" ]; then
+              echo "ERROR: no UUID in create response"; exit 1
+            fi
+            echo "Created ops-hub-app: $APP_UUID"
+          fi
+
+          # 4. Start the app
+          echo "Starting $APP_UUID..."
+          START_HTTP=$(curl -s --max-time 30 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$APP_UUID/start")
+          echo "Start HTTP $START_HTTP"
+          jq . /tmp/start.json 2>/dev/null || cat /tmp/start.json
+
+          echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
+          echo "Deploy triggered for $APP_UUID"
 
       # ── Staging health check ──────────────────────────────────────────────────
-      # COOLIFY_STAGING_APP_URL: set this secret once Coolify assigns a FQDN to
-      # the ops-hub app (visible in Coolify dashboard or from the Discover step).
-      # The check is skipped if the secret is not yet set.
+      # Poll the app FQDN assigned by Coolify. Uses COOLIFY_STAGING_APP_URL secret
+      # if set; falls back to fetching the FQDN from the Coolify API using the
+      # app UUID from the deploy step. Skips gracefully if neither is available.
       - name: Wait for staging health check
         env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
           STAGING_URL: ${{ secrets.COOLIFY_STAGING_APP_URL }}
+          APP_UUID: ${{ steps.coolify.outputs.app_uuid }}
         run: |
+          # Resolve FQDN: prefer the secret if set, else fetch from Coolify API
+          if [ -z "$STAGING_URL" ] && [ -n "$APP_UUID" ]; then
+            echo "COOLIFY_STAGING_APP_URL not set — fetching FQDN from Coolify API..."
+            FQDN=$(curl -s --max-time 30 \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$APP_UUID" \
+              | jq -r '.fqdn // empty' | sed 's|/$||')
+            [ -n "$FQDN" ] && STAGING_URL="$FQDN" \
+              || echo "No FQDN assigned yet — Coolify may still be routing."
+          fi
           if [ -z "$STAGING_URL" ]; then
-            echo "COOLIFY_STAGING_APP_URL not set — skipping health poll."
-            echo "Set this secret to the ops-hub staging FQDN after first deploy."
+            echo "FQDN not available — skipping health poll."
+            echo "Set COOLIFY_STAGING_APP_URL secret to the ops-hub staging FQDN."
             exit 0
           fi
           echo "Polling $STAGING_URL/health ..."
