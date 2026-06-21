@@ -304,7 +304,11 @@ jobs:
             echo "LiteLLM UUID for dashboard lookup: $UUID"
           fi
 
-  # ─── T-10: FreeScout (MariaDB sidecar + FreeScout app) ──────────────────────
+  # ─── T-10: FreeScout (tiredofit/freescout + Supabase PostgreSQL) ────────────
+  # Root cause of prior failures: thatwebagency/freescout does not exist on Docker Hub
+  # (returns 404) — Docker could never pull the image. Switching to tiredofit/freescout
+  # (actively maintained, PostgreSQL-capable via DB_TYPE=pgsql) + Supabase eliminates
+  # both the missing-image problem and the MariaDB sidecar crash.
   deploy-freescout:
     name: T-10 — FreeScout staging
     needs: discover
@@ -315,98 +319,32 @@ jobs:
       PROJECT_UUID: ${{ needs.discover.outputs.project_uuid }}
       SERVER_UUID: ${{ needs.discover.outputs.server_uuid }}
       ENV_NAME: ${{ needs.discover.outputs.environment_name }}
+      DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+      FREESCOUT_ADMIN_PASS: ${{ secrets.FREESCOUT_STAGING_ADMIN_PASS }}
 
     steps:
-      - name: Create or get MariaDB sidecar
-        id: mariadb
+      - name: Remove MariaDB sidecar if present
         run: |
-          for attempt in 1 2 3; do
-            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/databases") || true
-            [ "$HTTP_CODE" != "000" ] && break
-            echo "Attempt $attempt/3: Coolify unreachable (timeout), waiting 20s..."
-            sleep 20
-          done
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "ERROR: /api/v1/databases returned HTTP $HTTP_CODE"
-            jq . /tmp/dbs.json 2>/dev/null || cat /tmp/dbs.json
-            exit 1
-          fi
-          EXISTING=$(jq -r '.[] | select(.name == "freescout-mariadb") | .uuid' /tmp/dbs.json 2>/dev/null || true)
-
-          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            echo "MariaDB exists: $EXISTING"
-            echo "uuid=$EXISTING" >> "$GITHUB_OUTPUT"
+          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/dbs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/databases") || true
+          if [ "$HTTP_CODE" = "200" ]; then
+            MARIADB_UUID=$(jq -r '.[] | select(.name == "freescout-mariadb") | .uuid' \
+              /tmp/dbs.json 2>/dev/null || true)
+            if [ -n "$MARIADB_UUID" ] && [ "$MARIADB_UUID" != "null" ]; then
+              echo "Removing freescout-mariadb ($MARIADB_UUID)..."
+              DEL_HTTP=$(curl -s --max-time 30 -o /tmp/del_resp.json -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/databases/$MARIADB_UUID") || true
+              echo "Delete HTTP $DEL_HTTP"
+              cat /tmp/del_resp.json 2>/dev/null || true
+            else
+              echo "No freescout-mariadb found — nothing to remove"
+            fi
           else
-            echo "Creating MariaDB sidecar..."
-            PAYLOAD=$(jq -n \
-              --arg proj "$PROJECT_UUID" \
-              --arg srv "$SERVER_UUID" \
-              --arg env "$ENV_NAME" \
-              '{
-                project_uuid: $proj,
-                server_uuid: $srv,
-                environment_name: $env,
-                name: "freescout-mariadb",
-                mariadb_database: "freescout",
-                mariadb_user: "freescout"
-              }')
-            echo "Payload: $PAYLOAD"
-            HTTP_CODE=$(curl -s --max-time 30 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/databases/mariadb" \
-              -d "$PAYLOAD")
-            echo "MariaDB create HTTP $HTTP_CODE"
-            jq . /tmp/db_create_resp.json 2>/dev/null || cat /tmp/db_create_resp.json
-            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-              echo "ERROR: failed to create MariaDB (HTTP $HTTP_CODE)"
-              exit 1
-            fi
-            UUID=$(jq -r '.uuid // .database_uuid // empty' /tmp/db_create_resp.json 2>/dev/null)
-            if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
-              echo "ERROR: no UUID in create response"
-              exit 1
-            fi
-            echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
-            echo "Created MariaDB: $UUID"
+            echo "Could not list databases (HTTP $HTTP_CODE) — skipping cleanup"
           fi
-
-      - name: Start MariaDB and capture internal hostname
-        id: db-start
-        run: |
-          UUID="${{ steps.mariadb.outputs.uuid }}"
-          echo "Starting MariaDB $UUID..."
-          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/db_start_resp.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/databases/$UUID/start")
-          echo "MariaDB start HTTP $HTTP_CODE"
-          jq . /tmp/db_start_resp.json 2>/dev/null || cat /tmp/db_start_resp.json
-
-          echo "Waiting 30s for MariaDB to initialize..."
-          sleep 30
-
-          HTTP_CODE=$(curl -s --max-time 30 -o /tmp/db_state.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/databases/$UUID")
-          echo "=== MariaDB state (HTTP $HTTP_CODE) ==="
-          jq '{name, status, internal_db_url}' /tmp/db_state.json 2>/dev/null || cat /tmp/db_state.json
-
-          # Extract host and password from internal_db_url
-          # URL format: mysql://user:password@hostname:port/database
-          INTERNAL_DB_URL=$(jq -r '.internal_db_url // empty' /tmp/db_state.json 2>/dev/null || true)
-          INTERNAL_HOST=$(echo "$INTERNAL_DB_URL" | sed 's|mysql://.*@||;s|:.*||' || true)
-          DB_PASS=$(echo "$INTERNAL_DB_URL" | sed 's|mysql://[^:]*:||;s|@.*||' || true)
-          [ -z "$INTERNAL_HOST" ] && INTERNAL_HOST="freescout-mariadb"
-          [ -n "$DB_PASS" ] && echo "::add-mask::$DB_PASS"
-          echo "MariaDB internal host: $INTERNAL_HOST"
-          echo "host=$INTERNAL_HOST" >> "$GITHUB_OUTPUT"
-          echo "db_password=$DB_PASS" >> "$GITHUB_OUTPUT"
 
       - name: Create or get FreeScout application
         id: freescout
@@ -428,10 +366,27 @@ jobs:
           EXISTING=$(jq -r '.[] | select(.name == "freescout-staging") | .uuid' /tmp/apps.json 2>/dev/null || true)
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            echo "FreeScout exists: $EXISTING"
-            echo "uuid=$EXISTING" >> "$GITHUB_OUTPUT"
-          else
-            echo "Creating FreeScout application..."
+            # Existing app may have been created with thatwebagency/freescout (wrong/missing image).
+            # GET the app detail to check the image and delete+recreate if necessary.
+            APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_detail.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$EXISTING") || true
+            CURRENT_IMAGE=$(jq -r '.docker_registry_image_name // empty' /tmp/app_detail.json 2>/dev/null || true)
+            echo "Existing FreeScout: $EXISTING (image: $CURRENT_IMAGE)"
+            if [ "$CURRENT_IMAGE" = "thatwebagency/freescout" ]; then
+              echo "Image is non-existent (thatwebagency/freescout not on Docker Hub) — deleting to recreate..."
+              curl -s --max-time 30 -o /dev/null -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$EXISTING" || true
+              EXISTING=""
+            else
+              echo "uuid=$EXISTING" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+          if [ -z "$EXISTING" ] || [ "$EXISTING" = "null" ]; then
+            echo "Creating FreeScout application (tiredofit/freescout)..."
             PAYLOAD=$(jq -n \
               --arg proj "$PROJECT_UUID" \
               --arg srv "$SERVER_UUID" \
@@ -441,7 +396,7 @@ jobs:
                 server_uuid: $srv,
                 environment_name: $env,
                 name: "freescout-staging",
-                docker_registry_image_name: "thatwebagency/freescout",
+                docker_registry_image_name: "tiredofit/freescout",
                 ports_exposes: "80",
                 instant_deploy: false
               }')
@@ -467,13 +422,49 @@ jobs:
             echo "Created FreeScout: $UUID"
           fi
 
-      - name: Set FreeScout DB environment variables
+      - name: Set FreeScout environment variables
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
-          DB_HOST="${{ steps.db-start.outputs.host }}"
-          DB_PASS="${{ steps.db-start.outputs.db_password }}"
-          echo "Setting FreeScout env vars individually (bulk endpoint not available in this Coolify version)..."
-          # Post each env var separately via POST /api/v1/applications/{uuid}/envs
+          # Parse Supabase DB URL: postgresql://user:pass@host:port/dbname[?params]
+          DB_NO_PROTO="${DB_URL#postgresql://}"
+          DB_NO_PROTO="${DB_NO_PROTO#postgres://}"
+          DB_USERPASS="${DB_NO_PROTO%%@*}"
+          DB_USER="${DB_USERPASS%%:*}"
+          DB_PASS="${DB_USERPASS#*:}"
+          DB_HOSTPORTDB="${DB_NO_PROTO##*@}"
+          DB_HOST="${DB_HOSTPORTDB%%:*}"
+          DB_PORTDB="${DB_HOSTPORTDB#*:}"
+          DB_PORT="${DB_PORTDB%%/*}"
+          DB_NAME="${DB_PORTDB##*/}"
+          DB_NAME="${DB_NAME%%\?*}"
+          [ -n "$DB_PASS" ]              && echo "::add-mask::$DB_PASS"
+          [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
+          echo "Parsed DB: host=$DB_HOST port=$DB_PORT db=$DB_NAME user=$DB_USER"
+
+          # tiredofit/freescout uses wrapper env vars (not standard Laravel names).
+          # Clear any stale keys from previous MySQL-based deploys before setting new ones.
+          ENV_HTTP=$(curl -s --max-time 30 -o /tmp/fs_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs") || true
+          if [ "$ENV_HTTP" = "200" ]; then
+            for STALE_KEY in DB_CONNECTION DB_DATABASE DB_USERNAME DB_PASSWORD \
+                             DB_TYPE DB_HOST DB_PORT DB_NAME DB_USER DB_PASS \
+                             DB_PGSQL_SSL_MODE SETUP_TYPE ADMIN_EMAIL ADMIN_PASS; do
+              ENV_UUID=$(jq -r --arg k "$STALE_KEY" '.[] | select(.key == $k) | .uuid' \
+                /tmp/fs_envs.json 2>/dev/null || true)
+              if [ -n "$ENV_UUID" ] && [ "$ENV_UUID" != "null" ]; then
+                DEL_HTTP=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                  -H "Authorization: Bearer $TOKEN" \
+                  "$COOLIFY_BASE/applications/$UUID/envs/$ENV_UUID") || true
+                echo "  Cleared $STALE_KEY: HTTP $DEL_HTTP"
+              fi
+            done
+          else
+            echo "  GET /envs HTTP $ENV_HTTP — proceeding without pre-clear"
+          fi
+
+          # Set tiredofit/freescout env vars for PostgreSQL (Supabase)
           set_env() {
             local KEY="$1" VAL="$2"
             local PAYLOAD
@@ -487,17 +478,23 @@ jobs:
               -d "$PAYLOAD") || true
             echo "  $KEY → HTTP $HTTP"
           }
-          set_env "DB_CONNECTION" "mysql"
-          set_env "DB_HOST"       "$DB_HOST"
-          set_env "DB_PORT"       "3306"
-          set_env "DB_DATABASE"   "freescout"
-          set_env "DB_USERNAME"   "freescout"
-          [ -n "$DB_PASS" ] && set_env "DB_PASSWORD" "$DB_PASS" || echo "  DB_PASSWORD: skipped (no password from MariaDB URL)"
+          set_env "DB_TYPE"           "pgsql"
+          set_env "DB_HOST"           "$DB_HOST"
+          set_env "DB_PORT"           "$DB_PORT"
+          set_env "DB_NAME"           "$DB_NAME"
+          set_env "DB_USER"           "$DB_USER"
+          [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
+            || echo "  DB_PASS: skipped (no password in DB_URL)"
+          set_env "DB_PGSQL_SSL_MODE" "require"
+          set_env "SETUP_TYPE"        "AUTO"
+          set_env "ADMIN_EMAIL"       "mai@leelaecospa.com"
+          [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
+            || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
 
       - name: Deploy (start) FreeScout
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
-          echo "Starting FreeScout $UUID..."
+          echo "Starting FreeScout $UUID (tiredofit/freescout + Supabase PostgreSQL)..."
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
@@ -507,8 +504,8 @@ jobs:
 
       - name: Verify FreeScout health
         run: |
-          echo "Waiting 90s for FreeScout to initialize (DB migrations run on first boot)..."
-          sleep 90
+          echo "Waiting 120s for FreeScout to initialize (PostgreSQL migrations + first-run SETUP_TYPE=AUTO)..."
+          sleep 120
           UUID="${{ steps.freescout.outputs.uuid }}"
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_state.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" \
@@ -523,8 +520,11 @@ jobs:
             HOST="${HOST#http://}"
             HOST="${HOST%/}"
             echo "Checking https://$HOST/"
-            HTTP=$(curl -o /dev/null -s -w "%{http_code}" \
-              --max-time 30 "https://$HOST/" || echo "000")
+            set +e
+            HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 "https://$HOST/")
+            CURL_RC=$?
+            set -e
+            [ "$CURL_RC" != "0" ] && HTTP="000"
             echo "HTTP status: $HTTP"
             [ "$HTTP" = "200" ] && echo "✅ FreeScout healthy" \
               || echo "⚠️  Not yet 200 (may still be starting — check Coolify logs)"
