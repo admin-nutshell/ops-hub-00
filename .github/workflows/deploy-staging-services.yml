@@ -393,7 +393,7 @@ jobs:
               server_uuid:                $srv,
               environment_name:           $env,
               name:                       "freescout-staging",
-              docker_registry_image_name: "tiredofit/freescout",
+              docker_registry_image_name: "nfrastack/freescout:latest",
               ports_exposes:              "80",
               instant_deploy:             false
             }')
@@ -501,19 +501,19 @@ jobs:
           set_env "DB_USER"     "$DB_USER"
           [ -n "$DB_PASS" ] && set_env "DB_PASS" "$DB_PASS" \
             || echo "  DB_PASS: skipped (no password in SUPABASE_STAGING_DB_URL)"
-          set_env "DB_SSL"         "TRUE"
-          # SKIP_DB_READY=TRUE tells the nfrastack/container-base init to bypass the
-          # pg_isready pre-flight loop entirely. That loop retries forever (no timeout)
-          # because pg_isready doesn't complete TLS auth and Supavisor rejects bare
-          # startup packets. FreeScout's own PHP/PDO driver handles SSL auth correctly.
+          # nfrastack/freescout uses FREESCOUT_DB_PGSQL_SSL_MODE for Postgres SSL
+          # (DB_SSL only applies to MySQL/MariaDB in nfrastack)
+          set_env "FREESCOUT_DB_PGSQL_SSL_MODE" "require"
+          # SKIP_DB_READY=TRUE bypasses the pg_isready pre-flight loop in
+          # nfrastack/container-base. That loop retries forever because pg_isready
+          # doesn't complete TLS auth and Supavisor rejects bare startup packets.
+          # FreeScout's own PHP/PDO driver handles SSL auth correctly on first query.
           set_env "SKIP_DB_READY"  "TRUE"
           set_env "SETUP_TYPE"     "AUTO"
-          set_env "SITE_URL"    "$APP_URL"
           set_env "APP_URL"     "$APP_URL"
           set_env "ADMIN_EMAIL" "mai@leelaecospa.com"
           [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
-          set_env "DEBUG_MODE"  "TRUE"
 
           # ── Final connectivity check with discovered pooler ──
           echo ""
@@ -535,7 +535,7 @@ jobs:
       - name: Deploy (start) FreeScout
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
-          echo "Starting FreeScout $UUID (tiredofit/freescout + Supabase PostgreSQL)..."
+          echo "Starting FreeScout $UUID (nfrastack/freescout:latest + Supabase PostgreSQL)..."
           HTTP_CODE=$(curl -s --max-time 30 -o /tmp/fs_start_resp.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
