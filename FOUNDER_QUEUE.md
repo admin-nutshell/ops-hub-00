@@ -49,6 +49,42 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-12 — One-time action: make GHCR package public (ops-hub-00) — BLOCKING
+
+```
+BLOCKING: [Tech Lead] Make ghcr.io/admin-nutshell/ops-hub-00 package visibility = Public.
+
+  Context: Coolify's REST API has no per-app registry credential fields (confirmed from
+  Coolify source code). Registry auth is server-level only, via ~/.docker/config.json on
+  the VPS. GITHUB_TOKEN in CI lacks the scope to change package visibility
+  (write:packages does not cover org-level container visibility changes).
+  The decision to make the package public was already approved (session 2026-06-21).
+  This is a one-time 30-second action to execute that decision.
+
+  Action (do one of these — Option A is fastest):
+
+  OPTION A — GitHub web UI (30 seconds):
+    1. Go to: https://github.com/orgs/admin-nutshell/packages/container/ops-hub-00/settings
+       (or: github.com → Profile → Packages → ops-hub-00 → Package settings)
+    2. Scroll to "Danger Zone" → "Change package visibility"
+    3. Set to "Public" → confirm.
+    Done. No code changes needed. All future CI deploys will pull without auth.
+
+  OPTION B — Add a PAT secret (if you prefer automated enforcement):
+    1. Create a GitHub PAT with scope "write:packages" (or "delete:packages" for org)
+    2. Store it as repo secret: GH_PACKAGES_PAT
+    3. Tech Lead will add a CI step using the PAT to keep the package public.
+
+  After completing Option A or B, the next main push will deploy ops-hub-app
+  successfully. Mark resolved by updating this item to RESOLVED below.
+
+  Impact if delayed: ops-hub-app cannot start in Coolify staging; T-07 Inngest staging
+  registration, T-13 Sentry, and T-14 UptimeRobot all block on staging being live.
+  Linked: PRs #53–#55, T-07, DECISIONS.md 2026-06-21 [Tech Lead]
+```
+
+---
+
 ### ~~FQ-11 — T-10 FreeScout: Supabase Supavisor pooler rejects project~~ — RESOLVED
 
 ```

@@ -77,14 +77,14 @@ jobs:
       # ── Deploy to Coolify staging ─────────────────────────────────────────────
       # Idempotent: creates the ops-hub-app in ops-hub-staging if it does not yet
       # exist, then starts/restarts it.
-      # GHCR auth: GITHUB_TOKEN is passed as docker_registry_token so Coolify's
-      # Docker daemon can pull the private image. This refreshes on every deploy.
+      # NOTE: Coolify does not support per-app registry credentials via API.
+      # GHCR auth is handled at the server level via ~/.docker/config.json.
+      # Prerequisite: `docker login ghcr.io` must be run on the Coolify VPS once
+      # (or the GHCR package must be public). See FOUNDER_QUEUE.md for status.
       - name: Create or deploy ops-hub on Coolify
         id: coolify
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GHCR_USER: ${{ github.actor }}
         run: |
           set -euo pipefail
 
@@ -116,32 +116,29 @@ jobs:
           echo "Project: $PROJECT_UUID  env: $ENV_NAME"
 
           # 3. Create or update ops-hub-app
-          # Pass docker_registry_username + docker_registry_token so Coolify can
-          # docker login ghcr.io with the GITHUB_TOKEN before pulling the image.
+          # Coolify only supports docker_registry_image_name and docker_registry_image_tag
+          # via PATCH (no per-app credential fields exist in the Coolify API).
+          # The image name must NOT include a tag — Coolify appends docker_registry_image_tag
+          # separately. Passing "repo:sha" as the name produces "repo:sha:old-tag" (invalid).
           HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications")
           EXISTING=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null || true)
 
           if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
-            echo "ops-hub-app exists ($EXISTING) — patching image + GHCR credentials..."
-            # docker_registry_image_name must be the repo WITHOUT a tag; Coolify appends
-            # docker_registry_image_tag separately when assembling the full image ref.
-            # Passing "repo:sha" as the name produces "repo:sha:old-tag" = invalid reference.
+            echo "ops-hub-app exists ($EXISTING) — patching image tag to ${{ github.sha }}..."
             PATCH_BODY=$(jq -n \
               --arg img "$IMAGE" \
               --arg tag "${{ github.sha }}" \
-              --arg usr "$GHCR_USER" \
-              --arg tok "$GHCR_TOKEN" \
-              '{docker_registry_image_name:$img,
-                docker_registry_image_tag:$tag,
-                docker_registry_username:$usr,
-                docker_registry_token:$tok}')
+              '{docker_registry_image_name:$img, docker_registry_image_tag:$tag}')
             PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
               -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
               "$COOLIFY_BASE/applications/$EXISTING" -d "$PATCH_BODY")
             echo "PATCH HTTP $PATCH_HTTP"
             jq . /tmp/patch.json 2>/dev/null || cat /tmp/patch.json
+            if [ "$PATCH_HTTP" != "200" ] && [ "$PATCH_HTTP" != "201" ]; then
+              echo "ERROR: PATCH failed (HTTP $PATCH_HTTP)"; exit 1
+            fi
             APP_UUID="$EXISTING"
           else
             echo "Creating ops-hub-app in Coolify ($PROJECT_UUID)..."
@@ -149,12 +146,9 @@ jobs:
               --arg proj "$PROJECT_UUID" --arg srv "$SERVER_UUID" --arg env "$ENV_NAME" \
               --arg img "$IMAGE" \
               --arg tag "${{ github.sha }}" \
-              --arg usr "$GHCR_USER" \
-              --arg tok "$GHCR_TOKEN" \
               '{project_uuid:$proj, server_uuid:$srv, environment_name:$env,
                 name:"ops-hub-app", docker_registry_image_name:$img,
                 docker_registry_image_tag:$tag,
-                docker_registry_username:$usr, docker_registry_token:$tok,
                 ports_exposes:"3000", instant_deploy:false}')
             CREATE_HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
