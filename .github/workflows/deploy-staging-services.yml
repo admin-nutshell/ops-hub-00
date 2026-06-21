@@ -422,6 +422,17 @@ jobs:
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
           echo "Created FreeScout: $UUID"
 
+      - name: Probe — Supabase pooler DNS + connectivity
+        run: |
+          echo "=== Supabase session pooler DNS records ==="
+          echo "A (IPv4) records:"
+          dig A aws-0-ca-central-1.pooler.supabase.com +short 2>/dev/null || nslookup aws-0-ca-central-1.pooler.supabase.com 2>&1 | grep "Address:" | tail -n +2
+          echo "AAAA (IPv6) records:"
+          dig AAAA aws-0-ca-central-1.pooler.supabase.com +short 2>/dev/null || echo "(dig AAAA unavailable)"
+          echo "TCP-5432 reachable from GitHub Actions runner:"
+          timeout 5 bash -c 'cat < /dev/null > /dev/tcp/aws-0-ca-central-1.pooler.supabase.com/5432' 2>&1 \
+            && echo "OPEN" || echo "BLOCKED/TIMEOUT (exit $?)"
+
       - name: Set FreeScout environment variables
         run: |
           UUID="${{ steps.freescout.outputs.uuid }}"
@@ -492,6 +503,7 @@ jobs:
           set_env "ADMIN_EMAIL" "mai@leelaecospa.com"
           [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" \
             || echo "  ADMIN_PASS: skipped (FREESCOUT_STAGING_ADMIN_PASS secret not set)"
+          set_env "DEBUG_MODE"  "TRUE"
 
       - name: Deploy (start) FreeScout
         run: |
