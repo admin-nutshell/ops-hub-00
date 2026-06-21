@@ -107,6 +107,23 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Fix strategy determined by diagnostic output.
 ```
 
+### 2026-06-21 — T-10 FreeScout root cause confirmed + PR #31 fix
+
+```
+2026-06-21 [Production Manager] T-10 FreeScout PR #30 (diagnostic): root cause CONFIRMED.
+  Run #27895401460: both app and DB on same destination (uuid: vdo878a68cilactub9fh2zcr,
+  network: "coolify") — network isolation is ruled out. DB status was "exited:unhealthy"
+  within 3s of instant_deploy:true and never recovered in 180s. Root cause: Coolify
+  DELETE /databases is async ("request queued") — old container holds port 5432 while new
+  container tries to bind → immediate exit. All FreeScout failures from PRs #25–#30 trace
+  to this same race: delete-and-immediately-recreate under async deletion.
+2026-06-21 [Production Manager] T-10 FreeScout PR #31: fix async deletion race by preserving
+  freescout-postgres across runs. Cleanup step no longer deletes the DB. Provision step
+  reuses existing DB if present (instant_deploy:false), creates only if absent. Polling
+  timeout extended 90s→180s; WARNING changed to exit 1 to prevent FreeScout starting
+  against a non-running DB. → PR #31
+```
+
 ---
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*

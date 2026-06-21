@@ -304,16 +304,13 @@ jobs:
             echo "LiteLLM UUID for dashboard lookup: $UUID"
           fi
 
-  # ─── T-10: FreeScout (PR #30: diagnostic pass — confirm root cause before any fix) ────────
-  # Prior attempts:
-  #   - Supabase (5432/6543): VPS firewall blocks ALL outbound PostgreSQL traffic (#25)
-  #   - connect_to_docker_network: true — stored in application.settings but absent from
-  #     ApplicationDeploymentJob.php; has NO effect on runtime Docker Compose network (#29)
-  #   - custom_docker_run_options "--network=X": silently ignored (not in convertDockerRunToCompose)
-  #   - POST /applications/dockercompose: 404 — endpoint does not exist in this Coolify version
-  # PR #30 goal: capture full JSON for both app and DB to confirm whether they share the same
-  # destination_uuid/network. TCP-timeout retry pattern (10s interval, not 5s) suggests DNS
-  # resolves but TCP SYN is dropped — consistent with different-subnet isolation, not timing.
+  # ─── T-10: FreeScout (PR #31: fix DB port-conflict from async Coolify deletion) ──────────────
+  # Root cause (confirmed PR #30 run #27895401460):
+  #   DELETE /databases/{uuid} returns {"message":"Database deletion request queued."} — async.
+  #   Old PostgreSQL container holds port 5432 while new container tries to bind → port conflict
+  #   → new container exits immediately → status stays "exited:unhealthy" throughout deploy.
+  # Fix: never delete-and-recreate the DB. Reuse existing "freescout-postgres" if it exists;
+  #   create a new one only when none is present. Coolify's start is idempotent on running DBs.
   deploy-freescout:
     name: T-10 — FreeScout staging
     needs: discover
@@ -369,67 +366,70 @@ jobs:
             EXISTING_DB=$(jq -r '.[] | select(.name == "freescout-postgres") | .uuid' \
               /tmp/dbs.json 2>/dev/null || true)
             if [ -n "$EXISTING_DB" ] && [ "$EXISTING_DB" != "null" ]; then
-              echo "Deleting freescout-postgres ($EXISTING_DB)..."
-              DEL_HTTP=$(curl -s --max-time 30 -o /tmp/db_del_resp.json -w "%{http_code}" -X DELETE \
-                -H "Authorization: Bearer $TOKEN" \
-                "$COOLIFY_BASE/databases/$EXISTING_DB") || true
-              echo "Delete DB HTTP $DEL_HTTP"
-              cat /tmp/db_del_resp.json 2>/dev/null || true
+              echo "Preserving freescout-postgres ($EXISTING_DB) — will reuse in next step"
             else
-              echo "No freescout-postgres DB found"
+              echo "No existing freescout-postgres DB found — will create in next step"
             fi
           else
-            echo "Could not list databases (HTTP $HTTP_CODE) — skipping DB cleanup"
+            echo "Could not list databases (HTTP $HTTP_CODE) — next step will attempt create"
           fi
 
-      - name: Create FreeScout PostgreSQL DB
+      - name: Provision FreeScout PostgreSQL DB
         id: freescout_db
         run: |
-          echo "Creating freescout-postgres (Coolify-managed PostgreSQL)..."
-          PAYLOAD=$(jq -n \
-            --arg proj "$PROJECT_UUID" \
-            --arg srv  "$SERVER_UUID" \
-            --arg env  "$ENV_NAME" \
-            '{
-              project_uuid:     $proj,
-              server_uuid:      $srv,
-              environment_name: $env,
-              name:             "freescout-postgres",
-              instant_deploy:   true
-            }')
-          for attempt in 1 2 3; do
-            HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $TOKEN" \
-              -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/databases/postgresql" \
-              -d "$PAYLOAD") || true
-            [ "$HTTP_CODE" != "000" ] && break
-            echo "Attempt $attempt/3: Coolify unreachable, waiting 20s..."
-            sleep 20
-          done
-          echo "DB create HTTP $HTTP_CODE"
-          jq . /tmp/db_create_resp.json 2>/dev/null || cat /tmp/db_create_resp.json
-          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
-            echo "ERROR: failed to create freescout-postgres (HTTP $HTTP_CODE)"
-            exit 1
-          fi
-          DB_UUID=$(jq -r '.uuid // .database_uuid // empty' /tmp/db_create_resp.json 2>/dev/null)
-          if [ -z "$DB_UUID" ] || [ "$DB_UUID" = "null" ]; then
-            echo "ERROR: no UUID in DB create response"
-            exit 1
+          # Reuse existing DB if present; only create if absent.
+          # Rationale: DELETE /databases is async ("request queued") — old container keeps
+          # holding port 5432 until the queue job runs, causing a port conflict for the new
+          # container. Preserving the DB eliminates this race. (Root cause confirmed PR #30.)
+          DB_UUID=$(jq -r '.[] | select(.name == "freescout-postgres") | .uuid' \
+            /tmp/dbs.json 2>/dev/null || true)
+
+          if [ -n "$DB_UUID" ] && [ "$DB_UUID" != "null" ]; then
+            echo "Reusing existing freescout-postgres: $DB_UUID"
+          else
+            echo "No existing freescout-postgres found — creating fresh..."
+            PAYLOAD=$(jq -n \
+              --arg proj "$PROJECT_UUID" \
+              --arg srv  "$SERVER_UUID" \
+              --arg env  "$ENV_NAME" \
+              '{
+                project_uuid:     $proj,
+                server_uuid:      $srv,
+                environment_name: $env,
+                name:             "freescout-postgres",
+                instant_deploy:   false
+              }')
+            for attempt in 1 2 3; do
+              HTTP_CODE=$(curl -s --max-time 60 -o /tmp/db_create_resp.json -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" \
+                -H "Accept: application/json" \
+                "$COOLIFY_BASE/databases/postgresql" \
+                -d "$PAYLOAD") || true
+              [ "$HTTP_CODE" != "000" ] && break
+              echo "Attempt $attempt/3: Coolify unreachable, waiting 20s..."
+              sleep 20
+            done
+            echo "DB create HTTP $HTTP_CODE"
+            jq . /tmp/db_create_resp.json 2>/dev/null || cat /tmp/db_create_resp.json
+            if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+              echo "ERROR: failed to create freescout-postgres (HTTP $HTTP_CODE)"
+              exit 1
+            fi
+            DB_UUID=$(jq -r '.uuid // .database_uuid // empty' /tmp/db_create_resp.json 2>/dev/null)
+            if [ -z "$DB_UUID" ] || [ "$DB_UUID" = "null" ]; then
+              echo "ERROR: no UUID in DB create response"
+              exit 1
+            fi
+            echo "Created freescout-postgres: $DB_UUID"
           fi
           echo "db_uuid=$DB_UUID" >> "$GITHUB_OUTPUT"
-          echo "Created freescout-postgres: $DB_UUID"
-          # DIAGNOSTIC: capture full DB detail — specifically destination_uuid and network
-          sleep 3
-          echo "=== DIAGNOSTIC: Full DB resource detail ==="
-          DB_DIAG=$(curl -s --max-time 30 \
+          echo "=== DIAGNOSTIC: DB resource detail ==="
+          curl -s --max-time 30 \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/json" \
-            "$COOLIFY_BASE/databases/$DB_UUID") || true
-          echo "$DB_DIAG" | jq '{uuid, name, status, type, destination_uuid, destination}' \
-            2>/dev/null || echo "$DB_DIAG"
+            "$COOLIFY_BASE/databases/$DB_UUID" \
+            | jq '{uuid, name, status, type, destination_uuid, destination}' 2>/dev/null || true
 
       - name: Create FreeScout app (connect to Docker network)
         id: freescout
@@ -504,16 +504,16 @@ jobs:
             -H "Authorization: Bearer $TOKEN" \
             "$COOLIFY_BASE/databases/$DB_UUID/start" || true
 
-          # Poll for DB status — max 90s, checking every 10s
-          echo "Polling freescout-postgres status (max 90s)..."
+          # Poll for DB status — max 180s, checking every 10s
+          echo "Polling freescout-postgres status (max 180s)..."
           DB_READY=false
-          for i in $(seq 1 9); do
+          for i in $(seq 1 18); do
             DB_HTTP=$(curl -s --max-time 30 -o /tmp/db_detail.json -w "%{http_code}" \
               -H "Authorization: Bearer $TOKEN" \
               -H "Accept: application/json" \
               "$COOLIFY_BASE/databases/$DB_UUID") || true
             DB_STATUS=$(jq -r '.status // "unknown"' /tmp/db_detail.json 2>/dev/null)
-            echo "  DB poll $i/9: status=$DB_STATUS (HTTP $DB_HTTP)"
+            echo "  DB poll $i/18: status=$DB_STATUS (HTTP $DB_HTTP)"
             case "$DB_STATUS" in running*|healthy*) DB_READY=true; break ;; esac
             sleep 10
           done
@@ -521,7 +521,8 @@ jobs:
           jq 'del(.postgres_password, .internal_db_url)' /tmp/db_detail.json 2>/dev/null \
             || cat /tmp/db_detail.json
           if [ "$DB_READY" = "false" ]; then
-            echo "WARNING: DB did not reach running status after 90s — proceeding (last: $DB_STATUS)"
+            echo "ERROR: DB did not reach running status after 180s (last: $DB_STATUS) — aborting"
+            exit 1
           fi
 
           # Fetch internal connection URL
