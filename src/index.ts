@@ -1,4 +1,5 @@
 import "./instrument";
+import * as Sentry from "@sentry/node";
 import http from "http";
 import { serve } from "inngest/node";
 import { inngest } from "./inngest/client";
@@ -20,7 +21,11 @@ export const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "GET" && req.url === "/debug-sentry") {
-    throw new Error("Sentry test error from ops-hub-staging");
+    const err = new Error("Sentry test error from ops-hub-staging");
+    Sentry.captureException(err);
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Test error captured by Sentry" }));
+    return;
   }
   res.writeHead(404);
   res.end();
