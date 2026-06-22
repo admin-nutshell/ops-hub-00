@@ -70,7 +70,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | LangFuse UI reachable; first trace logged from LiteLLM after T-08 | Jul 2 |
 | T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | ✅ **DONE (2026-06-21).** FreeScout v2.1.2 (nfrastack/freescout:latest) deployed to Coolify staging; all health checks green (run #27916949231, 3m50s). URL: Coolify-assigned staging FQDN. Root causes fixed via PRs #42–#46: SKIP_DB_READY (nfrastack image switch), pooler URL port-parse guard, DB_SSL_MODE=require for laravel psql check. FQ-11 resolved by founder (correct pooler hostname confirmed). | Jul 2 |
 | ↳ PRs #42–#46: tiredofit→nfrastack image, SKIP_DB_READY, DB_SSL_MODE=require, URL port-parse guard. Run #27916949231 ✅. | | | | 2026-06-21 |
-| T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`; Security Lead review required (gates migration 2); awaiting founder execution. | Jul 2 |
+| T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`. ✅ **Security Lead sign-off recorded (2026-06-21, APPROVED WITH CONDITIONS, C1 fix applied).** Awaiting **founder execution only** — see FQ-15 in FOUNDER_QUEUE.md. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned | All secrets in Vault; zero keys in env files, git, or Coolify env vars | Jul 2 |
 | T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | **⏳ SDK deployed (2026-06-21, PR #60, run #27921393191).** `SENTRY_DSN` already set in Coolify env. Pending: verify first error in Sentry dashboard. | Jul 2 |
 | T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **⏳ Blocked — FQ-14**: no UptimeRobot API key available. See FOUNDER_QUEUE.md FQ-14. | Jul 2 |
@@ -101,7 +101,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-11 (migrations) | Security Lead sign-off on migration 2 (RLS policies) + founder execution of runbook | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
+| T-11 (migrations) | **Founder execution of runbook** (FQ-15) — Security Lead sign-off already recorded (2026-06-21) | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
 | T-07 Inngest Cloud registration | **FQ-13**: INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY must be provisioned from Inngest Cloud dashboard by founder (same pattern as FQ-12). App is live and `/api/inngest` ready. | M1 #4 remains partial; T-09 trace test blocked | Production Manager |
 
 ---
@@ -122,7 +122,7 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 
 ### Tech Lead
 **🟢 T-11 RUNBOOK READY (2026-06-20) — founder-run path chosen; agents never hold service_role key.**
-Decision: rather than provide agents a `DATABASE_URL`, the founder applies the two migrations themselves using a copy-paste runbook → `docs/engineering/t11-migration-runbook.md`. Runbook gates migration 2 (`20260618120100_enable_rls_policies.sql`) behind Security Lead sign-off, uses per-file `psql -f` (NOT `supabase db push`, which would apply both migrations at once and bypass the gate), and includes PowerShell-native commands for the founder's Windows environment. **Awaiting: (1) Security Lead RLS sign-off, (2) founder execution.** `ops_hub_app` login-role wiring follows in T-12.
+Decision: rather than provide agents a `DATABASE_URL`, the founder applies the two migrations themselves using a copy-paste runbook → `docs/engineering/t11-migration-runbook.md`. Runbook gates migration 2 (`20260618120100_enable_rls_policies.sql`) behind Security Lead sign-off, uses per-file `psql -f` (NOT `supabase db push`, which would apply both migrations at once and bypass the gate), and includes PowerShell-native commands for the founder's Windows environment. **Security Lead sign-off recorded (2026-06-21, APPROVED WITH CONDITIONS, C1 applied — `authenticated` removed from `audit_log_insert`).** **Awaiting: founder execution — see FQ-15 in FOUNDER_QUEUE.md.** `ops_hub_app` login-role wiring follows in T-12.
 
 **Branch protection (2026-06-20): ✅ FULLY ACTIVE.** GitHub Team upgrade executed. Branch protection configured on `main`: require Lint & Type Check + Unit Tests + Security Scan (all 3 required); strict (branches up to date); ≥1 approval; dismiss stale reviews; no direct push; no force-push; no deletion.
 
