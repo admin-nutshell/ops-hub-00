@@ -3,6 +3,7 @@ import http from "http";
 import { serve } from "inngest/node";
 import { inngest } from "./inngest/client";
 import { helloWorld } from "./inngest/functions";
+import { emitTrace } from "./langfuse";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
@@ -15,6 +16,7 @@ export const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
+    void emitTrace("health-check");
     return;
   }
   res.writeHead(404);
