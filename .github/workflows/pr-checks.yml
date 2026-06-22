@@ -102,6 +102,59 @@ jobs:
           fi
           pnpm test:integration
 
+  evals:
+    name: Eval Gate
+    runs-on: ubuntu-latest
+    env:
+      # No telemetry calls out of CI; keeps the gate hermetic.
+      PROMPTFOO_DISABLE_TELEMETRY: 1
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 20
+        # promptfoo (run via npx below) requires Node >= 20.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      # Sprint 1 gate: STRUCTURE-ONLY validation, no live LLM calls.
+      #
+      # `promptfoo validate` checks each eval YAML against the promptfoo config
+      # schema and exits non-zero on a malformed/invalid file, so a broken eval
+      # blocks merge. It is INTENDED to be schema-only (no `anthropic:` provider or
+      # `llm-rubric` grader invocation, hence no API key required). This has NOT yet
+      # been confirmed against these specific configs — the first CI run on this PR
+      # is the verifier: the job MUST stay green with no API key in the environment,
+      # AND go red when an eval YAML is malformed. If `validate` turns out to need a
+      # key, fall back to a YAML-schema lint (see WORK.md Evals Lead note).
+      #
+      # We run promptfoo via `npx` (not a project devDependency) on purpose: it keeps
+      # the eval toolchain out of the app's dependency closure, so `pnpm install
+      # --frozen-lockfile` in the other jobs is unaffected. Version pinned to the
+      # 0.121 series for reproducibility.
+      #
+      # To upgrade this to a REAL LLM-backed gate later: add the provider API key as
+      # a repo secret (e.g. ANTHROPIC_API_KEY), expose it to this job's `env`, and
+      # swap the loop for `pnpm eval` (promptfoo eval --config 'evals/*.yaml').
+      - name: Validate eval suite (schema-only — no live LLM calls)
+        run: |
+          if [ -z "$(ls evals/*.yaml 2>/dev/null)" ]; then
+            echo "No eval files found under evals/ — nothing to validate."
+            exit 0
+          fi
+          status=0
+          for f in evals/*.yaml; do
+            echo "::group::Validating $f"
+            if ! npx -y promptfoo@0.121 validate -c "$f"; then
+              echo "::error file=$f::Eval config failed schema validation"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
