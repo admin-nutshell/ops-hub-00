@@ -92,8 +92,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-19: Write first integration test: ticket intake → `new` → `triaged` state machine | QA Manager | ✅ T-10; ✅ T-11 | 🟡 **In progress — `src/integration/ticket-state-machine.test.ts`, PR opened 2026-06-21; skips when staging credentials absent.** Uses `service_role` key for now (RLS bypass — `ops_hub_app_login` not yet wired); `// TODO T-12` migrate after Vault. CI integration guard + `test:integration` script repointed `tests/integration` → `src/integration`. | Jul 4 |
-| T-20: Initialize KB structure in Supabase (index, categories, placeholder articles) | Knowledge Lead | ✅ T-11 | 🟢 **UNBLOCKED (2026-06-21).** Knowledge Lead to proceed. KB table populated; first 2 placeholder articles committed | Jul 4 |
+| T-19: Write first integration test: ticket intake → `new` → `triaged` state machine | QA Manager | ✅ T-10; ✅ T-11 | ✅ **Done (2026-06-21, PR #70)** — `src/integration/ticket-state-machine.test.ts`; skips in CI (no staging creds); uses `service_role` for now; `// TODO T-12` migrate to `ops_hub_app_login`. | Jul 4 |
+| T-20: Initialize KB structure in Supabase (index, categories, placeholder articles) | Knowledge Lead | ✅ T-11 | ✅ **Done (2026-06-21, PR #71)** — `docs/knowledge/kb-structure.md` + `supabase/migrations/20260621130000_kb_seed.sql`; 2 placeholder articles; ANN index deferred until rows populated | Jul 4 |
 
 ---
 
@@ -184,8 +184,13 @@ T-12 (Vault setup) is now the active task: wire `ops_hub_app` login role credent
 **Active.** T-16 (11 eval cases) starts immediately — no infra dependency. T-17 (CI wiring) blocked on T-15.
 
 ### Knowledge Lead
-**🟢 T-20 UNBLOCKED (2026-06-21) — T-11 migrations complete. `kb_articles` table live.**
-T-20 is now the active task: initialize KB structure in Supabase (index, categories, first 2 placeholder articles).
+**✅ T-20 DONE (2026-06-21) — KB structure committed.**
+
+`docs/knowledge/kb-structure.md` — 6-category taxonomy, naming conventions, embedding model note (`text-embedding-ada-002`, 1536 dims), mandatory `WHERE project_id = $1` search pattern, RAG quality targets.
+
+`supabase/migrations/20260621130000_kb_seed.sql` — seeds `ops-hub` project row (fixed UUID `00000000-0000-0000-0000-000000000001`, dev/staging only) + 2 placeholder KB articles (`Ops Hub — Getting Started`, `FreeScout → Ops Hub ticket intake runbook`). Embeddings null; ANN index deferred to Data Engineer embedding pipeline.
+
+Notifying: QA Manager + Evals Lead — new KB domain content available for eval/test coverage. Data Engineer — 2 unembedded articles in `ops-hub` namespace ready for T-09 follow-up embedding pipeline.
 
 ### Frontend Engineer
 **Minimal Sprint 1 scope.** No frontend tasks until FreeScout wired and ticket flow established (Sprint 2 / M2 scope). Monitor for T-10 completion — will be needed to verify FreeScout UI before sign-off.
