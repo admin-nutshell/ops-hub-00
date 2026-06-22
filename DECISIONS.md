@@ -310,11 +310,14 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   ops-hub-app had no HTTPS FQDN configured in Coolify — Traefik has no HTTPS router for the
   subdomain and falls through to TTS catch-all rule. HTTP:80 works correctly (/health → 200,
   /api/inngest → 401 signing-key-active). Inngest Cloud requires HTTPS for app sync.
-  Fix (PR #78): add fix-https-fqdn.yml workflow_dispatch that PATCHes Coolify app fqdn to
-  https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io + restarts app + polls HTTPS
-  health. Also update main-deploy.yml to always include fqdn in PATCH so every deploy
-  maintains HTTPS. After PR #78 merges: dispatch fix-https-fqdn.yml → verify HTTPS live →
-  founder syncs Inngest Cloud → T-07 complete.
+  Coolify REST API confirmed the FQDN is http:// (GET /applications) but PATCH with fqdn
+  returns 422 "not allowed" for docker image app type. Fix requires Coolify UI change (FQ-18):
+  founder changes http:// to https:// in Coolify dashboard for ops-hub-app → restart.
+  After UI change: dispatch fix-https-fqdn.yml (PR #78/79) to verify HTTPS health → founder
+  syncs Inngest Cloud → T-07 complete. main-deploy.yml updated (PR #78) to include fqdn in
+  PATCH on each deploy — this will keep HTTPS after the first successful PATCH (future Coolify
+  versions may allow it) and won't break existing deploys (422 is only a PATCH rejection, not
+  a deployment blocker).
 
 2026-06-22 [PM] WORK.md merge conflict fix: T-17 row had raw conflict markers committed in
   PR #77 (conflict resolution committed both sides of the merge marker instead of the

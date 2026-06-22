@@ -22,7 +22,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 1 | GitHub repo with full plan + workspace files | Founder | ✅ Done (2026-06-18) |
 | 2 | Coolify projects provisioned: `ops-hub-staging` and `ops-hub-prod` | **Founder** | ✅ Done (2026-06-20) — 34 env vars configured in staging; 6 GitHub secrets set |
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
-| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. **T-07 Inngest: ops-hub-app ✅ DEPLOYED** (HTTP `/health` → 200, `/api/inngest` → 401 signing-key-active). Root cause of Inngest sync failure found (2026-06-22): HTTPS:443 routed to TTS app (no HTTPS FQDN configured). **Fix: PR #78** — dispatch `fix-https-fqdn.yml` after merge → Traefik HTTPS routing corrected → founder syncs Inngest Cloud. |
+| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. **T-07 Inngest: ops-hub-app ✅ DEPLOYED** (HTTP works; HTTPS:443 → TTS app). HTTPS root cause + API limit confirmed (2026-06-22): Coolify PATCH rejects `fqdn` for docker image apps (422). **Fix: FQ-18** — founder changes domain to https:// in Coolify UI → restart → `fix-https-fqdn.yml` verifies → founder syncs Inngest Cloud. |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **T-10 DONE (2026-06-21).** FreeScout v2.1.2 running on Coolify staging; health check green; Supabase Postgres connected via session pooler (aws-1-ca-central-1). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **Done (2026-06-22).** T-15 + T-17 complete. 4 required checks: Lint & Type Check, Unit Tests, Security Scan, Eval Gate. Staging auto-deploy on merge via `main-deploy.yml`. |
@@ -63,7 +63,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-07: Deploy Inngest (connect to Inngest Cloud) in staging + prod | Production Manager | ✅ Coolify; ✅ T-15 done | Inngest dashboard shows both envs; test event processed | Jul 2 |
-| ↳ **ops-hub-app ✅ DEPLOYED (2026-06-21).** Run #27921007847 — all steps green. HTTP `/health` → 200, HTTP `/api/inngest` → 401 (signing key active). FQ-13 RESOLVED: INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY in Coolify. **Root cause (2026-06-22):** HTTPS:443 routed to TTS app — Traefik fell through to catch-all because ops-hub-app had no HTTPS FQDN. **Fix in PR #78:** `fix-https-fqdn.yml` workflow PATCHes FQDN to `https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`; `main-deploy.yml` updated to maintain HTTPS FQDN on every deploy. After PR #78 merges: dispatch `Fix ops-hub-app HTTPS FQDN` workflow → HTTPS health passes → founder syncs Inngest Cloud → T-07 done. | | | | 2026-06-22 |
+| ↳ **ops-hub-app ✅ DEPLOYED (2026-06-21).** HTTP `/health` → 200, `/api/inngest` → 401 (signing key active). **HTTPS root cause confirmed (2026-06-22):** Coolify FQDN = `http://...`; Traefik has no HTTPS router for subdomain → routes to TTS. Coolify PATCH API returns 422 for `fqdn` on docker image apps. **Fix: FQ-18** — founder changes `http://` → `https://` in Coolify UI for ops-hub-app → restart → dispatch `fix-https-fqdn.yml` to verify. After HTTPS live: founder syncs Inngest Cloud → T-07 done. | | | | 2026-06-22 |
 | T-08: Deploy LiteLLM (self-hosted) to staging + prod on Coolify | Production Manager | ✅ Coolify provisioned | LiteLLM running; test API call returns model response | Jul 2 |
 | ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. | | | | 2026-06-20 |
 | ↳ **[PR #8](https://github.com/admin-nutshell/ops-hub-00/pull/8) — ✅ MERGED (2fea606).** Pre-flight diagnostics + full HTTP capture. Run #27887003804 confirmed root cause: Coolify API gate disabled (see FQ-07). | | | | 2026-06-20 |
@@ -101,7 +101,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-07 Inngest HTTPS fix | **PR #78 (fix/t07-https-fqdn) open — merge + dispatch `fix-https-fqdn.yml` workflow** → HTTPS health passes → founder syncs Inngest Cloud | M1 #4 remains partial until Inngest sync confirmed | Production Manager |
+| T-07 Inngest HTTPS fix | **FQ-18 filed** — founder changes domain from http:// to https:// in Coolify UI for ops-hub-app → restart → dispatch `fix-https-fqdn.yml` to verify → founder syncs Inngest Cloud | M1 #4 remains partial until Inngest sync confirmed | Production Manager |
 | ~~T-18 (RLS isolation test)~~ | ~~**T-12** (Vault + `ops_hub_app` login role)~~ — Resolved 2026-06-22: T-12 merged (PR #69); T-18 test written (PR #72). | — | Security Lead |
 
 ---
