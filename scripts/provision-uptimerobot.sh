@@ -68,7 +68,7 @@ create_monitor() {
   echo "ERROR: Unexpected response for $name (stat=$stat)" >&2
   echo "Full response: $response" >&2
   return 1
-fi
+}
 
 ERRORS=0
 
