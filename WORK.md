@@ -56,7 +56,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-03: Design Ops Hub Supabase schema (tickets, tenants, agents, events, audit_log, feature_flags) | Tech Lead | — | ✅ Done (2026-06-18). `docs/engineering/database-schema.md` + 2 migrations in `supabase/migrations/`. ⏳ Needs Security Lead RLS sign-off — see flags in schema doc §6. | Jun 27 |
 | T-04: Draft Project Context schema for TTS v1 | Solutions Architect | — | In progress — PR opened 2026-06-21. JSON schema spec committed to `docs/engineering/project-context-schema.md`; Tech Lead review pending. | Jun 27 |
 | T-05: Write CI/CD pipeline spec (lint + test + eval gate + staging auto-deploy + prod manual promotion) | Tech Lead | — | ✅ Done (2026-06-18). `docs/engineering/ci-cd-pipeline.md` rewritten implementation-ready; toolchain = Node/TS primary. | Jun 27 |
-| T-06: Author Sprint 1 test plan (infrastructure verification scope) | QA Manager | — | Test plan committed to `docs/testing/sprint-1-test-plan.md` | Jun 27 |
+| T-06: Author Sprint 1 test plan (infrastructure verification scope) | QA Manager | — | In progress — PR opened 2026-06-21. Test plan at `docs/testing/sprint-1-test-plan.md` (`feat/t06-sprint1-test-plan`). | Jun 27 |
 
 ### Track B — Infrastructure Provisioning (🟢 unblocked — Coolify + Supabase both provisioned)
 
