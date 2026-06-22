@@ -84,7 +84,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | ↳ **[PR #3](https://github.com/admin-nutshell/ops-hub-00/pull/3) — ✅ MERGED (295a481).** Gitleaks CLI fix — all 3 CI checks now functional. | | | | 2026-06-20 |
 | ↳ **[PR #2](https://github.com/admin-nutshell/ops-hub-00/pull/2) — ✅ MERGED (0860ff4). T-15 COMPLETE.** Node 20 + TS + pnpm scaffold; Lint ✅ Test ✅ Security ✅. Unblocks T-07, T-13, Coolify app deploy. | | | | 2026-06-20 |
 | ↳ **Branch protection: ✅ FULLY ACTIVE.** 3 required checks (Lint & Type Check, Unit Tests, Security Scan), strict, 0 required approvals (↓ from 1; founder is sole contributor, self-approval impossible — CI gates are the quality bar), enforce_admins=true, dismiss stale, no force-push, no deletion. Updated 2026-06-21 by Tech Lead. | | | | 2026-06-20 |
-| T-16: Author 1 eval case per agent (11 total minimum) | Evals Lead | — | 11 `.yaml` eval files committed to `evals/`; each tests the agent's core capability | Jul 4 |
+| T-16: Author 1 eval case per agent (11 total minimum) | Evals Lead | — | In progress — 11 .yaml eval files committed, PR opened 2026-06-21 (`evals/`, one per agent, each tests the agent's core capability) | Jul 4 |
 | T-17: Wire Promptfoo eval gate into CI (failing eval blocks PR merge) | Evals Lead | T-15; T-16 | Failing eval blocks merge; passing eval trace visible in LangFuse | Jul 4 |
 | T-18: Verify cross-tenant RLS isolation (automated test) | Security Lead | T-11; T-12 | Test confirms tenant A cannot read tenant B rows; committed to CI | Jul 4 |
 

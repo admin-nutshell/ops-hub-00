@@ -1,0 +1,43 @@
+# evals/security_lead.eval.yaml
+# Why this eval exists: the Security Lead's most frequent live decision is secrets routing —
+# does a new value belong in Supabase Vault (a secret) or in Coolify env vars (non-secret
+# config)? The failure mode is waving through a credential into plaintext Coolify env. We
+# test that the agent classifies correctly AND justifies the boundary.
+
+description: "Security Lead — classify a new env var as Vault secret vs. Coolify config and justify"
+
+prompts:
+  - |
+    You are the Security Lead agent for the Ops Hub.
+
+    Context:
+    - A PR adds two new environment variables to the `ops-hub-app` deployment:
+      1. `OPENAI_API_KEY` — a live provider API key used by LiteLLM fallback.
+      2. `LITELLM_BASE_URL` — the internal staging URL of the self-hosted LiteLLM service.
+    - Project policy: all secrets live in Supabase Vault; zero keys in env files, git, or
+      Coolify env vars. Non-secret runtime config may live in Coolify env vars.
+
+    Task: For each of the two variables, decide whether it belongs in Supabase Vault or in
+    Coolify env vars, and explain the reasoning. Flag anything that would violate the
+    secrets-hygiene policy if merged as-is.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the Security Lead / AppSec agent for the In a Tech-Shell Ops Hub. You own
+        OWASP review, API Vault discipline, and secrets hygiene. Project policy is that all
+        secrets live in Supabase Vault with zero keys in env files, git, or Coolify env vars;
+        non-secret runtime config may live in Coolify env vars. You block what is unsafe and
+        explain why, naming threats clearly without alarmism.
+
+tests:
+  - description: "Routes the secret to Vault, the non-secret to Coolify, and justifies the boundary"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Classify `OPENAI_API_KEY` as a secret that must live in Supabase Vault, and flag it as a policy violation if merged into Coolify env vars or committed.
+          - Classify `LITELLM_BASE_URL` as non-secret runtime config that is acceptable in Coolify env vars (it is an internal URL, not a credential).
+          - Justify the distinction in terms of the secrets-hygiene policy (credentials vs. non-sensitive config), not arbitrarily.
+        threshold: 0.8

@@ -1,0 +1,44 @@
+# evals/solutions_architect.eval.yaml
+# Why this eval exists: the Solutions Architect's core test is whether a tenant customization
+# request gets generalized into a portable pattern or politely declined — never hardcoded to
+# TTS. The failure mode is a one-off integration that breaks Project #2 portability. We test
+# the generalize-or-decline judgment and portability discipline.
+
+description: "Solutions Architect — handle a tenant integration request while preserving project portability"
+
+prompts:
+  - |
+    You are the Solutions Architect agent for the Ops Hub.
+
+    Context:
+    - A TTS tenant wants their own Sentry project's alerts to open tickets in the Ops Hub via
+      a webhook. They've asked for a custom endpoint hardcoded to their Sentry org slug.
+    - The hub is multi-tenant and must stay portable: a hypothetical Project #2 should be able
+      to plug in without rework. Onboarding target is < 1 day per tenant.
+
+    Task: Decide how to satisfy this request. Determine whether to build it as a generalized,
+    reusable integration pattern or to decline the hardcoded form, and describe the integration
+    so it does not introduce TTS- or tenant-specific assumptions into the platform. Note who you
+    would loop in for security review.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the Solutions Architect / Customer Integration Owner agent for the In a
+        Tech-Shell Ops Hub. You own onboarding playbooks and integration patterns. You treat
+        every "small" customization request as a chance to either generalize it into a reusable
+        pattern or politely decline, you hold the line on project-to-project portability (no
+        hardcoded tenant/project assumptions), and you loop in the Security Lead for any
+        integration touching auth, secrets, or tenant data.
+
+tests:
+  - description: "Generalizes the integration into a portable pattern (not a hardcoded one-off) and routes security review"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Reject or rework the hardcoded-to-one-tenant form and instead propose a generalized, reusable Sentry->webhook integration pattern that is configured per tenant rather than baked into the platform.
+          - Explicitly preserve project/tenant portability (the design must work for a future Project #2 / other tenants without rework, no TTS-specific hardcoding).
+          - Route the integration to the Security Lead for review, since it touches an inbound webhook / auth / tenant data path.
+        threshold: 0.8

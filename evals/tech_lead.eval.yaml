@@ -1,0 +1,44 @@
+# evals/tech_lead.eval.yaml
+# Why this eval exists: the Tech Lead's signature deliverable is an ADR. The failure mode
+# we guard against is a "decision" with no rejected alternatives and no consequences — i.e.
+# an opinion dressed as an ADR. We test ADR structure AND genuine trade-off reasoning.
+
+description: "Tech Lead — author an ADR (problem / options / decision / consequences) for a schema change"
+
+prompts:
+  - |
+    You are the Tech Lead agent for the Ops Hub. A change request has landed.
+
+    Context:
+    - The Ops Hub Supabase schema currently stores feature-flag scope as a free-text
+      `project` column on the `feature_flags` table.
+    - A new `projects` table now exists with a UUID primary key.
+    - Request: migrate `feature_flags.project` (text) to `feature_flags.project_id` (uuid FK to projects.id).
+    - Constraints: multi-tenant, RLS is fail-closed, zero-downtime preferred, must remain
+      portable to a hypothetical Project #2 (no TTS-specific assumptions).
+
+    Task: Author an ADR for this change. Include a clear problem statement, at least three
+    considered options (including the do-nothing option), the decision, and the consequences
+    (both positive and negative).
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the Tech Lead / Architect agent for the In a Tech-Shell Ops Hub. You own
+        Architecture Decision Records, cross-agent technical arbitration, and design review.
+        Every ADR you write states the problem, lists at least three considered options
+        including do-nothing, records the decision, and documents consequences including
+        rejected alternatives. You favor simplicity and avoid vendor lock-in.
+
+tests:
+  - description: "ADR has problem/options/decision/consequences and reasons about trade-offs, not just asserts a choice"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be structured as an ADR with a clear problem statement, multiple considered options (at least three, including the do-nothing / keep-text-column option), an explicit decision, and a consequences section.
+          - Reason about the migration mechanics for a live multi-tenant table (e.g. backfill, dual-write or add-column-then-migrate, FK constraint timing, RLS interaction) rather than just declaring "add a uuid column".
+          - Acknowledge at least one negative consequence or trade-off of the chosen option (it must not present the decision as cost-free).
+          - Avoid TTS-specific hardcoding and keep the design portable to other projects.
+        threshold: 0.8

@@ -1,0 +1,44 @@
+# evals/knowledge_lead.eval.yaml
+# Why this eval exists: the Knowledge Lead's core output is turning a closed incident into a
+# durable, findable artifact (KB article or runbook) with a root cause in its own words — not
+# a Sentry paste. The failure mode is a vague summary with no reusable runbook and no taxonomy
+# placement. We test artifact quality and root-cause articulation.
+
+description: "Knowledge Lead — turn a resolved incident into a runbook/KB artifact with root cause and taxonomy"
+
+prompts:
+  - |
+    You are the Knowledge Lead agent for the Ops Hub.
+
+    Context:
+    - An incident just resolved: FreeScout deploys to Coolify staging were failing because the
+      Supabase session-pooler hostname was wrong, so the Laravel DB-readiness check timed out.
+      The fix switched the Docker image to nfrastack/freescout, added DB_SSL_MODE=require, and
+      corrected the pooler hostname.
+
+    Task: Produce the knowledge artifact this incident implies. Write a runbook entry (or KB
+    article) for this recurring failure mode: state the root cause in your own words, the
+    detection signal, the resolution steps, and where it should live in the KB taxonomy so it
+    is findable next time.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the Knowledge Lead / Documentation Owner agent for the In a Tech-Shell Ops Hub.
+        You curate the KB and runbooks. Every post-mortem must produce at least one durable
+        artifact. You capture root cause in your OWN words (never just paste from Sentry), write
+        plainly, and treat naming and taxonomy placement as load-bearing so the artifact is
+        findable next time.
+
+tests:
+  - description: "Produces a findable runbook/KB artifact with root cause in own words, detection, resolution, and placement"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be structured as a reusable runbook or KB article (not a one-line summary), with a clear scenario/title.
+          - State the root cause in plain explanatory language (the wrong Supabase session-pooler hostname caused the Laravel DB-readiness check to time out), not merely restate the error.
+          - Include a detection signal (how you'd recognize this failure next time) and concrete resolution steps (image switch, DB_SSL_MODE=require, correct pooler hostname).
+          - Indicate where the artifact should live / how it should be categorized or tagged so it is findable later.
+        threshold: 0.8

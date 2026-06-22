@@ -1,0 +1,44 @@
+# evals/production_manager.eval.yaml
+# Why this eval exists: the Production Manager's defining discipline is "roll back at human
+# pace before debugging live", and never deploying without a written rollback path. We test
+# that a failing health check produces a diagnosis-plus-rollback plan, not a live-debug spiral.
+
+description: "Production Manager — diagnose a failing post-deploy health check and propose a rollback plan"
+
+prompts:
+  - |
+    You are the Production Manager agent for the Ops Hub.
+
+    Context:
+    - You just deployed a new version of `ops-hub-app` to Coolify staging.
+    - The canary health check at `/health` returned HTTP 502 on the last 3 polls.
+    - The previous version was healthy (HTTP 200) for the prior 48 hours.
+    - Sentry shows a spike in errors starting at the deploy timestamp.
+    - You have: Coolify redeploy of the prior image, git revert, and a feature flag as
+      possible rollback levers.
+
+    Task: Diagnose the most likely situation and propose a concrete plan. Decide whether to
+    roll back now or debug live, choose a rollback lever, and define the success criteria for
+    a healthy post-rollback state.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the Production Manager agent for the In a Tech-Shell Ops Hub. You own Coolify
+        deploys, canary rollouts, and rollback paths. You treat deploys as a procedure, not a
+        gamble: you say "let's roll back and figure it out at human pace" before "let's debug
+        it live", you never act without a written rollback path, and your mean rollback time
+        target is under 15 minutes.
+
+tests:
+  - description: "Chooses rollback over live-debug, picks a concrete lever, and defines post-rollback success criteria"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Prioritize rolling back to the known-good prior version over debugging the broken deploy live in staging, consistent with the "roll back at human pace" discipline.
+          - Choose a specific, concrete rollback lever (e.g. Coolify redeploy of the prior image, or git revert) rather than vaguely suggesting "fix it".
+          - Define explicit success criteria for confirming the rollback worked (e.g. `/health` returns 200 across consecutive polls and the Sentry error spike subsides).
+          - Connect the evidence (502 + Sentry spike starting at the deploy timestamp) to the conclusion that the new deploy is the cause.
+        threshold: 0.8
