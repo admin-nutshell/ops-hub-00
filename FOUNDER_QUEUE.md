@@ -120,31 +120,18 @@ Linked: T-14, PR #73, PR #76, scripts/provision-uptimerobot.sh
 
 ---
 
-### FQ-16 — One-time action: Execute T-12 Vault setup (5-step SQL in Supabase SQL Editor)
+### ~~FQ-16 — One-time action: Execute T-12 Vault setup (5-step SQL in Supabase SQL Editor)~~ — RESOLVED
 
 ```
-[Security Lead] T-12 Vault runbook ready for founder execution.
-
-Context: PR #69 merged — ops_hub_app_login login role + hardened internal.get_secret()
-  accessor designed and tested by Security Lead (V1–V5 conditions applied). The runbook
-  at docs/engineering/t12-vault-runbook.md contains the exact SQL to execute.
-
-Steps (15–20 minutes, 5 steps in Supabase SQL Editor):
-  Step 1: Create ops_hub_app_login role
-  Step 2: Store secrets in Vault (OPENAI_API_KEY, LANGFUSE_SECRET_KEY, ops_hub_app password)
-  Step 3: Create internal.get_secret() accessor + revoke PUBLIC access
-  Step 4: Update ops-hub-app Coolify env var DB_URL to use ops_hub_app_login credentials
-  Step 5: Run pnpm test:integration to verify login path + RLS isolation
-
-Full SQL and verification queries: docs/engineering/t12-vault-runbook.md
-
-Reply: RESOLVED: [date] — Vault secrets created, ops_hub_app_login connectable, T-18
-  integration test passes.
-
-Impact if delayed: T-07 Inngest keys remain in Coolify env (not Vault); T-18 RLS isolation
-  test cannot verify the real login path (auto-skips in CI without DB_URL_OPS_HUB_APP_LOGIN).
-  Non-blocking for M1 go-live; blocking for M2 security posture.
-Linked: T-12 (PR #69), T-18 (PR #72), docs/engineering/t12-vault-runbook.md
+RESOLVED: [Founder] 2026-06-22 — T-12 Vault setup complete. All security checks passed:
+  - ops_hub_app_login role created (login=true, bypassrls=false)
+  - langfuse_secret_key stored in Vault
+  - ops_hub_app_password stored in Vault
+  - internal.get_secret() accessor created
+  - anon/authenticated have no accessor access
+  - ops_hub_app cannot read vault directly
+  T-12 done. T-18 integration test unblocked (can now run against real ops_hub_app_login path).
+  Linked: T-12 (PR #69), T-18 (PR #72), docs/engineering/t12-vault-runbook.md
 ```
 
 ---

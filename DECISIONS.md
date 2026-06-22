@@ -322,4 +322,12 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 2026-06-22 [PM] WORK.md merge conflict fix: T-17 row had raw conflict markers committed in
   PR #77 (conflict resolution committed both sides of the merge marker instead of the
   resolved text). Fixed in PR #78 — keeps ✅ Done (PR #75) which is correct.
+
+2026-06-22 [Founder] FQ-16 RESOLVED — T-12 Vault setup complete. All V1–V5 security
+  conditions verified: ops_hub_app_login role (login=true, bypassrls=false) created;
+  langfuse_secret_key + ops_hub_app_password stored in Supabase Vault; internal.get_secret()
+  accessor created; anon/authenticated have no accessor access; ops_hub_app cannot read
+  vault directly. T-18 RLS isolation test unblocked — can now run pnpm test:integration
+  against staging with DB_URL_OPS_HUB_APP_LOGIN to verify real login path isolation.
+  Sprint 1: 15/20 tasks done (75%). Linked: T-12 (PR #69), T-18 (PR #72).
 ```
