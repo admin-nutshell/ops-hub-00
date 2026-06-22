@@ -54,9 +54,9 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-01: Author ADR-0001 — environment topology (dev/staging/prod on Coolify, shared VPS) | Tech Lead | — | ✅ Done (2026-06-18). `docs/adr/0001-environment-topology.md` committed (incl. VPS sizing review). Status: Proposed — pending Prod Mgr deployability sign-off. | Jun 27 |
 | T-02: Author ADR-0002 — tool stack rationale (Inngest + LangFuse + LiteLLM + Supabase) | Tech Lead | — | ✅ Done (2026-06-18). `docs/adr/0002-tool-stack.md` committed (7 tools, fallback triggers). | Jun 27 |
 | T-03: Design Ops Hub Supabase schema (tickets, tenants, agents, events, audit_log, feature_flags) | Tech Lead | — | ✅ Done (2026-06-18). `docs/engineering/database-schema.md` + 2 migrations in `supabase/migrations/`. ⏳ Needs Security Lead RLS sign-off — see flags in schema doc §6. | Jun 27 |
-| T-04: Draft Project Context schema for TTS v1 | Solutions Architect | — | In progress — PR opened 2026-06-21. JSON schema spec committed to `docs/engineering/project-context-schema.md`; Tech Lead review pending. | Jun 27 |
+| T-04: Draft Project Context schema for TTS v1 | Solutions Architect | — | ✅ **Done (2026-06-21, PR #64/63).** `docs/engineering/project-context-schema.md` — draft-07 JSON Schema with project/tenant identity, integrations, feature flags, constraints, metadata. Credential fields are Vault refs. Tech Lead review invited. | Jun 27 |
 | T-05: Write CI/CD pipeline spec (lint + test + eval gate + staging auto-deploy + prod manual promotion) | Tech Lead | — | ✅ Done (2026-06-18). `docs/engineering/ci-cd-pipeline.md` rewritten implementation-ready; toolchain = Node/TS primary. | Jun 27 |
-| T-06: Author Sprint 1 test plan (infrastructure verification scope) | QA Manager | — | In progress — PR opened 2026-06-21. Test plan at `docs/testing/sprint-1-test-plan.md` (`feat/t06-sprint1-test-plan`). | Jun 27 |
+| T-06: Author Sprint 1 test plan (infrastructure verification scope) | QA Manager | — | ✅ **Done (2026-06-21, PR #66).** `docs/testing/sprint-1-test-plan.md` — 7 test categories; blocked-tests table (FQ-13, FQ-14, FQ-15); M1 exit criteria split by "green now" vs "unblock pending". | Jun 27 |
 
 ### Track B — Infrastructure Provisioning (🟢 unblocked — Coolify + Supabase both provisioned)
 
@@ -72,7 +72,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | ↳ PRs #42–#46: tiredofit→nfrastack image, SKIP_DB_READY, DB_SSL_MODE=require, URL port-parse guard. Run #27916949231 ✅. | | | | 2026-06-21 |
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`. ✅ **Security Lead sign-off recorded (2026-06-21, APPROVED WITH CONDITIONS, C1 fix applied).** Awaiting **founder execution only** — see FQ-15 in FOUNDER_QUEUE.md. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned | All secrets in Vault; zero keys in env files, git, or Coolify env vars | Jul 2 |
-| T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | **⏳ SDK deployed (2026-06-21, PR #60, run #27921393191).** `SENTRY_DSN` already set in Coolify env. Pending: verify first error in Sentry dashboard. | Jul 2 |
+| T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | **⏳ SDK deployed + instrument.ts fix deployed (PRs #60/#63, run #27922168744).** `SENTRY_DSN` in Coolify env. Sentry.init now runs before other modules load (correct OTel auto-instrumentation). Pending: verify first error in Sentry dashboard. | Jul 2 |
 | T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **⏳ Blocked — FQ-14**: no UptimeRobot API key available. See FOUNDER_QUEUE.md FQ-14. | Jul 2 |
 
 ### Track C — CI/CD & Eval Gate (starts after T-05 + infra available)
@@ -84,7 +84,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | ↳ **[PR #3](https://github.com/admin-nutshell/ops-hub-00/pull/3) — ✅ MERGED (295a481).** Gitleaks CLI fix — all 3 CI checks now functional. | | | | 2026-06-20 |
 | ↳ **[PR #2](https://github.com/admin-nutshell/ops-hub-00/pull/2) — ✅ MERGED (0860ff4). T-15 COMPLETE.** Node 20 + TS + pnpm scaffold; Lint ✅ Test ✅ Security ✅. Unblocks T-07, T-13, Coolify app deploy. | | | | 2026-06-20 |
 | ↳ **Branch protection: ✅ FULLY ACTIVE.** 3 required checks (Lint & Type Check, Unit Tests, Security Scan), strict, 0 required approvals (↓ from 1; founder is sole contributor, self-approval impossible — CI gates are the quality bar), enforce_admins=true, dismiss stale, no force-push, no deletion. Updated 2026-06-21 by Tech Lead. | | | | 2026-06-20 |
-| T-16: Author 1 eval case per agent (11 total minimum) | Evals Lead | — | In progress — 11 .yaml eval files committed, PR opened 2026-06-21 (`evals/`, one per agent, each tests the agent's core capability) | Jul 4 |
+| T-16: Author 1 eval case per agent (11 total minimum) | Evals Lead | — | ✅ **Done (2026-06-21, PR #65).** 11 `.yaml` eval files in `evals/` — one per agent, each with llm-rubric at threshold 0.8 testing the agent's core decision-making. Ready for T-17 CI wiring. | Jul 4 |
 | T-17: Wire Promptfoo eval gate into CI (failing eval blocks PR merge) | Evals Lead | T-15; T-16 | Failing eval blocks merge; passing eval trace visible in LangFuse | Jul 4 |
 | T-18: Verify cross-tenant RLS isolation (automated test) | Security Lead | T-11; T-12 | Test confirms tenant A cannot read tenant B rows; committed to CI | Jul 4 |
 
