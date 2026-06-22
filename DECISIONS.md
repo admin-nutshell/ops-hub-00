@@ -250,3 +250,34 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   run failed — pnpm install in Docker build context (no .git dir) triggered prepare script
   `git config core.hooksPath` → exit 1. Fix: RUN CI=1 pnpm install --frozen-lockfile --prod=false.
 ```
+
+### 2026-06-22 — T-18 cross-tenant RLS isolation test
+
+```
+2026-06-22 [Security Lead] T-18 RLS isolation test mechanism = Option A, ratified by Tech Lead.
+  Rejected the task's literal spec (supabase-js + service_role + rpc('set_config')): it tests
+  NOTHING because (1) service_role has BYPASSRLS so RLS never engages — would return ALL rows,
+  not isolated rows; and (2) supabase-js .rpc() and .from().select() are separate PostgREST
+  requests = separate transactions, so a transaction-local GUC evaporates before the query.
+  As-written it would FAIL on real Supabase while sitting GREEN-SKIPPED in CI as a false
+  "isolation verified" signal — worse than no test.
+  Option A: assertions run via the `pg` driver connecting AS ops_hub_app_login (T-12/PR #69's
+  connectable nobypassrls login role) — the "Real login-path RLS check" the T-12 runbook §8
+  names as the T-18 seam. RLS genuinely engages (role lacks BYPASSRLS); GUC persists in-connection.
+  service_role (supabase-js) does setup/teardown only (project+tenant creation is service-role-only).
+  Rejected Option B (probe-RPC in public via supabase-js): would need GRANT ops_hub_app TO
+  service_role + a SECURITY DEFINER function exposed in public — permanently widening the prod
+  privilege graph for a test, re-introducing the exposed-privileged-function surface blocked in
+  the T-12 V1 sign-off. No schema change in Option A.
+  `pg` + `@types/pg` added as devDependencies (test-only; "no new runtime deps" holds).
+  @supabase/supabase-js stays a runtime dep (matches T-19). Tech Lead conditions applied: (C1) each probe wrapped
+  in one explicit transaction with set_config(...,true) so it is pooler-safe (session AND transaction
+  pooler); (C2) positive control — 3 assertions: tenant_A GUC sees its own row, tenant_B GUC does not,
+  no-GUC sees zero (fail-closed). Skips (not fails) when SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY /
+  OPS_HUB_APP_LOGIN_URL absent, emitting a visible "SKIPPED: no staging creds" line.
+  WHERE IT RUNS AGAINST REAL STAGING: manual/local pre-merge for M1 (CI has no staging creds and
+  the test auto-skips there) — run `pnpm test:integration` locally with the three env vars set,
+  against ops-hub-staging Supabase, before declaring the isolation guarantee verified. Wiring CI
+  staging creds for automated runs is an M2 follow-up. Merges-after T-19 (PR #70 establishes
+  src/integration/ + repoints test:integration + adds @supabase/supabase-js).
+```
