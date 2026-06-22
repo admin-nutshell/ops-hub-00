@@ -72,7 +72,7 @@ create_monitor() {
 ERRORS=0
 
 create_monitor "ops-hub-app (staging)" \
-  "http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/health" \
+  "https://ops-hub-staging.inatechshell.ca/health" \
   || ERRORS=$((ERRORS + 1))
 
 create_monitor "LiteLLM (staging)" \

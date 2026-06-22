@@ -22,7 +22,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 1 | GitHub repo with full plan + workspace files | Founder | ✅ Done (2026-06-18) |
 | 2 | Coolify projects provisioned: `ops-hub-staging` and `ops-hub-prod` | **Founder** | ✅ Done (2026-06-20) — 34 env vars configured in staging; 6 GitHub secrets set |
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
-| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. **T-07 Inngest: ops-hub-app ✅ DEPLOYED** (HTTP works; HTTPS:443 → TTS app). HTTPS root cause + API limit confirmed (2026-06-22): Coolify PATCH rejects `fqdn` for docker image apps (422). **Fix: FQ-18** — founder changes domain to https:// in Coolify UI → restart → `fix-https-fqdn.yml` verifies → founder syncs Inngest Cloud. |
+| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367). T-09 LangFuse: Cloud provisioned (US); **trace test now unblocked** (T-07 HTTPS live). **T-07 Inngest: ✅ DONE (2026-06-22).** ops-hub-app synced at `https://ops-hub-staging.inatechshell.ca/api/inngest`; registered in Inngest Production environment. DNS: ops-hub-staging.inatechshell.ca → 187.124.76.235. |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **T-10 DONE (2026-06-21).** FreeScout v2.1.2 running on Coolify staging; health check green; Supabase Postgres connected via session pooler (aws-1-ca-central-1). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **Done (2026-06-22).** T-15 + T-17 complete. 4 required checks: Lint & Type Check, Unit Tests, Security Scan, Eval Gate. Staging auto-deploy on merge via `main-deploy.yml`. |
@@ -63,11 +63,11 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-07: Deploy Inngest (connect to Inngest Cloud) in staging + prod | Production Manager | ✅ Coolify; ✅ T-15 done | Inngest dashboard shows both envs; test event processed | Jul 2 |
-| ↳ **ops-hub-app ✅ DEPLOYED (2026-06-21).** HTTP `/health` → 200, `/api/inngest` → 401 (signing key active). **HTTPS root cause confirmed (2026-06-22):** Coolify FQDN = `http://...`; Traefik has no HTTPS router for subdomain → routes to TTS. Coolify PATCH API returns 422 for `fqdn` on docker image apps. **Fix: FQ-18** — founder changes `http://` → `https://` in Coolify UI for ops-hub-app → restart → dispatch `fix-https-fqdn.yml` to verify. After HTTPS live: founder syncs Inngest Cloud → T-07 done. | | | | 2026-06-22 |
+| ↳ **T-07 ✅ DONE (2026-06-22).** DNS A record added (`ops-hub-staging.inatechshell.ca` → 187.124.76.235). Coolify domain set to `https://ops-hub-staging.inatechshell.ca`. Inngest Cloud synced at `https://ops-hub-staging.inatechshell.ca/api/inngest`. ops-hub registered in Inngest Production environment. FQ-18 resolved. | | | | 2026-06-22 |
 | T-08: Deploy LiteLLM (self-hosted) to staging + prod on Coolify | Production Manager | ✅ Coolify provisioned | LiteLLM running; test API call returns model response | Jul 2 |
 | ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. | | | | 2026-06-20 |
 | ↳ **[PR #8](https://github.com/admin-nutshell/ops-hub-00/pull/8) — ✅ MERGED (2fea606).** Pre-flight diagnostics + full HTTP capture. Run #27887003804 confirmed root cause: Coolify API gate disabled (see FQ-07). | | | | 2026-06-20 |
-| T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | LangFuse UI reachable; first trace logged from LiteLLM after T-08 | Jul 2 |
+| T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | **🟡 Unblocked (2026-06-22) — T-07 HTTPS live.** LangFuse UI reachable; first trace logged from LiteLLM after T-08. Dispatching Data Engineer to verify SDK wiring + trigger test trace. | Jul 2 |
 | T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | ✅ **DONE (2026-06-21).** FreeScout v2.1.2 (nfrastack/freescout:latest) deployed to Coolify staging; all health checks green (run #27916949231, 3m50s). URL: Coolify-assigned staging FQDN. Root causes fixed via PRs #42–#46: SKIP_DB_READY (nfrastack image switch), pooler URL port-parse guard, DB_SSL_MODE=require for laravel psql check. FQ-11 resolved by founder (correct pooler hostname confirmed). | Jul 2 |
 | ↳ PRs #42–#46: tiredofit→nfrastack image, SKIP_DB_READY, DB_SSL_MODE=require, URL port-parse guard. Run #27916949231 ✅. | | | | 2026-06-21 |
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | ✅ **DONE (2026-06-21).** Both migrations applied via Supabase SQL Editor. All 6 tables live in `public` schema with RLS enabled. `ops_hub_app` role created. LiteLLM tables also present (expected — `STORE_MODEL_IN_DB=True`). FQ-15 resolved. | Jul 2 |
@@ -101,7 +101,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-07 Inngest HTTPS fix | **FQ-18 filed** — founder changes domain from http:// to https:// in Coolify UI for ops-hub-app → restart → dispatch `fix-https-fqdn.yml` to verify → founder syncs Inngest Cloud | M1 #4 remains partial until Inngest sync confirmed | Production Manager |
+| ~~T-07 Inngest HTTPS fix~~ | ~~**FQ-18 filed**~~ — **RESOLVED (2026-06-22).** ops-hub-staging.inatechshell.ca live; Inngest synced. | — | Production Manager |
 | ~~T-18 (RLS isolation test)~~ | ~~**T-12** (Vault + `ops_hub_app` login role)~~ — **FULLY RESOLVED (2026-06-22):** T-12 Vault SQL executed by founder (FQ-16); `ops_hub_app_login` connectable; T-18 test can now run against real login path. | — | Security Lead |
 
 ---
@@ -111,7 +111,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 ### PM
 Sprint 1 planned (2026-06-18). Monitoring M1 checklist. Next: Friday July 4 sprint retro to `docs/retros/sprint-1.md`.
 
-**2026-06-22 — Sprint 1 status: 15/20 tasks done (75%).** T-12 Vault setup complete (FQ-16 resolved by founder). T-18 unblocked. Open blockers: FQ-17 (UptimeRobot API key), FQ-18 (Coolify HTTPS domain). Tasks remaining: T-07 (Inngest HTTPS — FQ-18), T-09 (LangFuse trace — unblocks after T-07), T-13 (Sentry verify), T-14 (UptimeRobot — FQ-17), T-18 (run `pnpm test:integration` against staging now that T-12 done).
+**2026-06-22 — Sprint 1 status: 16/20 tasks done (80%).** T-07 Inngest HTTPS live (FQ-18 resolved); T-12 Vault complete (FQ-16 resolved). T-09 and T-13 unblocked. Open blockers: FQ-17 (UptimeRobot API key). Tasks remaining: T-09 (LangFuse trace — dispatched to Data Engineer), T-13 (Sentry verify — dispatched to Production Manager), T-14 (UptimeRobot — FQ-17), T-18 (run `pnpm test:integration` against staging with `DB_URL_OPS_HUB_APP_LOGIN`).
 
 **2026-06-20 — PR #1 review coordination complete; operating model updated.**
 Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Three follow-up commits applied (zizmor hardening, integration test step, gitleaks digest pin + command migration). FQ-06 approved by Founder. Operating model updated: Founder responds only to business logic and UI/UX; all technical decisions (security config, branch protection, tooling) are agent-owned. Tech Lead now owns PR #1 merge + branch protection setup. Tracking items for T-15/T-19: branch-protection required checks added incrementally; coverage PR comment deferred.
@@ -159,15 +159,9 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 ---
 
-**T-07: Inngest — 🟡 Keys set; post-merge redeploy + test event verification pending (2026-06-22)**
+**T-07: Inngest — ✅ DONE (2026-06-22)**
 
-ops-hub-app running at `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`. Run #27921007847 — health check HTTP 200 on attempt 1. FQ-12 resolved: docker login ghcr.io on VPS. Deploy pipeline fully operational (PRs #50–#58).
-
-**FQ-13 RESOLVED (2026-06-22):** INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY set in Coolify env vars by founder. SDK wired: `/api/inngest` served via `inngest/node` serve() handler; `helloWorld` function registered (trigger: `test/hello.world`). Source: `src/index.ts` + `src/inngest/functions.ts`.
-
-**Post-merge action (founder):** After this PR merges, main-deploy.yml triggers container redeploy picking up the new keys. Verify: (1) GET `/api/inngest` returns 200 with introspection JSON; (2) send `test/hello.world` event from Inngest Cloud dashboard and confirm function execution. Production Manager will mark T-07 ✅ Done on confirmation.
-
-Note: Live network verification from this agent context was not possible (all outbound network tools denied in this session). Endpoint health inferred from: prior confirmed deploy, founder-confirmed env var set, and source code inspection.
+ops-hub-app running at `https://ops-hub-staging.inatechshell.ca`. DNS A record: `ops-hub-staging.inatechshell.ca → 187.124.76.235`. Inngest Cloud synced at `https://ops-hub-staging.inatechshell.ca/api/inngest`. ops-hub registered in Inngest Production environment. FQ-18 resolved. Old sslip.io URL deprecated.
 
 **T-09: LangFuse Cloud** — Already provisioned (US region). Blocked on T-08 canary → send test trace from LiteLLM after T-07 live.
 

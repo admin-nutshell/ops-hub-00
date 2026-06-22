@@ -130,7 +130,7 @@ jobs:
             PATCH_BODY=$(jq -n \
               --arg img "$IMAGE" \
               --arg tag "${{ github.sha }}" \
-              --arg fqdn "https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io" \
+              --arg fqdn "https://ops-hub-staging.inatechshell.ca" \
               '{docker_registry_image_name:$img, docker_registry_image_tag:$tag, fqdn:$fqdn}')
             PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
               -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

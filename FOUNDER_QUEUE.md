@@ -49,35 +49,15 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-18 — One-time action: Change ops-hub-app domain to HTTPS in Coolify dashboard (T-07 blocker)
+### ~~FQ-18 — One-time action: Change ops-hub-app domain to HTTPS in Coolify dashboard (T-07 blocker)~~ — RESOLVED
 
 ```
-BLOCKING: [Production Manager] Inngest sync is broken — HTTPS routes to TTS app.
-
-Root cause confirmed (2026-06-22):
-  ops-hub-app Coolify FQDN = http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io
-  HTTPS:443 for that subdomain routes to TTS app (no HTTPS Traefik router exists for ops-hub-app)
-  Inngest Cloud requires HTTPS → sync fails with TTS login page
-  HTTP works: /health → 200, /api/inngest → 401 (signing key active)
-
-The Coolify REST API returns 422 for PATCH with fqdn (not allowed for docker image apps).
-This requires a 2-minute UI change:
-
-Steps:
-  1. Go to https://coolify.inatechshell.ca
-  2. Open ops-hub-app → Settings (or Domains/Network tab)
-  3. Find the domain field — current value: http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io
-  4. Change http:// to https:// → https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io
-  5. Save → then click Restart (or Redeploy)
-  6. Wait ~60s then verify: curl https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/health
-     Expected: {"status":"ok"}
-  7. Then sync ops-hub-app in Inngest Cloud dashboard → T-07 complete
-
-Reply: RESOLVED: [date] — HTTPS domain set in Coolify; app restarted; /health returns 200 via HTTPS.
-
-Impact if delayed: T-07 Inngest sync blocked; M1 criterion #4 incomplete; T-09 LangFuse
-  trace test and T-13 Sentry verification also blocked on a fully functional staging env.
-Linked: T-07, FQ-13 (resolved), DECISIONS.md 2026-06-22, PR #78 (workflow merged)
+RESOLVED: [Founder] 2026-06-22 — DNS A record added (ops-hub-staging.inatechshell.ca →
+  187.124.76.235), domain set to https://ops-hub-staging.inatechshell.ca in Coolify,
+  app restarted. Inngest Cloud app synced successfully at
+  https://ops-hub-staging.inatechshell.ca/api/inngest. ops-hub registered in Inngest
+  Production environment. T-07 complete. T-09 and T-13 unblocked.
+  Linked: T-07, FQ-13 (resolved), PR #78/79/80
 ```
 
 ---
@@ -107,7 +87,7 @@ Option A (recommended — re-enable agent automation):
 
 Option B (self-service, 5 min):
   Manually create 3 HTTP monitors in UptimeRobot dashboard:
-    1. ops-hub-app: http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/health
+    1. ops-hub-app: https://ops-hub-staging.inatechshell.ca/health
     2. LiteLLM:     http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health
     3. FreeScout:   http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io
   5-minute interval; alert email: mai@leelaecospa.com

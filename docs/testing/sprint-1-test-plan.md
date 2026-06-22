@@ -35,11 +35,11 @@ Sprint 1 stands up the foundational infrastructure for the Ops Hub. This plan ve
 
 ## 2. Test categories & cases
 
-**Conventions.** Each case has an ID (`TC-S1-<area>-<n>`), description, preconditions, steps, expected result, pass/fail criteria, owner, and blocking dependency. "Owner" is who *executes* the check during Sprint 1. Staging URLs (current as of 2026-06-21):
+**Conventions.** Each case has an ID (`TC-S1-<area>-<n>`), description, preconditions, steps, expected result, pass/fail criteria, owner, and blocking dependency. "Owner" is who *executes* the check during Sprint 1. Staging URLs (updated 2026-06-22):
 
 | Service | Staging URL |
 |---|---|
-| ops-hub-app | `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io` |
+| ops-hub-app | `https://ops-hub-staging.inatechshell.ca` |
 | LiteLLM | `http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io` |
 | FreeScout | `http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io` |
 
@@ -52,8 +52,8 @@ Sprint 1 stands up the foundational infrastructure for the Ops Hub. This plan ve
 | | |
 |---|---|
 | **Description** | The deployed ops-hub-app responds healthy on its `/health` endpoint. |
-| **Preconditions** | T-07 ops-hub-app deployed to Coolify staging (✅ done, run #27921007847). |
-| **Steps** | 1. `curl -i http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/health` |
+| **Preconditions** | T-07 ops-hub-app deployed to Coolify staging (✅ done, run #27921007847). DNS: ops-hub-staging.inatechshell.ca → 187.124.76.235. |
+| **Steps** | 1. `curl -i https://ops-hub-staging.inatechshell.ca/health` |
 | **Expected result** | HTTP `200`; body indicates healthy (e.g. `{"status":"ok"}`). |
 | **Pass/fail criteria** | **Pass:** HTTP 200 within 5s. **Fail:** non-200, timeout, or connection refused. |
 | **Owner** | QA Manager |

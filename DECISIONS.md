@@ -331,3 +331,17 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   against staging with DB_URL_OPS_HUB_APP_LOGIN to verify real login path isolation.
   Sprint 1: 15/20 tasks done (75%). Linked: T-12 (PR #69), T-18 (PR #72).
 ```
+
+### 2026-06-22 — T-07 Inngest sync complete + staging domain finalized
+
+```
+2026-06-22 [Founder] FQ-18 RESOLVED — T-07 Inngest sync complete. DNS A record added:
+  ops-hub-staging.inatechshell.ca → 187.124.76.235. Coolify domain changed to
+  https://ops-hub-staging.inatechshell.ca. App restarted. Inngest Cloud app synced at
+  https://ops-hub-staging.inatechshell.ca/api/inngest. ops-hub registered in Inngest
+  Production environment.
+  Old sslip.io URL (http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io) deprecated.
+  New canonical staging domain: https://ops-hub-staging.inatechshell.ca (all docs updated).
+  T-09 (LangFuse trace) and T-13 (Sentry verify) unblocked.
+  Sprint 1: 16/20 tasks done (80%). Linked: T-07, FQ-18, PRs #78–#80.
+```
