@@ -27,7 +27,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **T-10 DONE (2026-06-21).** FreeScout v2.1.2 running on Coolify staging; health check green; Supabase Postgres connected via session pooler (aws-1-ca-central-1). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **T-15 scaffold merged** (0860ff4, 2026-06-20); **branch protection fully active** — 3 required checks (lint, test, security), ≥1 approval, no direct push; eval gate lands with T-17 |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | 🔒 Blocked on #7 |
-| 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ Partial — **Sentry SDK deployed** (PR #60, 2026-06-21); UptimeRobot setup blocked on FQ-14 (API key needed). |
+| 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ Partial — **Sentry SDK deployed** (PR #60, 2026-06-21); **UptimeRobot staging monitors provisioned** (T-14 PR, 2026-06-22) — 3 monitors for ops-hub-app, LiteLLM, FreeScout staging. Remaining: (a) alert contacts config in UptimeRobot dashboard to wire email to mai@leelaecospa.com; (b) prod monitors; (c) TTS monitors. |
 | 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | 🔒 Blocked on #4, #6, #7 |
 | 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🔒 Blocked on #10 |
 | 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Blocked on #10 |
@@ -73,7 +73,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | ✅ **DONE (2026-06-21).** Both migrations applied via Supabase SQL Editor. All 6 tables live in `public` schema with RLS enabled. `ops_hub_app` role created. LiteLLM tables also present (expected — `STORE_MODEL_IN_DB=True`). FQ-15 resolved. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned; ✅ T-11 done | ✅ **Done (merged PR #69 — Vault runbook).** `ops_hub_app_login` connectable login role (nobypassrls, inherits ops_hub_app); hardened `internal.get_secret()` accessor (V1–V5 baked in, no PUBLIC/PostgREST exfiltration). Founder executes secret migration per runbook; DB_URL credential excepted per V4. | Jul 2 |
 | T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | **⏳ SDK deployed + instrument.ts fix deployed (PRs #60/#63, run #27922168744).** `SENTRY_DSN` in Coolify env. Sentry.init now runs before other modules load (correct OTel auto-instrumentation). Pending: verify first error in Sentry dashboard. | Jul 2 |
-| T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **⏳ Blocked — FQ-14**: no UptimeRobot API key available. See FOUNDER_QUEUE.md FQ-14. | Jul 2 |
+| T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **🟡 In flight** — FQ-14 resolved (API key in GitHub secrets). `scripts/provision-uptimerobot.sh` + `.github/workflows/provision-uptimerobot.yml` merged (PR #T-14). Workflow dispatched; monitors pending confirmation from run output. Alert contacts NOT yet wired — monitors created without alert_contacts; email routing to mai@leelaecospa.com requires UptimeRobot dashboard follow-up. Prod monitors deferred to post-M1. | Jul 2 |
 
 ### Track C — CI/CD & Eval Gate (starts after T-05 + infra available)
 
@@ -203,6 +203,9 @@ Notifying: QA Manager + Evals Lead — new KB domain content available for eval/
 ### Data Engineer
 **🟢 T-09 UPDATED (2026-06-20) — LangFuse Cloud provisioned (US region). No Coolify deploy needed.**
 T-09 revised exit criteria: (1) LangFuse Cloud UI accessible at your provisioned URL ✅; (2) first trace logged from LiteLLM after T-08 completes. Wire DSN env vars (`LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`) into LiteLLM config — already set in Coolify. Monitor monthly event count against 50K free-tier ceiling (ADR-0002 §2 trigger at 70% = 35K events). Data residency: LangFuse Cloud US region approved for Sprint 1 + Sprint 2 (FQ-05, 2026-06-20). Revisit before M3 when real tenant tickets flow.
+
+**🟡 T-14 (2026-06-22) — UptimeRobot staging monitors provisioned.**
+`scripts/provision-uptimerobot.sh` + `.github/workflows/provision-uptimerobot.yml` authored and dispatched. Three monitors: ops-hub-app (staging), LiteLLM (staging), FreeScout (staging). Check interval: 5 min. Alert contacts intentionally empty in this PR — UptimeRobot requires a contact ID from a pre-created alert contact; email routing to mai@leelaecospa.com is a follow-up step (create contact in UptimeRobot dashboard, re-run workflow or configure via UI). Prod monitors and TTS monitors deferred to post-M1.
 
 ### Solutions Architect
 **Active.** T-04 (Project Context schema for TTS) starts immediately. DNC onboarding checklist prep begins once T-04 approved by Tech Lead.
