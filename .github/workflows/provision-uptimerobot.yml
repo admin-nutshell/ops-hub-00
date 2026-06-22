@@ -1,0 +1,33 @@
+name: Provision UptimeRobot Monitors — T-14
+
+# One-shot provisioning workflow: creates 3 HTTP monitors in UptimeRobot for
+# ops-hub staging services. Safe to re-run — already-existing monitors are
+# treated as a non-fatal skip (UptimeRobot returns error type "already_exists").
+#
+# Once the monitors are created they persist in UptimeRobot regardless of
+# whether this workflow runs again. Re-run only if monitors need to be recreated.
+#
+# ALERT CONTACTS: Monitors are created without alert_contacts. Email notifications
+# to mai@leelaecospa.com require a follow-up step: configure alert contacts in the
+# UptimeRobot dashboard and re-run this workflow (or add them via the UI directly).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: Create UptimeRobot staging monitors
+    runs-on: ubuntu-latest
+
+    env:
+      UPTIMEROBOT_API_KEY: ${{ secrets.UPTIMEROBOT_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Provision UptimeRobot monitors
+        run: bash scripts/provision-uptimerobot.sh
