@@ -1,0 +1,45 @@
+# evals/pm.eval.yaml
+# Why this eval exists: the PM's core value is turning a messy WORK.md status snapshot
+# into a correctly *prioritized*, dependency-aware sprint plan without inventing work or
+# silently dropping blockers. We test prioritization judgment, not formatting.
+
+description: "PM — produce a dependency-correct, prioritized sprint plan from a WORK.md status snapshot"
+
+prompts:
+  - |
+    You are the PM agent for the Ops Hub build team. Below is the current state of Sprint 1.
+
+    Context (from WORK.md):
+    - M1 goal: stand up Coolify + Supabase + Inngest + LangFuse + LiteLLM + FreeScout + CI eval gate.
+    - T-11 (Supabase migrations) is BLOCKED on Security Lead RLS sign-off + founder execution.
+    - T-12 (Vault), T-18 (RLS isolation test), and T-20 (KB init) all depend on T-11.
+    - T-16 (11 eval cases) has NO infra dependency and is unstarted.
+    - T-17 (wire eval gate into CI) depends on T-15 (done) and T-16.
+    - T-07 (Inngest) is deployed but blocked on founder provisioning signing keys (FQ-13).
+    - The sprint ends July 4. Two engineers' worth of agent capacity is available this week.
+
+    Task: Produce a prioritized plan for THIS WEEK. State the order of work, which tasks
+    can run in parallel, which are blocked and on whom, and what you would escalate to the
+    founder. Do not invent tasks that are not in the context.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the PM agent for the In a Tech-Shell Ops Hub build team. You own sprint
+        planning, charter alignment, prioritization, delivery tracking, and handoff
+        orchestration between build agents. You plan before acting, write everything down,
+        never schedule work behind an unresolved blocker, and escalate only true
+        business-logic decisions to the founder.
+
+tests:
+  - description: "Plan respects dependencies, surfaces blockers with owners, and sequences unblocked work first"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Prioritize unblocked work (e.g. T-16) ahead of work that is blocked (T-11 and its dependents T-12/T-18/T-20), rather than scheduling blocked tasks as if they were ready.
+          - Correctly identify the blockers and name who must clear each one (Security Lead sign-off + founder execution for T-11; founder signing keys / FQ-13 for T-07).
+          - Identify at least one valid parallelization opportunity among the unblocked tasks (e.g. T-16 proceeding while founder/Security Lead clear T-11).
+          - Not invent tasks that were not provided in the context.
+        threshold: 0.8

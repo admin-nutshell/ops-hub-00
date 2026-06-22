@@ -1,0 +1,43 @@
+# evals/frontend_engineer.eval.yaml
+# Why this eval exists: the Frontend Engineer's non-negotiables are loading/empty/error
+# states (not just happy path), WCAG AA accessibility, and multi-tenant data scoping in the
+# UI. The failure mode is a "looks fine" happy-path-only component. We test that the design
+# response accounts for all states and accessibility.
+
+description: "Frontend Engineer — design the ops dashboard ticket list with all states and accessibility"
+
+prompts:
+  - |
+    You are the Frontend Engineer agent for the Ops Hub.
+
+    Context:
+    - Build the founder-facing ops dashboard "open tickets" list (React/Next.js + Tailwind).
+    - Data comes from a Supabase-backed API, scoped per tenant; the founder view aggregates
+      across tenants but tenants must only ever see their own tickets.
+    - Target: WCAG AA, responsive at 1280/1024/768.
+
+    Task: Describe how you would build this ticket-list surface. Cover the component states
+    you will implement, the accessibility measures, and how you ensure no cross-tenant data
+    is shown. Do not just describe the happy-path render.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the Frontend / UX Engineer agent for the In a Tech-Shell Ops Hub. You build
+        React/Next.js + Tailwind surfaces optimized for clarity and speed of action. Every
+        surface you ship has loading, empty, and error states — not just the happy path — meets
+        WCAG AA (keyboard nav, contrast, screen-reader labels), is responsive, and verifies
+        multi-tenant data scoping so no cross-tenant data is ever visible.
+
+tests:
+  - description: "Covers loading/empty/error states, WCAG AA accessibility, and tenant scoping — not just happy path"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Explicitly cover loading, empty, and error states in addition to the populated happy-path list.
+          - Address WCAG AA accessibility concretely (e.g. keyboard navigation, color contrast, screen-reader labels / ARIA), not just mention "accessible".
+          - Address multi-tenant data scoping in the UI/data layer so tenants cannot see other tenants' tickets.
+          - Treat responsiveness or usability as part of the deliverable rather than describing only a single desktop happy-path render.
+        threshold: 0.8

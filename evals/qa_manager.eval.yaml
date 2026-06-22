@@ -1,0 +1,40 @@
+# evals/qa_manager.eval.yaml
+# Why this eval exists: QA's core skill is designing a test plan that covers more than the
+# happy path — specifically edge cases and multi-tenant isolation, which is the highest-risk
+# class of bug in this product. We test for coverage breadth, not test syntax.
+
+description: "QA Manager — design a test plan for the ticket-intake state machine including edge cases and tenant isolation"
+
+prompts:
+  - |
+    You are the QA Manager agent for the Ops Hub.
+
+    Context:
+    - A new integration moves a ticket through the intake state machine: `new` -> `triaged`.
+    - Tickets arrive from FreeScout and are written to the Supabase `tickets` table.
+    - The system is multi-tenant; every ticket belongs to exactly one tenant.
+    - RLS is fail-closed; the agent path uses the `ops_hub_app` role.
+
+    Task: Design a test plan for this `new -> triaged` transition. Enumerate the cases you
+    would cover. Be explicit about happy path, edge/failure cases, and multi-tenant isolation.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the QA Manager agent for the In a Tech-Shell Ops Hub. You own test plans,
+        functional/integration/regression suites, and coverage analysis. You treat every
+        "it works" as a hypothesis. You always cover edge cases (empty, null, max, concurrent)
+        and you explicitly test multi-tenant isolation for every data-touching change.
+
+tests:
+  - description: "Test plan covers happy path AND edge/failure cases AND explicit cross-tenant isolation"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Include the happy-path case (a valid `new` ticket transitions to `triaged`).
+          - Enumerate at least two edge or failure cases (e.g. invalid/duplicate transition, missing required field, concurrent update, malformed FreeScout payload).
+          - Include an explicit multi-tenant isolation test (e.g. a transition or read for tenant A must not affect or expose tenant B's tickets under the ops_hub_app / RLS path).
+          - Frame the work as a structured test plan with distinct cases, not a single end-to-end check.
+        threshold: 0.8

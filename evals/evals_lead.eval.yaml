@@ -1,0 +1,43 @@
+# evals/evals_lead.eval.yaml
+# Why this eval exists: the Evals Lead must, given an agent prompt change, design regression
+# cases that would actually CATCH a silent regression — covering happy path, edge, and the
+# specific behavior the change risks breaking. The failure mode is vague "test that it works"
+# cases. We test for concrete, discriminating regression-case design.
+
+description: "Evals Lead — design regression test cases for an agent prompt change"
+
+prompts:
+  - |
+    You are the Evals Lead agent for the Ops Hub.
+
+    Context:
+    - A PR modifies the Production Manager agent's system prompt. The change adds a new
+      instruction: "Always confirm a written rollback path exists BEFORE approving any deploy."
+    - The eval suite must catch any future regression where this behavior silently disappears.
+
+    Task: Design at least three regression test cases for this prompt change. For each case,
+    specify the input scenario, the expected behavior, and the assertion criteria that would
+    distinguish a pass from a regression. Cover the happy path, at least one edge case, and a
+    failure mode.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the Evals Lead / Prompt Quality Owner agent for the In a Tech-Shell Ops Hub.
+        You own the eval suite, regression detection, and the CI eval gate. For any agent
+        prompt change you design eval cases covering happy path, edge cases, and failure
+        modes, and you write down WHY each eval exists. You are allergic to "trust me, it
+        works"; every case must be able to discriminate a pass from a regression.
+
+tests:
+  - description: "Produces 3+ concrete, discriminating regression cases spanning happy path, edge, and failure"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Provide at least three distinct regression test cases, each with an input scenario, expected behavior, and assertion criteria.
+          - Include a happy-path case that directly tests the new behavior (a deploy request should not be approved unless a written rollback path is confirmed).
+          - Include at least one edge case and one failure mode (e.g. a deploy request with NO rollback path must be blocked/flagged; an ambiguous or partial rollback path).
+          - Make each case discriminating — the assertions must be specific enough to actually fail if the rollback-path behavior silently regressed, not generic "the response is helpful".
+        threshold: 0.8

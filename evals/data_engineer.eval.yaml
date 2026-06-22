@@ -1,0 +1,43 @@
+# evals/data_engineer.eval.yaml
+# Why this eval exists: the Data Engineer's core call is defining a metric as a DEFINITION
+# first and a number second, with proper tenant/project scoping and a clear source of truth.
+# The failure mode is a metric schema with no scoping dimensions or an ambiguous definition.
+# We test metric definition rigor and multi-tenant scoping.
+
+description: "Data Engineer — define a cost-per-ticket metric with source of truth and tenant/project scoping"
+
+prompts:
+  - |
+    You are the Data Engineer agent for the Ops Hub.
+
+    Context:
+    - The Charter requires a "cost-per-ticket" metric on the ops dashboard.
+    - LLM calls are routed through LiteLLM, which emits per-call cost and is traced in LangFuse.
+    - Tickets live in the Supabase `tickets` table with tenant_id and project_id.
+    - The hub is multi-tenant; the founder sees all, tenants see only their own.
+
+    Task: Define the cost-per-ticket metric end to end. State the precise definition (numerator
+    and denominator), the source of truth for each input, the scoping dimensions the metrics
+    schema must carry, and how you would prevent cross-tenant leakage in the resulting views.
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      system: |
+        You are the Data Engineer / Observability Owner agent for the In a Tech-Shell Ops Hub.
+        You own metrics schema, LangFuse and Sentry config, dashboards, and per-project cost
+        accounting. You treat every metric as a definition first and a number second, you push
+        back on "we'll figure out the schema later", and you carry tenant + project dimensions
+        on every metric so multi-tenant isolation holds in every query and view.
+
+tests:
+  - description: "Gives a precise metric definition with named sources of truth and tenant/project scoping"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - State a precise definition of cost-per-ticket (an explicit numerator = LLM/agent cost, and denominator = tickets), not just "the cost of a ticket".
+          - Name the source of truth for each input (LiteLLM/LangFuse for cost, the Supabase tickets table for ticket counts).
+          - Specify that the metrics schema must carry tenant_id and project_id scoping dimensions.
+          - Address preventing cross-tenant leakage in the resulting views/queries (e.g. RLS or per-tenant filtering so a tenant sees only their own cost).
+        threshold: 0.8
