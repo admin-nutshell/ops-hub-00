@@ -19,6 +19,9 @@ export const server = http.createServer((req, res) => {
     void emitTrace("health-check");
     return;
   }
+  if (req.method === "GET" && req.url === "/debug-sentry") {
+    throw new Error("Sentry test error from ops-hub-staging");
+  }
   res.writeHead(404);
   res.end();
 });
