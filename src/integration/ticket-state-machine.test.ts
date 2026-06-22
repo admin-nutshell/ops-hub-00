@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 /**
@@ -73,73 +73,69 @@ describe.skipIf(!hasCreds)("ticket state machine: new -> triaged", () => {
     tenantId = tenant!.id;
   });
 
-  it("inserts a ticket that lands in state 'new'", async () => {
-    const { data: ticket, error } = await supabase
+  // One ordered test: the state-machine transition is inherently sequential, so
+  // the insert -> read -> update -> read steps must share the same ticket. Keeping
+  // them in a single `it` (rather than four) means there is no cross-test teardown
+  // that could delete the ticket out from under a later step.
+  it("drives a ticket new -> triaged and persists the transition", async () => {
+    // 1. Insert with state omitted — schema default must land it in 'new'.
+    const { data: created, error: insertError } = await supabase
       .from("tickets")
       .insert({
         project_id: projectId,
         tenant_id: tenantId,
         title: `${RUN_TAG}-ticket`,
         severity: "P2",
-        // state intentionally omitted — schema default is 'new'.
       })
       .select("id, state")
       .single();
 
-    expect(error, error?.message).toBeNull();
-    expect(ticket).not.toBeNull();
-    ticketId = ticket!.id;
-    expect(ticket!.state).toBe("new");
-  });
+    expect(insertError, insertError?.message).toBeNull();
+    expect(created).not.toBeNull();
+    ticketId = created!.id;
+    expect(created!.state).toBe("new");
 
-  it("confirms the ticket is readable with state 'new'", async () => {
-    const { data: ticket, error } = await supabase
+    // 2. Re-read to confirm the ticket is persisted as 'new'.
+    const { data: readNew, error: readNewError } = await supabase
       .from("tickets")
       .select("id, state")
       .eq("id", ticketId)
       .single();
 
-    expect(error, error?.message).toBeNull();
-    expect(ticket).not.toBeNull();
-    expect(ticket!.state).toBe("new");
-  });
+    expect(readNewError, readNewError?.message).toBeNull();
+    expect(readNew).not.toBeNull();
+    expect(readNew!.state).toBe("new");
 
-  it("transitions the ticket new -> triaged (what the triage agent does)", async () => {
-    const { data: updated, error } = await supabase
+    // 3. Transition new -> triaged (what the triage agent does).
+    const { data: updated, error: updateError } = await supabase
       .from("tickets")
       .update({ state: "triaged" })
       .eq("id", ticketId)
       .select("id, state")
       .single();
 
-    expect(error, error?.message).toBeNull();
+    expect(updateError, updateError?.message).toBeNull();
     expect(updated).not.toBeNull();
     expect(updated!.state).toBe("triaged");
-  });
 
-  it("confirms the persisted state is 'triaged'", async () => {
-    const { data: ticket, error } = await supabase
+    // 4. Re-read to confirm the new state is persisted.
+    const { data: readTriaged, error: readTriagedError } = await supabase
       .from("tickets")
       .select("state")
       .eq("id", ticketId)
       .single();
 
-    expect(error, error?.message).toBeNull();
-    expect(ticket!.state).toBe("triaged");
+    expect(readTriagedError, readTriagedError?.message).toBeNull();
+    expect(readTriaged!.state).toBe("triaged");
   });
 
-  // Delete the ticket after each test if one was created, so a mid-suite failure
-  // does not strand fixture rows. afterAll handles the parent rows.
-  afterEach(async () => {
+  // Teardown in reverse FK order: tickets -> tenants -> projects. The ticket is
+  // deleted both by id (when captured) and by tenant_id (sweeps any partial row
+  // from a mid-test failure) so no fixture rows are stranded in staging.
+  afterAll(async () => {
     if (ticketId) {
       await supabase.from("tickets").delete().eq("id", ticketId);
-      ticketId = undefined;
     }
-  });
-
-  // Teardown in reverse FK order: tickets -> tenants -> projects.
-  // (Ticket rows are already removed in afterEach; this is the belt-and-braces sweep.)
-  afterAll(async () => {
     if (tenantId) {
       await supabase.from("tickets").delete().eq("tenant_id", tenantId);
       await supabase.from("tenants").delete().eq("id", tenantId);
