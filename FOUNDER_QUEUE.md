@@ -49,6 +49,37 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-15 — One-time action: Run T-11 Supabase migrations (runbook ready, gate cleared)
+
+```
+BLOCKING: [Tech Lead] T-11 migrations are fully unblocked — please run the runbook now.
+
+Context: Both migrations are ready to apply. The Security Lead has signed off on migration 2
+  (RLS policies, 2026-06-21, APPROVED WITH CONDITIONS, C1 fix applied). The runbook is at:
+    docs/engineering/t11-migration-runbook.md
+
+  What you need (from Coolify env vars for the Supabase project):
+    - DATABASE_URL (service_role / owner connection string — never commit this)
+  Set it as $env:SUPABASE_DB_URL in PowerShell before running.
+
+Steps summary (full commands in the runbook):
+  1. psql $env:SUPABASE_DB_URL -c "SELECT table_name FROM information_schema.tables WHERE table_schema='public';"
+     (should return empty — confirms clean slate)
+  2. psql $env:SUPABASE_DB_URL -f supabase/migrations/20260618120000_initial_schema.sql
+  3. psql $env:SUPABASE_DB_URL -f supabase/migrations/20260618120100_enable_rls_policies.sql
+  4. Run verification queries from runbook §5 — confirm 6 tables + RLS enabled.
+  5. Reply: RESOLVED: [date] — T-11 migrations applied, verification passed.
+
+  After this runs, the agent team will proceed with T-12 (Vault setup).
+
+Impact if delayed: T-12 (Vault), T-18 (RLS isolation test), T-19 (integration test),
+  and T-20 (KB structure) are all gated on this. M1 criteria #10 (first ticket flow)
+  cannot be met until the schema is live.
+Linked: T-11, T-12, T-18, T-19, T-20, docs/engineering/t11-migration-runbook.md
+```
+
+---
+
 ### FQ-14 — One-time action: UptimeRobot monitor setup (3 staging URLs)
 
 ```
