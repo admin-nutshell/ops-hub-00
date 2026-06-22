@@ -22,7 +22,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 1 | GitHub repo with full plan + workspace files | Founder | ✅ Done (2026-06-18) |
 | 2 | Coolify projects provisioned: `ops-hub-staging` and `ops-hub-prod` | **Founder** | ✅ Done (2026-06-20) — 34 env vars configured in staging; 6 GitHub secrets set |
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
-| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. **T-07 Inngest: ops-hub-app ✅ DEPLOYED** (run #27921007847, HTTP 200 on `/health`, 2026-06-21). Inngest Cloud registration + test event pending. |
+| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ⚠️ Partial — **T-08 LiteLLM: ✅ DEPLOYED** (run #27887445367). T-09 LangFuse: Cloud provisioned (US); trace test pending T-08 canary. **T-07 Inngest: ops-hub-app ✅ DEPLOYED** (run #27921007847, HTTP 200 on `/health`, 2026-06-21). **FQ-13 RESOLVED (2026-06-22):** signing key + event key set in Coolify. Pending: container redeploy (on PR merge) + founder test-event verification via Inngest dashboard. |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **T-10 DONE (2026-06-21).** FreeScout v2.1.2 running on Coolify staging; health check green; Supabase Postgres connected via session pooler (aws-1-ca-central-1). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **T-15 scaffold merged** (0860ff4, 2026-06-20); **branch protection fully active** — 3 required checks (lint, test, security), ≥1 approval, no direct push; eval gate lands with T-17 |
@@ -63,7 +63,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-07: Deploy Inngest (connect to Inngest Cloud) in staging + prod | Production Manager | ✅ Coolify; ✅ T-15 done | Inngest dashboard shows both envs; test event processed | Jul 2 |
-| ↳ **ops-hub-app ✅ DEPLOYED (2026-06-21).** Run #27921007847 — all steps green. Health check HTTP 200 on attempt 1. FQDN: `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`. FQ-12 resolved (docker login ghcr.io on VPS). Remaining: Inngest Cloud registration + verify test event. | | | | 2026-06-21 |
+| ↳ **ops-hub-app ✅ DEPLOYED (2026-06-21).** Run #27921007847 — all steps green. Health check HTTP 200 on attempt 1. FQDN: `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`. FQ-12 resolved (docker login ghcr.io on VPS). **FQ-13 RESOLVED (2026-06-22):** INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY set in Coolify env vars by founder. Pending: container redeploy (on this PR merge) + founder test-event verification via Inngest dashboard. | | | | 2026-06-22 |
 | T-08: Deploy LiteLLM (self-hosted) to staging + prod on Coolify | Production Manager | ✅ Coolify provisioned | LiteLLM running; test API call returns model response | Jul 2 |
 | ↳ **[PR #6](https://github.com/admin-nutshell/ops-hub-00/pull/6) — ✅ MERGED (8c5170c).** `deploy-staging-services.yml` workflow on main. | | | | 2026-06-20 |
 | ↳ **[PR #8](https://github.com/admin-nutshell/ops-hub-00/pull/8) — ✅ MERGED (2fea606).** Pre-flight diagnostics + full HTTP capture. Run #27887003804 confirmed root cause: Coolify API gate disabled (see FQ-07). | | | | 2026-06-20 |
@@ -101,7 +101,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-07 Inngest Cloud registration | **FQ-13**: INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY must be provisioned from Inngest Cloud dashboard by founder. App is live and `/api/inngest` ready. | M1 #4 remains partial; T-09 trace test blocked | Production Manager |
+| ~~T-07 Inngest keys~~ | ~~**FQ-13 RESOLVED (2026-06-22)**~~: INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY set in Coolify by founder. Merge this PR → container redeploys → founder verifies /api/inngest introspection + test event from Inngest dashboard. | M1 #4 remains partial until test event confirmed | Production Manager |
 | ~~T-18 (RLS isolation test)~~ | ~~**T-12** (Vault + `ops_hub_app` login role)~~ — Resolved 2026-06-22: T-12 merged (PR #69); T-18 test written (PR #72). | — | Security Lead |
 
 ---
@@ -157,11 +157,15 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 ---
 
-**T-07: Inngest — ✅ ops-hub-app DEPLOYED (2026-06-21)**
+**T-07: Inngest — 🟡 Keys set; post-merge redeploy + test event verification pending (2026-06-22)**
 
-ops-hub-app running at `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`. Run #27921007847 — health check HTTP 200 on attempt 1 (immediately after deployment). FQ-12 resolved: docker login ghcr.io on VPS (Option B). Deploy pipeline fully operational end-to-end (PRs #50–#58).
+ops-hub-app running at `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io`. Run #27921007847 — health check HTTP 200 on attempt 1. FQ-12 resolved: docker login ghcr.io on VPS. Deploy pipeline fully operational (PRs #50–#58).
 
-**Next:** FQ-13 — founder to provision Inngest Cloud app, set INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY in Coolify env vars, sync URL `http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/api/inngest`. See FOUNDER_QUEUE.md FQ-13.
+**FQ-13 RESOLVED (2026-06-22):** INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY set in Coolify env vars by founder. SDK wired: `/api/inngest` served via `inngest/node` serve() handler; `helloWorld` function registered (trigger: `test/hello.world`). Source: `src/index.ts` + `src/inngest/functions.ts`.
+
+**Post-merge action (founder):** After this PR merges, main-deploy.yml triggers container redeploy picking up the new keys. Verify: (1) GET `/api/inngest` returns 200 with introspection JSON; (2) send `test/hello.world` event from Inngest Cloud dashboard and confirm function execution. Production Manager will mark T-07 ✅ Done on confirmation.
+
+Note: Live network verification from this agent context was not possible (all outbound network tools denied in this session). Endpoint health inferred from: prior confirmed deploy, founder-confirmed env var set, and source code inspection.
 
 **T-09: LangFuse Cloud** — Already provisioned (US region). Blocked on T-08 canary → send test trace from LiteLLM after T-07 live.
 
