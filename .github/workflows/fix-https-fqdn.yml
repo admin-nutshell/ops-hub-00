@@ -1,0 +1,125 @@
+name: Fix ops-hub-app HTTPS FQDN
+
+# One-shot workflow: patches the Coolify ops-hub-app FQDN from http:// to https://
+# so Traefik creates the correct HTTPS router and Inngest Cloud can sync.
+#
+# Root cause: HTTPS:443 for the sslip.io subdomain was routing to the TTS app because
+# ops-hub-app had no HTTPS FQDN configured — Traefik fell through to TTS catch-all.
+# T-07 blocker. See DECISIONS.md 2026-06-22.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true = log current config without making any changes'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+permissions:
+  contents: read
+
+jobs:
+  fix-https:
+    name: Enable HTTPS FQDN for ops-hub-app
+    runs-on: ubuntu-latest
+    env:
+      COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+      APP_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+      HTTPS_FQDN: "https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io"
+
+    steps:
+      - name: Get current app config
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "=== Current ops-hub-app config ==="
+          HTTP=$(curl -s --max-time 30 -o /tmp/app.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$APP_UUID")
+          echo "GET HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            CURRENT_FQDN=$(jq -r '.fqdn // "null"' /tmp/app.json)
+            STATUS=$(jq -r '.status // "unknown"' /tmp/app.json)
+            echo "Current FQDN:   $CURRENT_FQDN"
+            echo "Current status: $STATUS"
+          else
+            echo "ERROR: GET failed (HTTP $HTTP)"; cat /tmp/app.json; exit 1
+          fi
+
+      - name: Patch FQDN to HTTPS
+        if: ${{ inputs.dry_run == 'false' }}
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "=== Patching FQDN to $HTTPS_FQDN ==="
+          PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID" \
+            -d "{\"fqdn\":\"$HTTPS_FQDN\"}")
+          echo "PATCH HTTP $PATCH_HTTP"
+          jq . /tmp/patch.json 2>/dev/null || cat /tmp/patch.json
+          if [ "$PATCH_HTTP" != "200" ] && [ "$PATCH_HTTP" != "201" ]; then
+            echo "ERROR: PATCH failed (HTTP $PATCH_HTTP)"; exit 1
+          fi
+          echo "FQDN updated to HTTPS."
+
+      - name: Restart app to reload Traefik routing rules
+        if: ${{ inputs.dry_run == 'false' }}
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "=== Restarting ops-hub-app (UUID: $APP_UUID) ==="
+          RESTART_HTTP=$(curl -s --max-time 30 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$APP_UUID/restart")
+          echo "Restart HTTP $RESTART_HTTP"
+          jq . /tmp/restart.json 2>/dev/null || cat /tmp/restart.json
+          if [ "$RESTART_HTTP" != "200" ] && [ "$RESTART_HTTP" != "201" ]; then
+            echo "WARNING: restart returned HTTP $RESTART_HTTP — may still succeed."
+          else
+            echo "Restart queued."
+          fi
+
+      - name: Poll HTTPS health check (max 3 min)
+        if: ${{ inputs.dry_run == 'false' }}
+        run: |
+          set -euo pipefail
+          echo "=== Polling $HTTPS_FQDN/health ==="
+          echo "NOTE: Early attempts may fail while Traefik/Let's Encrypt issues the cert."
+          for i in $(seq 1 18); do
+            HTTP=$(curl -s --max-time 15 -o /tmp/health.json -w "%{http_code}" \
+              "$HTTPS_FQDN/health" 2>/dev/null || echo "000")
+            BODY=$(cat /tmp/health.json 2>/dev/null || echo "")
+            echo "Attempt $i: HTTP $HTTP  body=$BODY"
+            if [ "$HTTP" = "200" ]; then
+              echo "HTTPS health check passed. ops-hub-app is live on HTTPS."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "ERROR: HTTPS health check timed out after 3 minutes."
+          echo "Possible causes: cert issuance in progress, Traefik config delay, container restart."
+          exit 1
+
+      - name: Verify /api/inngest reachable via HTTPS
+        if: ${{ inputs.dry_run == 'false' }}
+        run: |
+          set -euo pipefail
+          echo "=== Verifying $HTTPS_FQDN/api/inngest ==="
+          HTTP=$(curl -s --max-time 15 -o /tmp/inngest.json -w "%{http_code}" \
+            "$HTTPS_FQDN/api/inngest" 2>/dev/null || echo "000")
+          BODY=$(cat /tmp/inngest.json 2>/dev/null || echo "")
+          echo "HTTP $HTTP  body=$BODY"
+          # 401 = signing key active, endpoint reachable — correct expected response
+          # 200 = introspection (no signing key — shouldn't happen but acceptable)
+          if [ "$HTTP" = "401" ] || [ "$HTTP" = "200" ]; then
+            echo "SUCCESS: /api/inngest reachable via HTTPS (HTTP $HTTP)."
+            echo "Inngest Cloud can now sync. Founder: sync the app from Inngest dashboard."
+          else
+            echo "WARN: /api/inngest returned HTTP $HTTP — verify manually."
+            echo "If HTTP is 302/301 (redirect to TTS), FQDN patch may need a full redeploy."
+          fi
