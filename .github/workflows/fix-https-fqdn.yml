@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
-      HTTPS_FQDN: "https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io"
+      HTTPS_FQDN: "https://ops-hub-staging.inatechshell.ca"
 
     steps:
       - name: Get current FQDN from Coolify
@@ -52,7 +52,7 @@ jobs:
           echo "$UUID" > /tmp/app_uuid.txt
           if echo "$CURRENT_FQDN" | grep -q "^http://"; then
             echo "WARNING: FQDN still uses http:// — founder must change it in Coolify UI first (FQ-18)."
-            echo "Expected: https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io"
+            echo "Expected: https://ops-hub-staging.inatechshell.ca"
           fi
 
       - name: Restart app (triggers Traefik to reload routing rules)
