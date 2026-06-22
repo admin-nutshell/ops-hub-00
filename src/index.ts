@@ -1,10 +1,8 @@
-import * as Sentry from "@sentry/node";
+import "./instrument";
 import http from "http";
 import { serve } from "inngest/node";
 import { inngest } from "./inngest/client";
 import { helloWorld } from "./inngest/functions";
-
-Sentry.init({ dsn: process.env.SENTRY_DSN });
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
