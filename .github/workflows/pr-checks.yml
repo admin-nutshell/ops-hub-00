@@ -91,12 +91,13 @@ jobs:
           pnpm test
 
       # CI/CD spec §3 mandates both unit (pnpm test) and integration (pnpm test:integration).
-      # Integration tests live under tests/integration/ and arrive in T-19; until then this
-      # step is a placeholder pass so the required check stays green.
+      # Integration tests live under src/integration/ (T-19). The suite self-skips
+      # when SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are absent, so this step stays
+      # green on PRs without staging secrets (Vitest exits 0 on a skipped suite).
       - name: Integration tests (Vitest)
         run: |
-          if [ ! -f package.json ] || [ ! -d tests/integration ]; then
-            echo "No integration tests yet — placeholder pass (T-19 populates tests/integration/)"
+          if [ ! -f package.json ] || [ ! -d src/integration ]; then
+            echo "No integration tests yet — placeholder pass (T-19 populates src/integration/)"
             exit 0
           fi
           pnpm test:integration

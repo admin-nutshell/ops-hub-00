@@ -92,7 +92,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-19: Write first integration test: ticket intake → `new` → `triaged` state machine | QA Manager | ✅ T-10; ✅ T-11 | 🟢 **UNBLOCKED (2026-06-21).** QA Manager to proceed. Test passes in CI against staging | Jul 4 |
+| T-19: Write first integration test: ticket intake → `new` → `triaged` state machine | QA Manager | ✅ T-10; ✅ T-11 | 🟡 **In progress — `src/integration/ticket-state-machine.test.ts`, PR opened 2026-06-21; skips when staging credentials absent.** Uses `service_role` key for now (RLS bypass — `ops_hub_app_login` not yet wired); `// TODO T-12` migrate after Vault. CI integration guard + `test:integration` script repointed `tests/integration` → `src/integration`. | Jul 4 |
 | T-20: Initialize KB structure in Supabase (index, categories, placeholder articles) | Knowledge Lead | ✅ T-11 | 🟢 **UNBLOCKED (2026-06-21).** Knowledge Lead to proceed. KB table populated; first 2 placeholder articles committed | Jul 4 |
 
 ---
@@ -144,7 +144,7 @@ Full Node 20 + TS + pnpm scaffold on `main`: `package.json`, `tsconfig.json`, `e
 No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per RACI. See FQ-05 (new) for LangFuse data residency note. The VPS-resize spend decision is correctly deferred behind the 70% monitoring trigger (ADR-0001 §6).
 
 ### QA Manager
-**Active.** T-06 (test plan) starts immediately. T-19 (integration test) blocked until FreeScout + Supabase staging are live.
+**Active.** T-06 (test plan) done. **T-19 in progress (2026-06-21):** first integration test `src/integration/ticket-state-machine.test.ts` written — project→tenant→ticket(`new`)→assert→update(`triaged`)→assert→teardown (reverse-FK). Vitest + `@supabase/supabase-js`. Self-skips when `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` absent so CI stays green without secrets. Connects via `service_role` (RLS bypass) as a stopgap — **must migrate to `ops_hub_app_login` once T-12 (Vault + login role) lands** (`// TODO T-12` in file). Reconciled the stale CI wiring: `pr-checks.yml` integration guard + `package.json test:integration` repointed `tests/integration` → `src/integration` (matches the spec'd test path). PR opened. Local `pnpm lint`/`typecheck`/`test`/`test:integration` all green; `--frozen-lockfile` verified after adding supabase-js.
 
 ### Production Manager
 **🟢 ACTIVE (2026-06-21)**
