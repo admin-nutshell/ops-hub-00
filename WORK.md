@@ -70,8 +70,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-09: Connect to LangFuse Cloud (provisioned 2026-06-20, US region — no Coolify deploy needed) | Data Engineer | ✅ Cloud provisioned | LangFuse UI reachable; first trace logged from LiteLLM after T-08 | Jul 2 |
 | T-10: Deploy FreeScout to staging on Coolify | Production Manager | ✅ Coolify provisioned | ✅ **DONE (2026-06-21).** FreeScout v2.1.2 (nfrastack/freescout:latest) deployed to Coolify staging; all health checks green (run #27916949231, 3m50s). URL: Coolify-assigned staging FQDN. Root causes fixed via PRs #42–#46: SKIP_DB_READY (nfrastack image switch), pooler URL port-parse guard, DB_SSL_MODE=require for laravel psql check. FQ-11 resolved by founder (correct pooler hostname confirmed). | Jul 2 |
 | ↳ PRs #42–#46: tiredofit→nfrastack image, SKIP_DB_READY, DB_SSL_MODE=require, URL port-parse guard. Run #27916949231 ✅. | | | | 2026-06-21 |
-| T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | **RUNBOOK READY** — at `docs/engineering/t11-migration-runbook.md`. ✅ **Security Lead sign-off recorded (2026-06-21, APPROVED WITH CONDITIONS, C1 fix applied).** Awaiting **founder execution only** — see FQ-15 in FOUNDER_QUEUE.md. | Jul 2 |
-| T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned | All secrets in Vault; zero keys in env files, git, or Coolify env vars | Jul 2 |
+| T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | ✅ **DONE (2026-06-21).** Both migrations applied via Supabase SQL Editor. All 6 tables live in `public` schema with RLS enabled. `ops_hub_app` role created. LiteLLM tables also present (expected — `STORE_MODEL_IN_DB=True`). FQ-15 resolved. | Jul 2 |
+| T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned; ✅ T-11 done | 🟢 **UNBLOCKED (2026-06-21).** Security Lead to proceed. All secrets in Vault; zero keys in env files, git, or Coolify env vars | Jul 2 |
 | T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | **⏳ SDK deployed + instrument.ts fix deployed (PRs #60/#63, run #27922168744).** `SENTRY_DSN` in Coolify env. Sentry.init now runs before other modules load (correct OTel auto-instrumentation). Pending: verify first error in Sentry dashboard. | Jul 2 |
 | T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **⏳ Blocked — FQ-14**: no UptimeRobot API key available. See FOUNDER_QUEUE.md FQ-14. | Jul 2 |
 
@@ -86,14 +86,14 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | ↳ **Branch protection: ✅ FULLY ACTIVE.** 3 required checks (Lint & Type Check, Unit Tests, Security Scan), strict, 0 required approvals (↓ from 1; founder is sole contributor, self-approval impossible — CI gates are the quality bar), enforce_admins=true, dismiss stale, no force-push, no deletion. Updated 2026-06-21 by Tech Lead. | | | | 2026-06-20 |
 | T-16: Author 1 eval case per agent (11 total minimum) | Evals Lead | — | ✅ **Done (2026-06-21, PR #65).** 11 `.yaml` eval files in `evals/` — one per agent, each with llm-rubric at threshold 0.8 testing the agent's core decision-making. Ready for T-17 CI wiring. | Jul 4 |
 | T-17: Wire Promptfoo eval gate into CI (failing eval blocks PR merge) | Evals Lead | T-15; T-16 | Failing eval blocks merge; passing eval trace visible in LangFuse | Jul 4 |
-| T-18: Verify cross-tenant RLS isolation (automated test) | Security Lead | T-11; T-12 | Test confirms tenant A cannot read tenant B rows; committed to CI | Jul 4 |
+| T-18: Verify cross-tenant RLS isolation (automated test) | Security Lead | ✅ T-11; T-12 | 🟡 **T-11 unblocked. Still blocked on T-12** (needs `ops_hub_app` login role wired). Test confirms tenant A cannot read tenant B rows; committed to CI | Jul 4 |
 
 ### Track D — QA & Knowledge Foundation
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-19: Write first integration test: ticket intake → `new` → `triaged` state machine | QA Manager | T-10; T-11 | Test passes in CI against staging | Jul 4 |
-| T-20: Initialize KB structure in Supabase (index, categories, placeholder articles) | Knowledge Lead | T-11 | KB table populated; first 2 placeholder articles committed | Jul 4 |
+| T-19: Write first integration test: ticket intake → `new` → `triaged` state machine | QA Manager | ✅ T-10; ✅ T-11 | 🟢 **UNBLOCKED (2026-06-21).** QA Manager to proceed. Test passes in CI against staging | Jul 4 |
+| T-20: Initialize KB structure in Supabase (index, categories, placeholder articles) | Knowledge Lead | ✅ T-11 | 🟢 **UNBLOCKED (2026-06-21).** Knowledge Lead to proceed. KB table populated; first 2 placeholder articles committed | Jul 4 |
 
 ---
 
@@ -101,8 +101,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| T-11 (migrations) | **Founder execution of runbook** (FQ-15) — Security Lead sign-off already recorded (2026-06-21) | Supabase schema not live; T-12, T-18, T-20 all blocked | Tech Lead |
-| T-07 Inngest Cloud registration | **FQ-13**: INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY must be provisioned from Inngest Cloud dashboard by founder (same pattern as FQ-12). App is live and `/api/inngest` ready. | M1 #4 remains partial; T-09 trace test blocked | Production Manager |
+| T-07 Inngest Cloud registration | **FQ-13**: INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY must be provisioned from Inngest Cloud dashboard by founder. App is live and `/api/inngest` ready. | M1 #4 remains partial; T-09 trace test blocked | Production Manager |
+| T-18 (RLS isolation test) | **T-12** (Vault + `ops_hub_app` login role) — T-11 is done. | Cross-tenant isolation test cannot run until app role has connectable credentials | Security Lead |
 
 ---
 
@@ -177,13 +177,15 @@ Remaining deploy order:
 5. **T-13: Sentry** — SDK init in app code (with T-07)
 
 ### Security Lead
-**Active.** Review T-03 schema when Tech Lead publishes (target Jun 27). T-12 + T-18 blocked on Supabase. Confirm secrets hygiene plan for GitHub Actions env vars now.
+**🟢 T-12 UNBLOCKED (2026-06-21) — T-11 migrations complete. Schema + RLS live.**
+T-12 (Vault setup) is now the active task: wire `ops_hub_app` login role credentials into Supabase Vault; ensure all LLM API keys and service secrets are Vault-stored; zero keys in env files, git, or Coolify. T-18 (cross-tenant RLS isolation test) unblocks after T-12.
 
 ### Evals Lead
 **Active.** T-16 (11 eval cases) starts immediately — no infra dependency. T-17 (CI wiring) blocked on T-15.
 
 ### Knowledge Lead
-**Standing by on Track D.** T-20 blocked until Supabase provisioned. Draft KB category taxonomy in the meantime.
+**🟢 T-20 UNBLOCKED (2026-06-21) — T-11 migrations complete. `kb_articles` table live.**
+T-20 is now the active task: initialize KB structure in Supabase (index, categories, first 2 placeholder articles).
 
 ### Frontend Engineer
 **Minimal Sprint 1 scope.** No frontend tasks until FreeScout wired and ticket flow established (Sprint 2 / M2 scope). Monitor for T-10 completion — will be needed to verify FreeScout UI before sign-off.

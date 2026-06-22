@@ -179,6 +179,22 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 
 *All future decisions appended below this line. Format: one line per decision, optionally followed by ADR link. Never edit historical entries — supersede with new entries instead.*
 
+### 2026-06-21 — T-11 migrations executed + downstream unblocks
+
+```
+2026-06-21 [Founder] T-11 migrations applied via Supabase SQL Editor (not psql CLI — equivalent
+  outcome). Both files applied in order:
+    20260618120000_initial_schema.sql — 6 tables (projects, tenants, tickets, audit_log,
+      feature_flags, kb_articles), extensions (vector, pgcrypto), indexes, triggers.
+    20260618120100_enable_rls_policies.sql — RLS enabled on all 6 tables, ops_hub_app role
+      created (nologin), resolver functions (current_tenant_id / current_project_id),
+      all policies applied per Security Lead sign-off (C1 fix in place).
+  LiteLLM tables also present in public schema — expected; STORE_MODEL_IN_DB=True writes
+  there. No conflict with Ops Hub schema (separate table names).
+  FQ-15 resolved. T-12 (Vault setup), T-19 (integration test), T-20 (KB structure) unblocked.
+  T-18 (RLS isolation test) unblocks after T-12.
+```
+
 ### 2026-06-21 — T-10 FreeScout deployment (continued resolution)
 
 ```
