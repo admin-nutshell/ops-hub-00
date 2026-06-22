@@ -300,3 +300,23 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   staging creds for automated runs is an M2 follow-up. Merges-after T-19 (PR #70 establishes
   src/integration/ + repoints test:integration + adds @supabase/supabase-js).
 ```
+
+### 2026-06-22 — T-07 Inngest HTTPS root cause + WORK.md conflict fix
+
+```
+2026-06-22 [Production Manager] T-07 Inngest sync failure root cause confirmed: Traefik at
+  HTTPS:443 on the VPS routed all requests for the ops-hub sslip.io subdomain to the TTS
+  production app (redirect chain: sslip.io → app.inatechshell.ca → /login). Root cause:
+  ops-hub-app had no HTTPS FQDN configured in Coolify — Traefik has no HTTPS router for the
+  subdomain and falls through to TTS catch-all rule. HTTP:80 works correctly (/health → 200,
+  /api/inngest → 401 signing-key-active). Inngest Cloud requires HTTPS for app sync.
+  Fix (PR #78): add fix-https-fqdn.yml workflow_dispatch that PATCHes Coolify app fqdn to
+  https://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io + restarts app + polls HTTPS
+  health. Also update main-deploy.yml to always include fqdn in PATCH so every deploy
+  maintains HTTPS. After PR #78 merges: dispatch fix-https-fqdn.yml → verify HTTPS live →
+  founder syncs Inngest Cloud → T-07 complete.
+
+2026-06-22 [PM] WORK.md merge conflict fix: T-17 row had raw conflict markers committed in
+  PR #77 (conflict resolution committed both sides of the merge marker instead of the
+  resolved text). Fixed in PR #78 — keeps ✅ Done (PR #75) which is correct.
+```
