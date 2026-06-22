@@ -101,7 +101,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
 |---|---|---|---|
-| ~~T-07 Inngest keys~~ | ~~**FQ-13 RESOLVED (2026-06-22)**~~: INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY set in Coolify by founder. Merge this PR → container redeploys → founder verifies /api/inngest introspection + test event from Inngest dashboard. | M1 #4 remains partial until test event confirmed | Production Manager |
+| ~~T-07 Inngest keys~~ | ~~FQ-13~~: **RESOLVED (2026-06-22)** — INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY set in Coolify by founder. Merge this PR → container redeploys → founder verifies /api/inngest introspection + test event from Inngest dashboard. | M1 #4 remains partial until test event confirmed | Production Manager |
 | ~~T-18 (RLS isolation test)~~ | ~~**T-12** (Vault + `ops_hub_app` login role)~~ — Resolved 2026-06-22: T-12 merged (PR #69); T-18 test written (PR #72). | — | Security Lead |
 
 ---
