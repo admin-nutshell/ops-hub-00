@@ -163,6 +163,8 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 ops-hub-app running at `https://ops-hub-staging.inatechshell.ca`. DNS A record: `ops-hub-staging.inatechshell.ca → 187.124.76.235`. Inngest Cloud synced at `https://ops-hub-staging.inatechshell.ca/api/inngest`. ops-hub registered in Inngest Production environment. FQ-18 resolved. Old sslip.io URL deprecated.
 
+**Deploy regression fixed (2026-06-22, PR #85):** Deploy #35 (run #27981882684) failed — PATCH 422 `fqdn not allowed`. Root cause: PR #82 added `fqdn` to PATCH body; Coolify API always rejects it for docker image apps. Fix: removed `fqdn` from PATCH body. PATCH now sends only `docker_registry_image_name` + `docker_registry_image_tag` (both accepted). CI green on PR #85 — ready to merge and redeploy.
+
 **T-09: LangFuse Cloud** — Already provisioned (US region). Blocked on T-08 canary → send test trace from LiteLLM after T-07 live.
 
 **T-13: Sentry** — ⏳ SDK wired and verified in code (2026-06-22). `instrument.ts` preloads first; DSN from `process.env.SENTRY_DSN`; `@sentry/node ^10.59.0` in deps. First error pending staging exercise. Founder confirm `SENTRY_DSN` key present in Coolify env (cannot verify via browser — extension unavailable).

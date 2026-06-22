@@ -345,3 +345,16 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   T-09 (LangFuse trace) and T-13 (Sentry verify) unblocked.
   Sprint 1: 16/20 tasks done (80%). Linked: T-07, FQ-18, PRs #78–#80.
 ```
+
+### 2026-06-22 — main-deploy.yml fqdn PATCH regression fix
+
+```
+2026-06-22 [Production Manager] Deploy to Staging #35 (run #27981882684) failed: PATCH
+  /applications/{uuid} returned HTTP 422 — "fqdn: This field is not allowed." Root cause:
+  PR #82 added fqdn to the PATCH body (intended for future Coolify support) but the error
+  guard (exit 1 on non-200/201) made the 422 fatal. Coolify API permanently rejects fqdn
+  on docker image app type (documented in DECISIONS.md 2026-06-22 T-07 section).
+  Fix (this PR): remove fqdn from PATCH body entirely — domain is already set correctly in
+  Coolify UI (FQ-18 resolved); API does not need to set it on every deploy.
+  PATCH now sends only docker_registry_image_name + docker_registry_image_tag (both accepted).
+```
