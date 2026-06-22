@@ -2,7 +2,10 @@ import { Langfuse } from "langfuse-node";
 
 const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
 const secretKey = process.env.LANGFUSE_SECRET_KEY;
-const baseUrl = process.env.LANGFUSE_HOST ?? "https://cloud.langfuse.com";
+// LANGFUSE_BASEURL is the SDK-standard env var name; LANGFUSE_HOST is our legacy fallback.
+// Default to US endpoint — project uses LangFuse Cloud US region (FQ-05, 2026-06-20).
+const baseUrl =
+  process.env.LANGFUSE_BASEURL ?? process.env.LANGFUSE_HOST ?? "https://us.cloud.langfuse.com";
 
 // Guard: do not initialize if keys are absent (CI has no keys; unit tests must not throw)
 export const langfuse: Langfuse | null =
