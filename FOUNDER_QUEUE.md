@@ -49,6 +49,44 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-17 — One-time action: UptimeRobot API key type check + manual monitor creation fallback
+
+```
+[Data Engineer] UptimeRobot provisioning workflow is still failing with access_denied
+  even after removing the interval parameter (PR #76). Root cause: the API key type
+  is likely incorrect, or the account has a restriction that blocks programmatic
+  monitor creation.
+
+Diagnosis step (2 min):
+  1. Go to https://uptimerobot.com → My Settings → API Settings
+  2. Confirm the key in GitHub secret UPTIMEROBOT_API_KEY is the "Main API Key"
+     (NOT a "Monitor-Specific API Key" — those can only read/update that one monitor)
+  3. Run the following test in any terminal to confirm read access works:
+       curl -X POST "https://api.uptimerobot.com/v2/getAccountDetails" \
+         -d "api_key=<your-key>&format=json"
+     If "stat":"ok" → key is valid; if "stat":"fail" → wrong key type
+
+Option A (recommended — re-enable agent automation):
+  Update the GitHub secret with the correct Main API Key:
+    gh secret set UPTIMEROBOT_API_KEY --body "<main-api-key>"
+  Then re-run the workflow:
+    gh workflow run provision-uptimerobot.yml --repo admin-nutshell/ops-hub-00
+
+Option B (self-service, 5 min):
+  Manually create 3 HTTP monitors in UptimeRobot dashboard:
+    1. ops-hub-app: http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/health
+    2. LiteLLM:     http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health
+    3. FreeScout:   http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io
+  5-minute interval; alert email: mai@leelaecospa.com
+
+Reply: RESOLVED: [date] — Option A/B; all 3 monitors active.
+
+Impact if delayed: No uptime alerts for staging (non-blocking for dev; blocking for M1 #9).
+Linked: T-14, PR #73, PR #76, scripts/provision-uptimerobot.sh
+```
+
+---
+
 ### FQ-16 — One-time action: Execute T-12 Vault setup (5-step SQL in Supabase SQL Editor)
 
 ```
