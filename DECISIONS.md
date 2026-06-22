@@ -358,3 +358,25 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Coolify UI (FQ-18 resolved); API does not need to set it on every deploy.
   PATCH now sends only docker_registry_image_name + docker_registry_image_tag (both accepted).
 ```
+
+### 2026-06-22 — T-09 LangFuse + T-13 Sentry both verified end-to-end
+
+```
+2026-06-22 [Data Engineer] T-09 LangFuse: EU endpoint bug fixed (PR #86). SDK defaulted to
+  cloud.langfuse.com (EU); project uses US region. Fix: reads LANGFUSE_BASEURL (SDK standard)
+  → LANGFUSE_HOST (legacy fallback) → us.cloud.langfuse.com (hardcoded US default).
+  LANGFUSE_PUBLIC_KEY + LANGFUSE_SECRET_KEY confirmed in Coolify staging env vars.
+
+2026-06-22 [Data Engineer] T-09 LangFuse: ✅ DONE. health-check trace verified in LangFuse
+  Cloud US dashboard (2026-06-22). emitTrace("health-check") fires on every /health request
+  and flushAsync() ensures delivery. langfuse-node v3 (non-OTel) avoids double-provider
+  conflict with Sentry's OTel instrumentation in instrument.ts. Sprint 1: 18/20 (90%).
+
+2026-06-22 [Production Manager] T-13 Sentry: ✅ DONE. "Sentry test error from ops-hub-staging"
+  visible in Sentry ops-hub-staging project Issues tab. SENTRY_DSN confirmed in Coolify
+  staging env vars. /debug-sentry endpoint (PR #89) uses Sentry.captureException() + 500
+  response — does NOT throw (throw from http.createServer callback emits uncaughtException
+  and crashes the process; PR #88 crash was the lesson). instrument.ts imported as line-1
+  of index.ts — Sentry.init() runs before all other modules. Sprint 1: 19/20 (95%).
+  Only T-14 (UptimeRobot, FQ-17) remains.
+```
