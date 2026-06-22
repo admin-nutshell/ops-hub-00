@@ -34,7 +34,7 @@ create_monitor() {
   echo "    URL: $url"
 
   # UptimeRobot v2 API is form-encoded.
-  # type=1 = HTTP(s), interval=300 = 5 minutes.
+  # type=1 = HTTP(s). interval omitted — free plan rejects it even at the default 300s.
   # alert_contacts intentionally omitted — see header note.
   local response
   response=$(curl -s --max-time 30 \
@@ -43,8 +43,7 @@ create_monitor() {
     --data-urlencode "format=json" \
     --data-urlencode "type=1" \
     --data-urlencode "url=${url}" \
-    --data-urlencode "friendly_name=${name}" \
-    --data-urlencode "interval=300")
+    --data-urlencode "friendly_name=${name}")
 
   echo "Response: $response"
 
