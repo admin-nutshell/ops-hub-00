@@ -54,7 +54,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-01: Author ADR-0001 — environment topology (dev/staging/prod on Coolify, shared VPS) | Tech Lead | — | ✅ Done (2026-06-18). `docs/adr/0001-environment-topology.md` committed (incl. VPS sizing review). Status: Proposed — pending Prod Mgr deployability sign-off. | Jun 27 |
 | T-02: Author ADR-0002 — tool stack rationale (Inngest + LangFuse + LiteLLM + Supabase) | Tech Lead | — | ✅ Done (2026-06-18). `docs/adr/0002-tool-stack.md` committed (7 tools, fallback triggers). | Jun 27 |
 | T-03: Design Ops Hub Supabase schema (tickets, tenants, agents, events, audit_log, feature_flags) | Tech Lead | — | ✅ Done (2026-06-18). `docs/engineering/database-schema.md` + 2 migrations in `supabase/migrations/`. ⏳ Needs Security Lead RLS sign-off — see flags in schema doc §6. | Jun 27 |
-| T-04: Draft Project Context schema for TTS v1 | Solutions Architect | — | JSON schema spec committed to `docs/engineering/project-context-schema.md`; reviewed by Tech Lead | Jun 27 |
+| T-04: Draft Project Context schema for TTS v1 | Solutions Architect | — | In progress — PR opened 2026-06-21. JSON schema spec committed to `docs/engineering/project-context-schema.md`; Tech Lead review pending. | Jun 27 |
 | T-05: Write CI/CD pipeline spec (lint + test + eval gate + staging auto-deploy + prod manual promotion) | Tech Lead | — | ✅ Done (2026-06-18). `docs/engineering/ci-cd-pipeline.md` rewritten implementation-ready; toolchain = Node/TS primary. | Jun 27 |
 | T-06: Author Sprint 1 test plan (infrastructure verification scope) | QA Manager | — | Test plan committed to `docs/testing/sprint-1-test-plan.md` | Jun 27 |
 
