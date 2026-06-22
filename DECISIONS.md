@@ -251,6 +251,25 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   `git config core.hooksPath` → exit 1. Fix: RUN CI=1 pnpm install --frozen-lockfile --prod=false.
 ```
 
+### 2026-06-22 — Sprint 1 progress gate + FQ resolutions
+
+```
+2026-06-22 [Founder] FQ-13 RESOLVED — INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY confirmed
+  in Coolify env vars. T-07 Inngest integration unblocked; container redeploys on next
+  main merge; founder verifies /api/inngest + sends test event.
+2026-06-22 [Founder] FQ-14 RESOLVED — UPTIMEROBOT_API_KEY confirmed in GitHub Actions
+  secrets. T-14 UptimeRobot provisioning unblocked.
+2026-06-22 [PM] Sprint 1 status: 14/20 tasks done (70%). T-12, T-18, T-19, T-20 all
+  merged 2026-06-22 (PRs #69–#72). T-07 (PR #74), T-14 (PR #73) merged. T-17 PR #75
+  CI green; merged 2026-06-22. FQ-16 filed for T-12 Vault founder execution.
+2026-06-22 [Data Engineer] T-14 UptimeRobot: interval=300 parameter removed from
+  provision-uptimerobot.sh (PR #76) — free plan rejects explicit interval even at
+  default value; omitting it unblocks monitor creation.
+2026-06-22 [Evals Lead] T-17 eval gate: Promptfoo schema-only validation wired in CI
+  (PR #75, Eval Gate job). Schema-only (no live LLM calls) — passes without API keys.
+  First CI run confirmed all 11 eval files valid.
+```
+
 ### 2026-06-22 — T-18 cross-tenant RLS isolation test
 
 ```

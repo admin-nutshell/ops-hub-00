@@ -49,6 +49,35 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-16 — One-time action: Execute T-12 Vault setup (5-step SQL in Supabase SQL Editor)
+
+```
+[Security Lead] T-12 Vault runbook ready for founder execution.
+
+Context: PR #69 merged — ops_hub_app_login login role + hardened internal.get_secret()
+  accessor designed and tested by Security Lead (V1–V5 conditions applied). The runbook
+  at docs/engineering/t12-vault-runbook.md contains the exact SQL to execute.
+
+Steps (15–20 minutes, 5 steps in Supabase SQL Editor):
+  Step 1: Create ops_hub_app_login role
+  Step 2: Store secrets in Vault (OPENAI_API_KEY, LANGFUSE_SECRET_KEY, ops_hub_app password)
+  Step 3: Create internal.get_secret() accessor + revoke PUBLIC access
+  Step 4: Update ops-hub-app Coolify env var DB_URL to use ops_hub_app_login credentials
+  Step 5: Run pnpm test:integration to verify login path + RLS isolation
+
+Full SQL and verification queries: docs/engineering/t12-vault-runbook.md
+
+Reply: RESOLVED: [date] — Vault secrets created, ops_hub_app_login connectable, T-18
+  integration test passes.
+
+Impact if delayed: T-07 Inngest keys remain in Coolify env (not Vault); T-18 RLS isolation
+  test cannot verify the real login path (auto-skips in CI without DB_URL_OPS_HUB_APP_LOGIN).
+  Non-blocking for M1 go-live; blocking for M2 security posture.
+Linked: T-12 (PR #69), T-18 (PR #72), docs/engineering/t12-vault-runbook.md
+```
+
+---
+
 ### ~~FQ-15 — One-time action: Run T-11 Supabase migrations (runbook ready, gate cleared)~~ — RESOLVED
 
 ```
@@ -61,60 +90,25 @@ RESOLVED: [Founder] 2026-06-21 — T-11 migrations applied via Supabase SQL Edit
 
 ---
 
-### FQ-14 — One-time action: UptimeRobot monitor setup (3 staging URLs)
+### ~~FQ-14 — One-time action: UptimeRobot monitor setup (3 staging URLs)~~ — RESOLVED
 
 ```
-[Production Manager] UptimeRobot API key needed to complete T-14.
-
-Context: Three staging services are live and should be monitored:
-  1. ops-hub-app:   http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/health
-  2. LiteLLM:       http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health
-  3. FreeScout:     http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io
-  No UptimeRobot API key is configured in GitHub secrets.
-
-Option A (recommended — agent-owned after this step):
-  1. Sign in at https://uptimerobot.com → My Settings → API Settings
-  2. Create (or copy) the "Main API Key"
-  3. Add it to GitHub secrets: gh secret set UPTIMEROBOT_API_KEY --body "<key>"
-  Agents will then create all 3 monitors automatically.
-
-Option B (self-service, 5 min):
-  Sign in to UptimeRobot dashboard and manually add HTTP monitors for the 3 URLs above
-  with check interval 5 min, alert to mai@leelaecospa.com.
-
-Reply: RESOLVED: [date] — Option A/B complete; monitors active.
-
-Impact if delayed: No uptime alerts for staging services (non-blocking for Sprint 1 dev
-  work; blocking for M1 criterion #9).
-Linked: T-14, WORK.md
+RESOLVED: [Founder] 2026-06-22 — Option A complete. UPTIMEROBOT_API_KEY set in GitHub
+  Actions secrets. Agents unblocked to create monitors. T-14 in flight.
+  Linked: T-14, WORK.md
 ```
 
 ---
 
-### FQ-13 — One-time action: Inngest Cloud app provisioning (signing key + event key)
+### ~~FQ-13 — One-time action: Inngest Cloud app provisioning (signing key + event key)~~ — RESOLVED
 
 ```
-BLOCKING: [Production Manager] Inngest Cloud credentials needed to complete T-07.
-
-Context: ops-hub-app is deployed and healthy at
-  http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io
-  The /api/inngest endpoint is live (inngest@4.7.0 SDK, helloWorld function).
-  The app cannot connect to Inngest Cloud without INNGEST_SIGNING_KEY and
-  INNGEST_EVENT_KEY, which come from the Inngest Cloud dashboard.
-
-Steps (3–5 minutes):
-  1. Go to https://app.inngest.com → sign up or log in
-  2. Create a new app named "ops-hub" (or "ops-hub-staging")
-  3. Copy the Event Key  → set as INNGEST_EVENT_KEY in Coolify env vars for ops-hub-app
-  4. Copy the Signing Key → set as INNGEST_SIGNING_KEY in Coolify env vars for ops-hub-app
-  5. In Coolify: restart ops-hub-app to pick up the new env vars
-  6. In Inngest Cloud dashboard → Apps → "Sync app" → enter:
-       http://ajqplom2mghf5a8h6vf1q6xg.187.124.76.235.sslip.io/api/inngest
-  7. Reply to this item with: RESOLVED: [date] — Inngest app synced, signing key set.
-
-Impact if delayed: T-07 exit criteria unmet (Inngest dashboard shows envs; test event
-  processed). M1 #4 remains partial. T-09 LangFuse trace test also blocked.
-Linked: T-07, PR #49 (merged), WORK.md
+RESOLVED: [Founder] 2026-06-22 — INNGEST_SIGNING_KEY + INNGEST_EVENT_KEY set in
+  Coolify env vars for ops-hub-app. Container redeploys on next PR merge to main.
+  Pending founder action: after redeploy, verify /api/inngest returns 200 with
+  introspection JSON; send test/hello.world event from Inngest Cloud dashboard to
+  confirm helloWorld function executes.
+  Linked: T-07, PR #49 (merged), WORK.md
 ```
 
 ---
