@@ -381,6 +381,31 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Only T-14 (UptimeRobot, FQ-17) remains.
 ```
 
+### 2026-06-23 — T-10 FreeScout ✅ done + NVIDIA NIM wired into LiteLLM
+
+```
+2026-06-23 [Founder] T-10 FreeScout: ✅ DONE. FQ-24 resolved — custom domain
+  https://freescout-staging.inatechshell.ca set in Coolify UI (API permanently
+  rejects fqdn for docker image apps; UI is the only path). Caddy routes correctly.
+  Admin email updated to support@inatechshell.ca. Container UUID sgnpza1r8jlq19f0dboqpzq6
+  running on nfrastack/freescout v2.1.2, Supabase Supavisor (freescout_user). M1 criterion
+  #6 complete. Sprint 2 E2E ticket flow now unblocked.
+  Linked: T-10, PRs #98–#109, run #28002846589.
+
+2026-06-23 [Founder] NVIDIA_API_KEY added to ops-hub-app Coolify env vars.
+  Admin email for FreeScout staging updated to support@inatechshell.ca.
+
+2026-06-23 [Production Manager] NVIDIA NIM wired as staging AI provider in LiteLLM.
+  Decision: use NVIDIA NIM (OpenAI-compatible API) with meta/llama-3.3-70b-instruct
+  as the default staging model. Rationale: NVIDIA NIM provides inference for open
+  models (Llama family) without per-token Anthropic costs — appropriate for high-volume
+  staging evals and test traffic. Model registered in LiteLLM DB via /model/new API
+  (STORE_MODEL_IN_DB=True). Key ref: os.environ/NVIDIA_API_KEY (set on litellm-staging
+  Coolify container; never committed). Workflow: configure-litellm-nvidia.yml.
+  Base URL: https://integrate.api.nvidia.com/v1 (OpenAI-compatible).
+  LiteLLM call path: ops-hub-app → litellm-staging → NVIDIA NIM.
+```
+
 ### 2026-06-23 — T-14 UptimeRobot root cause confirmed: free plan API restriction
 
 ```
