@@ -394,4 +394,16 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   instructions (Option B, $0, 5 min founder action). Option A (Solo plan ~$7 CAD/month)
   would re-enable API automation but is a cost decision flagged to founder.
   T-14 stays 🔴 Blocked until founder completes FQ-17 Option B or upgrades plan.
+
+2026-06-23 [Founder] T-14 UptimeRobot: ✅ DONE. FQ-17 RESOLVED. 3 monitors created
+  manually in UptimeRobot dashboard (free plan path — API creation not available on free tier).
+  Active monitors:
+    ops-hub-staging health → https://ops-hub-staging.inatechshell.ca/health
+    litellm-staging health → https://litellm-staging.inatechshell.ca/health
+    TTS app health         → TTS app URL
+  Note: LiteLLM now has canonical domain litellm-staging.inatechshell.ca (replaces sslip.io).
+  Note: /api/inngest monitor created then deleted — Inngest returns 405 on GET by design
+  (endpoint requires signed POST); HTTP uptime monitors on this path generate false alerts.
+  Sprint 1: 20/20 tasks done (100%). M1 criteria #1–#9 all green.
+  M1 criteria #10–#12 unblocked for Sprint 2 (require first ticket flow end-to-end).
 ```

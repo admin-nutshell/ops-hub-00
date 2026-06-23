@@ -27,7 +27,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **T-10 DONE (2026-06-21).** FreeScout v2.1.2 running on Coolify staging; health check green; Supabase Postgres connected via session pooler (aws-1-ca-central-1). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **Done (2026-06-22).** T-15 + T-17 complete. 4 required checks: Lint & Type Check, Unit Tests, Security Scan, Eval Gate. Staging auto-deploy on merge via `main-deploy.yml`. |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | ✅ **Done (2026-06-22).** 11 eval cases (PR #65, T-16); `Eval Gate` CI job validates all 11 eval files on every PR (PR #75, T-17). |
-| 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ⏳ Partial — **Sentry ✅ DONE (2026-06-22):** "Sentry test error from ops-hub-staging" visible in Sentry dashboard; `SENTRY_DSN` in Coolify env vars confirmed. **UptimeRobot blocked (FQ-17):** PRs #73/#76 merged; workflow returned `access_denied` for all 3 monitors — likely wrong API key type (Main API Key vs Monitor-Specific). Founder to verify key type and re-run or create monitors manually. |
+| 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ✅ **Done (2026-06-23).** Sentry: error verified in Sentry dashboard; `SENTRY_DSN` in Coolify. UptimeRobot: 3 monitors active — ops-hub-staging health, ops-hub-staging inngest, litellm-staging health. FQ-17 resolved. |
 | 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | 🔒 Blocked on #4, #6, #7 |
 | 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🔒 Blocked on #10 |
 | 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Blocked on #10 |
@@ -73,7 +73,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | ✅ **DONE (2026-06-21).** Both migrations applied via Supabase SQL Editor. All 6 tables live in `public` schema with RLS enabled. `ops_hub_app` role created. LiteLLM tables also present (expected — `STORE_MODEL_IN_DB=True`). FQ-15 resolved. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned; ✅ T-11 done | ✅ **DONE (2026-06-22, FQ-16 RESOLVED).** `ops_hub_app_login` role created (login=true, bypassrls=false); `langfuse_secret_key` + `ops_hub_app_password` stored in Vault; `internal.get_secret()` accessor created; anon/authenticated have no accessor access; `ops_hub_app` cannot read vault directly. All V1–V5 conditions verified by founder. T-18 integration test now unblocked for real login-path run. | Jul 2 |
 | T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | ✅ **DONE (2026-06-22).** "Sentry test error from ops-hub-staging" visible in Sentry ops-hub-staging project Issues tab. `SENTRY_DSN` confirmed in Coolify staging env vars. `/debug-sentry` endpoint (PR #89) uses `Sentry.captureException()` + 500 response — does not throw (avoids `uncaughtException` crash). `instrument.ts` preloads first (line-1 import in `index.ts`); `Sentry.init()` runs before all other modules. | Jul 2 |
-| T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **🔴 Blocked (FQ-17)** — Root cause confirmed (run #27993186811): UptimeRobot account is on **free plan** (`active_subscription: null`); free plan blocks `newMonitor` API entirely. No script fix possible. **Only path: founder manually creates 3 monitors in UptimeRobot dashboard** (FQ-17 updated with step-by-step instructions). | Jul 2 |
+| T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | ✅ **DONE (2026-06-23, FQ-17 RESOLVED).** 3 monitors created manually via UptimeRobot dashboard (free plan blocks API). Active: (1) ops-hub-staging health → `https://ops-hub-staging.inatechshell.ca/health`; (2) litellm-staging health → `https://litellm-staging.inatechshell.ca/health`; (3) TTS app health. Note: `/api/inngest` monitor omitted — Inngest rejects GET with 405 by design; HTTP health checks require a proper `/health` endpoint. | Jul 2 |
 
 ### Track C — CI/CD & Eval Gate (starts after T-05 + infra available)
 
@@ -111,7 +111,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 ### PM
 Sprint 1 planned (2026-06-18). Monitoring M1 checklist. Next: Friday July 4 sprint retro to `docs/retros/sprint-1.md`.
 
-**2026-06-23 — T-14 UptimeRobot: root cause confirmed.** Free plan blocks `newMonitor` API (`active_subscription: null`). Script automation exhausted — manual dashboard creation required. FQ-17 updated with step-by-step instructions for founder. Sprint 1 still at 19/20 (95%); T-14 unblocks M1 #9 once founder creates 3 monitors.
+**2026-06-23 — Sprint 1: 20/20 tasks done (100%). 🎉** T-14 UptimeRobot ✅ Done — 3 monitors created manually in dashboard (FQ-17 resolved). All Sprint 1 foundation tasks complete. M1 criteria #1–#9 all green; #10–#12 now unblocked for Sprint 2.
 
 **2026-06-22 — Sprint 1 status: 19/20 tasks done (95%).** T-09 LangFuse ✅ Done (health-check trace verified in LangFuse Cloud US). T-13 Sentry ✅ Done (error verified in Sentry dashboard; SENTRY_DSN in Coolify). Only T-14 (UptimeRobot — FQ-17) remains open.
 
@@ -171,7 +171,7 @@ ops-hub-app running at `https://ops-hub-staging.inatechshell.ca`. DNS A record: 
 
 **T-13: Sentry — ✅ DONE (2026-06-22).** "Sentry test error from ops-hub-staging" visible in Sentry Issues tab. `SENTRY_DSN` confirmed in Coolify. `/debug-sentry` endpoint (PR #89) uses `Sentry.captureException()` — server stays up.
 
-**T-14: UptimeRobot** — Set up monitors for LiteLLM + FreeScout staging URLs. Start now (URLs known). Add ops-hub app URL monitor after T-07 deploy.
+**T-14: UptimeRobot — ✅ DONE (2026-06-23, FQ-17 RESOLVED).** 3 monitors active: ops-hub-staging health, litellm-staging health, TTS app health. Free plan blocks API. `/api/inngest` monitor deleted — Inngest returns 405 on GET by design, causing false alerts. M1 #9 complete.
 
 Remaining deploy order:
 1. **T-07: Inngest** — ops-hub app creation + Inngest SDK init (next)
