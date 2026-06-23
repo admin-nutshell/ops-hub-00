@@ -1,0 +1,258 @@
+name: Fix FreeScout DB env vars (Supabase pooler)
+
+# Targeted fix for: "tenant/user aws-1-ca-central-1.pooler.supabase.com not found"
+# Root cause: DB_HOST was being parsed as DB_NAME too (URL parse bug in prior deploy).
+# This workflow sets the 6 correct DB env vars on the existing freescout-staging app
+# in Coolify, then restarts it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+
+jobs:
+  fix-freescout-db:
+    name: Fix FreeScout DB env vars + restart
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+
+    steps:
+      - name: Pre-flight — Coolify connectivity
+        run: |
+          HTTP=$(curl -s --max-time 15 -o /tmp/srv.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers")
+          echo "Coolify /servers → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: Coolify unreachable (HTTP $HTTP)"
+            cat /tmp/srv.json 2>/dev/null || true
+            exit 1
+          fi
+          echo "✅ Coolify reachable"
+
+      - name: Get freescout-staging UUID
+        id: app
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          echo "List applications → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /applications returned HTTP $HTTP"
+            cat /tmp/apps.json 2>/dev/null || true
+            exit 1
+          fi
+          echo "=== All applications ==="
+          jq -r '.[] | "  \(.name) [\(.status // "unknown")] — \(.uuid)"' /tmp/apps.json 2>/dev/null || true
+
+          UUID=$(jq -r '.[] | select(.name == "freescout-staging") | .uuid' /tmp/apps.json 2>/dev/null)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: freescout-staging not found in Coolify"
+            exit 1
+          fi
+          echo "freescout-staging UUID: $UUID"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      - name: Parse DB_PASS from SUPABASE_STAGING_DB_URL
+        id: dbpass
+        run: |
+          # Parse: postgresql://user:pass@host:port/dbname?...
+          URL="$SUPABASE_DB_URL"
+          DB_NO_PROTO="${URL#postgresql://}"
+          DB_NO_PROTO="${DB_NO_PROTO#postgres://}"
+          DB_USERPASS="${DB_NO_PROTO%%@*}"
+          DB_PASS="${DB_USERPASS#*:}"
+          if [ -z "$DB_PASS" ] || [ "$DB_PASS" = "$DB_USERPASS" ]; then
+            echo "ERROR: could not parse DB_PASS from SUPABASE_STAGING_DB_URL"
+            exit 1
+          fi
+          echo "::add-mask::$DB_PASS"
+          echo "DB_PASS parsed (masked)"
+          echo "pass=$DB_PASS" >> "$GITHUB_OUTPUT"
+
+      - name: Set correct DB env vars on freescout-staging
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          DB_PASS="${{ steps.dbpass.outputs.pass }}"
+          echo "::add-mask::$DB_PASS"
+
+          # Correct Supabase session pooler credentials (provided by founder 2026-06-22):
+          # Host:     aws-1-ca-central-1.pooler.supabase.com
+          # Port:     5432
+          # Database: postgres
+          # User:     postgres.yocoljutbiizdbfraapx
+          # SSL:      require
+          #
+          # Error was: "tenant/user aws-1-ca-central-1.pooler.supabase.com not found"
+          # This means DB_HOST was leaking into the db-name slot — URL parse bug.
+          # We fix by setting every field explicitly with known-correct values.
+
+          # upsert_env: tries PATCH (update) first; falls back to POST (create).
+          # Coolify v4: PATCH /applications/{uuid}/envs updates an existing var by key.
+          #             POST  /applications/{uuid}/envs creates a new var.
+          upsert_env() {
+            local KEY="$1"
+            local VAL="$2"
+            local PAYLOAD
+            PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$VAL" '{key: $k, value: $v}')
+
+            # Try PATCH first
+            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" \
+              -d "$PAYLOAD") || true
+            if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+              echo "  ✅ $KEY → updated via PATCH (HTTP $HTTP)"
+              return 0
+            fi
+            echo "  PATCH returned HTTP $HTTP for $KEY — falling back to POST"
+            cat /tmp/env_resp.json 2>/dev/null | head -5 || true
+
+            # Fall back to POST (create)
+            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" \
+              -d "$PAYLOAD") || true
+            if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+              echo "  ✅ $KEY → created via POST (HTTP $HTTP)"
+              return 0
+            fi
+            echo "  ❌ ERROR: $KEY → PATCH and POST both failed (last HTTP $HTTP)"
+            cat /tmp/env_resp.json 2>/dev/null || true
+            return 1
+          }
+
+          ERRORS=0
+          echo "=== Setting 6 DB env vars on $UUID ==="
+          upsert_env "DB_TYPE" "pgsql"                                           || ERRORS=$((ERRORS+1))
+          upsert_env "DB_HOST" "aws-1-ca-central-1.pooler.supabase.com"         || ERRORS=$((ERRORS+1))
+          upsert_env "DB_PORT" "5432"                                            || ERRORS=$((ERRORS+1))
+          upsert_env "DB_NAME" "postgres"                                        || ERRORS=$((ERRORS+1))
+          upsert_env "DB_USER" "postgres.yocoljutbiizdbfraapx"                  || ERRORS=$((ERRORS+1))
+          upsert_env "DB_PASS" "$DB_PASS"                                        || ERRORS=$((ERRORS+1))
+          # SSL vars (keep existing correct values — set here to be explicit)
+          upsert_env "FREESCOUT_DB_PGSQL_SSL_MODE" "require"                    || ERRORS=$((ERRORS+1))
+          upsert_env "DB_SSL_MODE"                  "require"                    || ERRORS=$((ERRORS+1))
+
+          if [ "$ERRORS" -ne 0 ]; then
+            echo "ERROR: $ERRORS env var(s) failed to set"
+            exit 1
+          fi
+          echo "=== All env vars set successfully ==="
+
+      - name: Verify env vars written to Coolify
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/app_detail.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          echo "GET application → HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            echo "=== DB-related env vars currently in Coolify ==="
+            jq -r '
+              (.environment_variables // .envs // [])[]
+              | select(.key | test("^DB_|SSL"))
+              | "  \(.key) = \(if .key == "DB_PASS" then "***" else .value end)"
+            ' /tmp/app_detail.json 2>/dev/null || echo "(env var format not in expected path)"
+          else
+            echo "WARNING: could not verify (HTTP $HTTP) — proceeding to restart anyway"
+          fi
+
+      - name: Restart freescout-staging
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          echo "Restarting freescout-staging ($UUID)..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/restart_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/restart")
+          echo "Restart → HTTP $HTTP"
+          jq . /tmp/restart_resp.json 2>/dev/null || cat /tmp/restart_resp.json 2>/dev/null || true
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ] && [ "$HTTP" != "202" ]; then
+            echo "WARNING: restart returned HTTP $HTTP — trying /start instead"
+            HTTP2=$(curl -s --max-time 30 -o /tmp/start_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/start")
+            echo "/start → HTTP $HTTP2"
+            jq . /tmp/start_resp.json 2>/dev/null || cat /tmp/start_resp.json 2>/dev/null || true
+          fi
+
+      - name: Wait for FreeScout to initialize (120s)
+        run: |
+          echo "Waiting 120s for FreeScout to apply new env vars and start..."
+          sleep 120
+
+      - name: Verify FreeScout is reachable
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+
+          # Get FQDN from Coolify
+          HTTP=$(curl -s --max-time 30 -o /tmp/app_state.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          echo "App state → HTTP $HTTP"
+          FQDN=$(jq -r '.fqdn // empty' /tmp/app_state.json 2>/dev/null | sed 's|/$||')
+          STATUS=$(jq -r '.status // "unknown"' /tmp/app_state.json 2>/dev/null)
+          echo "Coolify status: $STATUS"
+          echo "FQDN: ${FQDN:-(none assigned)}"
+
+          # Also check the canonical staging domain
+          echo ""
+          echo "=== Checking https://freescout-staging.inatechshell.ca ==="
+          set +e
+          FS_HTTP=$(curl -o /dev/null -s -w "%{http_code}" \
+            --max-time 30 \
+            --location \
+            "https://freescout-staging.inatechshell.ca")
+          CURL_RC=$?
+          set -e
+          echo "HTTP status: $FS_HTTP (curl exit: $CURL_RC)"
+          if [ "$FS_HTTP" = "200" ]; then
+            echo "✅ FreeScout is UP at https://freescout-staging.inatechshell.ca"
+          else
+            echo "⚠️  FreeScout returned HTTP $FS_HTTP — may still be starting"
+            echo "   Check Coolify logs for freescout-staging if this persists"
+          fi
+
+          # If Coolify FQDN differs, check that too
+          if [ -n "$FQDN" ] && [ "$FQDN" != "null" ] && \
+             [ "$FQDN" != "https://freescout-staging.inatechshell.ca" ]; then
+            echo ""
+            echo "=== Also checking Coolify FQDN: $FQDN ==="
+            set +e
+            FQDN_HTTP=$(curl -o /dev/null -s -w "%{http_code}" \
+              --max-time 30 --location "$FQDN")
+            set -e
+            echo "HTTP status: $FQDN_HTTP"
+          fi
+
+      - name: Fetch FreeScout container logs (always — for diagnosis)
+        if: always()
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          LOG_HTTP=$(curl -s --max-time 30 -o /tmp/fs_logs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/logs") || true
+          echo "=== FreeScout container logs (HTTP $LOG_HTTP) ==="
+          if [ "$LOG_HTTP" = "200" ]; then
+            # Show last 8000 chars — DB connection lines are most useful
+            cat /tmp/fs_logs.json | tail -c 8000
+          else
+            echo "Logs endpoint → HTTP $LOG_HTTP"
+            cat /tmp/fs_logs.json 2>/dev/null | head -20 || true
+          fi
