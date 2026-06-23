@@ -49,6 +49,29 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-22 — BLOCKING: Add FREESCOUT_DB_PASS secret so FreeScout can connect to Supabase
+
+```
+BLOCKING: [Production Manager] FreeScout (T-10) is returning 502. Root cause: the
+  SUPABASE_STAGING_DB_URL secret is not in a standard PostgreSQL URL or DSN format
+  that agents can parse to extract the database password. FreeScout is receiving
+  a wrong/missing password and fails the Supabase connection check on startup.
+
+  Action required (< 5 minutes):
+    1. Open: https://supabase.com → your Ops Hub project → Settings → Database
+    2. Copy the "Database password" (the master password for the project)
+    3. Go to: https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
+    4. Add a new secret:  Name: FREESCOUT_DB_PASS  Value: [the password you copied]
+    5. Reply here: APPROVED: FREESCOUT_DB_PASS secret added
+
+  After you add the secret, Production Manager will immediately re-run the deploy.
+
+  Impact if delayed: FreeScout remains at 502 — Sprint 2 E2E test cannot start.
+  Linked: T-10, run #27999780081 (v3 deploy — failed at password extraction)
+```
+
+---
+
 ### ~~FQ-18 — One-time action: Change ops-hub-app domain to HTTPS in Coolify dashboard (T-07 blocker)~~ — RESOLVED
 
 ```

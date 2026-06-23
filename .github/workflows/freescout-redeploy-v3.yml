@@ -27,6 +27,7 @@ jobs:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
       FREESCOUT_ADMIN_PASS: ${{ secrets.FREESCOUT_STAGING_ADMIN_PASS }}
       SUPABASE_DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+      FREESCOUT_DB_PASS: ${{ secrets.FREESCOUT_DB_PASS }}
 
     steps:
       - name: Extract DB_PASS via Python urllib.parse
@@ -34,21 +35,26 @@ jobs:
         run: |
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
 
-          # Handles both URL format (postgresql://user:pass@host/db) and
-          # PostgreSQL DSN format (host=... password=... user=...).
-          # urllib.parse for URL; regex fallback for DSN key=value.
-          set +e
-          DB_PASS=$(python3 -c "import os,sys,re,urllib.parse as up;raw=os.environ.get('SUPABASE_DB_URL','');u=up.urlparse(raw);pw=u.password or next((m.group(1) for m in [re.search(r\"password='([^']*)'\",raw),re.search(r'\bpassword=(\S+)',raw)] if m),None);sys.stdout.write(pw) if pw else (print('ERR:no pw found;scheme='+u.scheme+' raw[:40]='+repr(raw[:40]),file=sys.stderr) or sys.exit(1))")
-          RC=$?
-          set -e
-
-          if [ $RC -ne 0 ]; then
-            echo "ERROR: Python URL parse failed (exit $RC) — cannot extract DB_PASS"
-            echo "Action required: add GitHub secret FREESCOUT_DB_PASS with the Supabase password."
-            exit 1
+          # Priority 1: FREESCOUT_DB_PASS secret (direct password — preferred).
+          # Priority 2: parse from SUPABASE_DB_URL (URL or DSN formats).
+          if [ -n "$FREESCOUT_DB_PASS" ]; then
+            DB_PASS="$FREESCOUT_DB_PASS"
+            echo "DB_PASS sourced from FREESCOUT_DB_PASS secret"
+          else
+            echo "FREESCOUT_DB_PASS not set — attempting to parse from SUPABASE_DB_URL"
+            set +e
+            DB_PASS=$(python3 -c "import os,sys,re,urllib.parse as up;raw=os.environ.get('SUPABASE_DB_URL','');u=up.urlparse(raw);pw=u.password or next((m.group(1) for m in [re.search(r\"password='([^']*)'\",raw),re.search(r'\bpassword=(\S+)',raw)] if m),None);sys.stdout.write(pw) if pw else (print('ERR:no pw;scheme='+u.scheme,file=sys.stderr) or sys.exit(1))")
+            RC=$?
+            set -e
+            if [ $RC -ne 0 ] || [ -z "$DB_PASS" ]; then
+              echo "ERROR: cannot extract DB_PASS from SUPABASE_DB_URL (exit $RC)"
+              echo "FIX: add GitHub secret FREESCOUT_DB_PASS with the Supabase database password."
+              echo "See FOUNDER_QUEUE.md FQ-22 for instructions."
+              exit 1
+            fi
           fi
           if [ -z "$DB_PASS" ]; then
-            echo "ERROR: DB_PASS is empty after extraction"
+            echo "ERROR: DB_PASS is empty"
             exit 1
           fi
 
