@@ -49,42 +49,37 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-27 — BLOCKING: litellm-staging returning HTTP 502 for 7+ hours — container appears crashed
+### FQ-27 — BLOCKING: litellm-staging 502 — Traefik port mismatch fixed in DB; needs UI Redeploy
 
 ```
-BLOCKING: [Production Manager] litellm-staging has been returning HTTP 502 from all
-  external health checks since approximately 06:34 UTC 2026-06-23 — over 7 hours.
-  Two manual restarts were performed (founder confirmed "restarted" twice). The
-  configure-litellm-nvidia workflow also triggered a Coolify API restart at 06:34 UTC.
+BLOCKING: [Production Manager] Root cause found and DB config fixed. One manual
+  step remaining: click Redeploy from the Coolify UI.
 
-  This is NOT a slow startup — 7 hours indicates the container is crashed, in a
-  crash loop, or stopped in Coolify.
+  WHAT WAS FOUND:
+    Traefik label: loadbalancer.server.port = 80
+    LiteLLM actual port: 4000
+    This caused every request to hit port 80 (nothing listening) → Bad Gateway 502.
+    This was the root cause of 7+ hours of 502s.
 
-  Action required (< 10 minutes):
+  WHAT WAS FIXED (automated, PR #119):
+    ✅ ports_exposes patched from 80 to 4000 via Coolify API PATCH
+       (confirmed: GET /applications showed ports_exposes: "4000" after patch)
 
-  1. Go to https://coolify.inatechshell.ca → ops-hub-staging → litellm-staging
-  2. Check current status: Running, Stopped, or Error/Exited?
-  3. If Stopped/Error:
-       a. Click the container to expand it
-       b. Go to "Logs" tab → copy last 30 lines
-       c. Reply here with: status + last 30 log lines
-  4. If Running (shows as Running but health still fails):
-       a. Click Logs → look for startup errors, DB connection errors, OOM
-       b. Reply with the same: last 30 lines
-  5. Also check: is there a Coolify deploy/build job queued or running?
-       If yes, cancel it and wait for it to stop before restarting manually.
+  WHAT STILL NEEDS YOUR ACTION (< 2 minutes):
+    The Coolify API POST /restart restarts the existing container with OLD labels.
+    To apply the updated port (4000) to the Traefik label, Coolify must recreate
+    the container with new labels. Only the Coolify UI "Redeploy" button does this.
 
-  IMPORTANT: Do NOT use the Coolify API or trigger any workflow to restart.
-  If a restart is needed, use the Coolify UI only (simple docker restart, not redeploy).
-  The Coolify API POST /restart triggers a full image redeploy (~10+ min), which
-  was the root cause of prior outages. This workflow bug is fixed in PR #116/#117.
+    1. Go to https://coolify.inatechshell.ca → ops-hub-staging → litellm-staging
+    2. Click "Redeploy" (NOT "Restart" — Redeploy recreates the container)
+    3. Wait until status shows Running (1–5 min)
+    4. Reply: APPROVED: redeployed
+    Production Manager will trigger configure-litellm-nvidia.yml immediately after.
 
-  After you reply with the logs, Production Manager will diagnose and advise.
+  DO NOT trigger any workflow or restart via API — only the UI Redeploy button.
 
-  Impact: NVIDIA NIM not registered; agents cannot call LLMs via litellm-staging.
-    T-08 blocked. Model registration workflow ready (PR #117 merged) — only waiting
-    for litellm-staging to be healthy.
-  Linked: T-08, FQ-25 (resolved), FQ-26 (resolved), PRs #113–#117
+  Impact: NVIDIA NIM still not registered; agents cannot call LLMs via litellm-staging.
+  Linked: T-08, PRs #116–#120 (port fix + workflow fixes all merged)
 ```
 
 ---
