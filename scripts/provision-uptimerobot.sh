@@ -7,7 +7,9 @@
 #
 # UptimeRobot API v2: https://uptimerobot.com/api/
 # POST https://api.uptimerobot.com/v2/newMonitor
-# Parameters are form-encoded; format=json controls the response format only.
+# Parameters are form-encoded. Note: format=json is NOT sent — it is not a
+# documented parameter for newMonitor and may trigger plan-restriction errors.
+# The v2 API always returns JSON; no format selector needed.
 #
 # ALERT CONTACTS: Left empty per T-14 initial scope.
 # Action required: configure alert contacts in UptimeRobot dashboard
@@ -23,6 +25,20 @@ if [ -z "${UPTIMEROBOT_API_KEY:-}" ]; then
   exit 1
 fi
 
+# Verify key and show account plan before attempting monitor creation.
+echo "=== Verifying API key via getAccountDetails ==="
+ACCT=$(curl -s --max-time 15 \
+  -X POST "https://api.uptimerobot.com/v2/getAccountDetails" \
+  --data-urlencode "api_key=${UPTIMEROBOT_API_KEY}")
+echo "Account response: $ACCT"
+ACCT_STAT=$(echo "$ACCT" | grep -o '"stat":"[^"]*"' | sed 's/"stat":"//;s/"//')
+if [ "$ACCT_STAT" != "ok" ]; then
+  echo "ERROR: API key invalid or account unreachable. Cannot proceed." >&2
+  exit 1
+fi
+echo "API key OK."
+echo ""
+
 # create_monitor <friendly_name> <url>
 # Returns 0 on success or already-exists; returns 1 on any other error.
 create_monitor() {
@@ -33,14 +49,14 @@ create_monitor() {
   echo "=== Creating monitor: $name ==="
   echo "    URL: $url"
 
-  # UptimeRobot v2 API is form-encoded.
-  # type=1 = HTTP(s). interval omitted — free plan rejects it even at the default 300s.
+  # UptimeRobot v2 API: form-encoded POST.
+  # type=1 = HTTP(s). interval omitted — free plan rejects explicit intervals.
+  # format=json omitted — not a valid newMonitor parameter; v2 always returns JSON.
   # alert_contacts intentionally omitted — see header note.
   local response
   response=$(curl -s --max-time 30 \
     -X POST "$UPTIMEROBOT_API" \
     --data-urlencode "api_key=${UPTIMEROBOT_API_KEY}" \
-    --data-urlencode "format=json" \
     --data-urlencode "type=1" \
     --data-urlencode "url=${url}" \
     --data-urlencode "friendly_name=${name}")
