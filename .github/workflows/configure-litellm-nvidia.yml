@@ -57,23 +57,16 @@ jobs:
           else
             echo "::add-mask::$NVIDIA_KEY"
             PAYLOAD=$(jq -n --arg v "$NVIDIA_KEY" '{key: "NVIDIA_API_KEY", value: $v}')
-            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X PATCH \
+            # Use POST (upsert), not PATCH — Coolify PATCH /envs may replace ALL env vars
+            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
               -H "Accept: application/json" \
               "$COOLIFY_BASE/applications/$UUID/envs" -d "$PAYLOAD") || true
             if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-              echo "✅ NVIDIA_API_KEY updated on litellm-staging (PATCH HTTP $HTTP)"
+              echo "✅ NVIDIA_API_KEY upserted on litellm-staging (POST HTTP $HTTP)"
             else
-              HTTP2=$(curl -s --max-time 30 -o /tmp/env_resp2.json -w "%{http_code}" -X POST \
-                -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-                -H "Accept: application/json" \
-                "$COOLIFY_BASE/applications/$UUID/envs" -d "$PAYLOAD") || true
-              if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "201" ]; then
-                echo "✅ NVIDIA_API_KEY created on litellm-staging (POST HTTP $HTTP2)"
-              else
-                echo "❌ Failed to set NVIDIA_API_KEY on litellm-staging (PATCH $HTTP / POST $HTTP2)"
-                cat /tmp/env_resp2.json 2>/dev/null | head -5 || true
-              fi
+              echo "❌ Failed to set NVIDIA_API_KEY on litellm-staging (POST HTTP $HTTP)"
+              cat /tmp/env_resp.json 2>/dev/null | head -5 || true
             fi
           fi
 
@@ -86,10 +79,10 @@ jobs:
           echo "Restart → HTTP $HTTP"
           jq '{message}' /tmp/restart.json 2>/dev/null || cat /tmp/restart.json | head -3 || true
 
-      - name: Wait for litellm-staging to become healthy (up to 3 min)
+      - name: Wait for litellm-staging to become healthy (up to 8 min)
         run: |
-          echo "Polling $LITELLM_BASE/health/readiness (max 3 min, every 15s)..."
-          DEADLINE=$(( $(date +%s) + 180 ))
+          echo "Polling $LITELLM_BASE/health/readiness (max 8 min, every 15s)..."
+          DEADLINE=$(( $(date +%s) + 480 ))
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
               "$LITELLM_BASE/health/readiness") || true
@@ -98,7 +91,7 @@ jobs:
             sleep 15
           done
           if [ "$HTTP" != "200" ]; then
-            echo "⚠️  litellm-staging not healthy after 3 min (last HTTP $HTTP) — proceeding anyway"
+            echo "⚠️  litellm-staging not healthy after 8 min (last HTTP $HTTP) — proceeding anyway"
           fi
 
       - name: Register NVIDIA NIM model in LiteLLM database
