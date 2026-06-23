@@ -34,11 +34,11 @@ jobs:
         run: |
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
 
-          # urllib.parse.urlparse handles all URL formats including percent-encoding.
-          # Double-quoted -c string; Python uses single quotes internally (no bash $ expansion risk).
-          # sys.stdout.write avoids the newline that print() would add; exits 1 if no password found.
+          # Handles both URL format (postgresql://user:pass@host/db) and
+          # PostgreSQL DSN format (host=... password=... user=...).
+          # urllib.parse for URL; regex fallback for DSN key=value.
           set +e
-          DB_PASS=$(python3 -c "import os,sys,urllib.parse as p;u=p.urlparse(os.environ.get('SUPABASE_DB_URL',''));pw=u.password;(sys.stdout.write(pw) if pw else (print('ERR: no password in SUPABASE_STAGING_DB_URL; scheme='+u.scheme+' host='+(u.hostname or 'none'),file=sys.stderr) or sys.exit(1)))")
+          DB_PASS=$(python3 -c "import os,sys,re,urllib.parse as up;raw=os.environ.get('SUPABASE_DB_URL','');u=up.urlparse(raw);pw=u.password or next((m.group(1) for m in [re.search(r\"password='([^']*)'\",raw),re.search(r'\bpassword=(\S+)',raw)] if m),None);sys.stdout.write(pw) if pw else (print('ERR:no pw found;scheme='+u.scheme+' raw[:40]='+repr(raw[:40]),file=sys.stderr) or sys.exit(1))")
           RC=$?
           set -e
 
