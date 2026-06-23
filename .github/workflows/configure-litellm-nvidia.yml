@@ -41,6 +41,11 @@ jobs:
           [ -z "$UUID" ] || [ "$UUID" = "null" ] && { echo "ERROR: litellm-staging not found in Coolify"; exit 1; }
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
           echo "litellm-staging UUID: $UUID"
+          # Override job-level LITELLM_BASE with the sslip.io URL (custom domain may not
+          # have a DNS A record resolvable from GitHub Actions runners — sslip.io always works)
+          LITELLM_URL="http://${UUID}.187.124.76.235.sslip.io"
+          echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
+          echo "litellm-staging URL: $LITELLM_URL"
 
       - name: Sync NVIDIA_API_KEY to litellm-staging env vars
         run: |
