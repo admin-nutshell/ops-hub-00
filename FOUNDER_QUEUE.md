@@ -49,6 +49,38 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-26 — BLOCKING: Verify litellm-staging container health + env vars after configure-litellm-nvidia runs
+
+```
+BLOCKING: [Production Manager] configure-litellm-nvidia.yml has run 3 times. Each run
+  restarts litellm-staging via Coolify API, but the container returns HTTP 502 for
+  3+ minutes after restart (longer than our polling window).
+
+  Two possible root causes — please verify in Coolify dashboard:
+
+  A. Container is crashing on startup (most urgent):
+     Go to https://coolify.inatechshell.ca → ops-hub-staging → litellm-staging.
+     Check: does the container show as Running or Stopped/Error?
+     If stopped/error, expand the logs and report the last 20 lines.
+
+  B. Env vars may have been modified by the workflow (PATCH vs POST API ambiguity):
+     Go to litellm-staging → Settings → Environment Variables.
+     Verify the following env vars are ALL present (not just NVIDIA_API_KEY):
+       - DATABASE_URL (or DB_* equivalent for LiteLLM's Postgres connection)
+       - LITELLM_MASTER_KEY
+       - STORE_MODEL_IN_DB (should be "True")
+       - NVIDIA_API_KEY (the new one we added)
+     If any are missing, tell Production Manager which ones — we'll restore them.
+
+  After you check, reply here with what you found. We will fix and re-run.
+
+  Impact if delayed: NVIDIA NIM cannot be registered; agents cannot call LLMs
+    via litellm-staging.
+  Linked: T-08, FQ-25 (resolved), runs #28005124125 + #28005330324
+```
+
+---
+
 ### FQ-25 — BLOCKING: LITELLM_MASTER_KEY + NVIDIA_API_KEY GitHub secrets not resolving
 
 ```
