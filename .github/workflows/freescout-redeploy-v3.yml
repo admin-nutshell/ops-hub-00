@@ -1,0 +1,253 @@
+name: FreeScout Redeploy v3 — hardcoded creds + Python URL parse
+
+# Fixes persistent "tenant/user not found" caused by broken bash URL parser.
+# Strategy:
+#   1. Use Python urllib.parse to extract DB_PASS from SUPABASE_STAGING_DB_URL
+#      (handles all URL formats correctly: percent-encoding, missing port, etc.)
+#   2. Hardcode all other Supabase session pooler values from FQ-11/FQ-22:
+#        DB_HOST = aws-1-ca-central-1.pooler.supabase.com
+#        DB_PORT = 5432
+#        DB_NAME = postgres
+#        DB_USER = postgres.yocoljutbiizdbfraapx
+#   3. Full delete+recreate to clear any stale /data/config/.env volume
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+
+jobs:
+  redeploy-freescout:
+    name: FreeScout — full redeploy with correct DB creds
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      FREESCOUT_ADMIN_PASS: ${{ secrets.FREESCOUT_STAGING_ADMIN_PASS }}
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+
+    steps:
+      - name: Extract DB_PASS via Python urllib.parse
+        id: dbpass
+        run: |
+          [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
+
+          DB_PASS=$(python3 - <<'PYEOF'
+import os, sys
+from urllib.parse import urlparse
+
+raw = os.environ.get("SUPABASE_DB_URL", "")
+if not raw:
+    print("ERROR: SUPABASE_DB_URL is empty", file=sys.stderr)
+    sys.exit(1)
+
+parsed = urlparse(raw)
+pw = parsed.password  # urllib handles percent-decoding automatically
+
+if pw is None:
+    print("ERROR: no password found in SUPABASE_STAGING_DB_URL", file=sys.stderr)
+    print(f"  URL scheme: {parsed.scheme}", file=sys.stderr)
+    print(f"  URL has user: {parsed.username is not None}", file=sys.stderr)
+    print(f"  URL has host: {parsed.hostname}", file=sys.stderr)
+    sys.exit(2)
+
+print(pw, end="")
+PYEOF
+)
+          RC=$?
+          if [ $RC -ne 0 ]; then
+            echo "ERROR: Python URL parse failed (exit $RC)"
+            echo "URL format is unrecognisable — cannot extract DB_PASS safely."
+            echo "Action required: add GitHub secret FREESCOUT_DB_PASS with the Supabase database password."
+            exit 1
+          fi
+
+          echo "::add-mask::$DB_PASS"
+          echo "db_pass=$DB_PASS" >> "$GITHUB_OUTPUT"
+          echo "✅ DB_PASS extracted (${#DB_PASS} chars)"
+
+      - name: Discover Coolify project + server
+        id: discover
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/projects.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects")
+          [ "$HTTP" != "200" ] && { echo "ERROR: /projects HTTP $HTTP"; cat /tmp/projects.json; exit 1; }
+
+          PROJ_UUID=$(jq -r '.[] | select(.name == "ops-hub-staging") | .uuid' /tmp/projects.json)
+          [ -z "$PROJ_UUID" ] || [ "$PROJ_UUID" = "null" ] && { echo "ERROR: ops-hub-staging not found"; exit 1; }
+          echo "project_uuid=$PROJ_UUID" >> "$GITHUB_OUTPUT"
+
+          HTTP2=$(curl -s --max-time 30 -o /tmp/proj_detail.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects/$PROJ_UUID")
+          ENV_NAME=$(jq -r '.environments[0].name // "production"' /tmp/proj_detail.json 2>/dev/null)
+          echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+
+          HTTP3=$(curl -s --max-time 30 -o /tmp/servers.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers")
+          SRV_UUID=$(jq -r '.[0].uuid' /tmp/servers.json 2>/dev/null)
+          echo "server_uuid=$SRV_UUID" >> "$GITHUB_OUTPUT"
+
+          echo "Project: $PROJ_UUID | Env: $ENV_NAME | Server: $SRV_UUID"
+
+      - name: Delete existing freescout-staging app (clears volume)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          if [ "$HTTP" = "200" ]; then
+            EXISTING=$(jq -r '.[] | select(.name == "freescout-staging") | .uuid' /tmp/apps.json 2>/dev/null || true)
+            if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+              echo "Deleting freescout-staging ($EXISTING)..."
+              DEL=$(curl -s --max-time 30 -o /tmp/del.json -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$EXISTING") || true
+              echo "Delete HTTP $DEL"
+              sleep 5
+            else
+              echo "No existing freescout-staging found"
+            fi
+          else
+            echo "WARNING: could not list apps (HTTP $HTTP) — proceeding anyway"
+          fi
+
+      - name: Create fresh freescout-staging app
+        id: app
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg proj "${{ steps.discover.outputs.project_uuid }}" \
+            --arg srv  "${{ steps.discover.outputs.server_uuid }}" \
+            --arg env  "${{ steps.discover.outputs.env_name }}" \
+            '{
+              project_uuid:               $proj,
+              server_uuid:                $srv,
+              environment_name:           $env,
+              name:                       "freescout-staging",
+              docker_registry_image_name: "nfrastack/freescout:latest",
+              ports_exposes:              "80",
+              instant_deploy:             false
+            }')
+          HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/dockerimage" \
+            -d "$PAYLOAD")
+          echo "Create HTTP $HTTP"
+          jq . /tmp/create.json 2>/dev/null || cat /tmp/create.json
+          [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ] && { echo "ERROR: create failed"; exit 1; }
+          UUID=$(jq -r '.uuid // .application_uuid // empty' /tmp/create.json 2>/dev/null)
+          [ -z "$UUID" ] || [ "$UUID" = "null" ] && { echo "ERROR: no UUID in create response"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "Created: $UUID"
+
+      - name: Set FreeScout environment variables (hardcoded correct creds)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          DB_PASS="${{ steps.dbpass.outputs.db_pass }}"
+
+          # Correct Supabase session pooler values (confirmed by founder 2026-06-22, FQ-11/FQ-22):
+          DB_HOST="aws-1-ca-central-1.pooler.supabase.com"
+          DB_PORT="5432"
+          DB_NAME="postgres"
+          DB_USER="postgres.yocoljutbiizdbfraapx"
+
+          echo "Setting env vars on $UUID..."
+          echo "  DB_HOST=$DB_HOST"
+          echo "  DB_PORT=$DB_PORT"
+          echo "  DB_NAME=$DB_NAME"
+          echo "  DB_USER=$DB_USER"
+          echo "  DB_PASS=[${#DB_PASS} chars, masked]"
+
+          set_env() {
+            local KEY="$1" VAL="$2"
+            local PAYLOAD HTTP
+            PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$VAL" '{key: $k, value: $v}')
+            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" \
+              -d "$PAYLOAD") || true
+            if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+              echo "  ✅ $KEY → HTTP $HTTP"
+            else
+              echo "  ❌ $KEY → HTTP $HTTP"
+              cat /tmp/env_resp.json 2>/dev/null | head -5 || true
+              return 1
+            fi
+          }
+
+          ERRORS=0
+          set_env "DB_TYPE"                   "pgsql"                                    || ERRORS=$((ERRORS+1))
+          set_env "DB_HOST"                   "$DB_HOST"                                 || ERRORS=$((ERRORS+1))
+          set_env "DB_PORT"                   "$DB_PORT"                                 || ERRORS=$((ERRORS+1))
+          set_env "DB_NAME"                   "$DB_NAME"                                 || ERRORS=$((ERRORS+1))
+          set_env "DB_USER"                   "$DB_USER"                                 || ERRORS=$((ERRORS+1))
+          set_env "DB_PASS"                   "$DB_PASS"                                 || ERRORS=$((ERRORS+1))
+          set_env "FREESCOUT_DB_PGSQL_SSL_MODE" "require"                               || ERRORS=$((ERRORS+1))
+          set_env "DB_SSL_MODE"               "require"                                  || ERRORS=$((ERRORS+1))
+          set_env "SKIP_DB_READY"             "TRUE"                                     || ERRORS=$((ERRORS+1))
+          set_env "SETUP_TYPE"                "AUTO"                                     || ERRORS=$((ERRORS+1))
+          set_env "APP_URL"                   "https://freescout-staging.inatechshell.ca" || ERRORS=$((ERRORS+1))
+          set_env "ADMIN_EMAIL"               "mai@leelaecospa.com"                       || ERRORS=$((ERRORS+1))
+          [ -n "$FREESCOUT_ADMIN_PASS" ] && set_env "ADMIN_PASS" "$FREESCOUT_ADMIN_PASS" || ERRORS=$((ERRORS+1))
+
+          [ $ERRORS -ne 0 ] && { echo "ERROR: $ERRORS env var(s) failed"; exit 1; }
+          echo "All env vars set."
+
+      - name: Deploy (start) FreeScout
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/start")
+          echo "Start HTTP $HTTP"
+          jq . /tmp/start.json 2>/dev/null || cat /tmp/start.json
+
+      - name: Wait for FreeScout to initialize (180s)
+        run: |
+          echo "Waiting 180s for SETUP_TYPE=AUTO first run + DB migrations..."
+          sleep 180
+
+      - name: Verify FreeScout health
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          FS_HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 --location \
+            "https://freescout-staging.inatechshell.ca")
+          echo "HTTP status: $FS_HTTP"
+          if [ "$FS_HTTP" = "200" ]; then
+            echo "✅ FreeScout UP at https://freescout-staging.inatechshell.ca"
+          else
+            echo "⚠️  HTTP $FS_HTTP — may still be starting or DB connection failed"
+          fi
+
+          APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_state.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          jq '{uuid, name, status, fqdn}' /tmp/app_state.json 2>/dev/null || true
+
+      - name: Fetch container logs (always)
+        if: always()
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          LOG_HTTP=$(curl -s --max-time 30 -o /tmp/fs_logs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/logs") || true
+          echo "=== FreeScout container logs (HTTP $LOG_HTTP) ==="
+          if [ "$LOG_HTTP" = "200" ]; then
+            python3 -c "
+import json, sys
+data = json.load(open('/tmp/fs_logs.json'))
+logs = data.get('logs', '') if isinstance(data, dict) else str(data)
+lines = logs.replace('\\\\n', '\n').split('\n')
+for l in lines[-60:]:
+    print(l)
+" 2>/dev/null || cat /tmp/fs_logs.json | tail -c 6000
+          else
+            cat /tmp/fs_logs.json 2>/dev/null | head -20 || true
+          fi
