@@ -34,39 +34,27 @@ jobs:
         run: |
           [ -n "$FREESCOUT_ADMIN_PASS" ] && echo "::add-mask::$FREESCOUT_ADMIN_PASS"
 
-          DB_PASS=$(python3 - <<'PYEOF'
-import os, sys
-from urllib.parse import urlparse
-
-raw = os.environ.get("SUPABASE_DB_URL", "")
-if not raw:
-    print("ERROR: SUPABASE_DB_URL is empty", file=sys.stderr)
-    sys.exit(1)
-
-parsed = urlparse(raw)
-pw = parsed.password  # urllib handles percent-decoding automatically
-
-if pw is None:
-    print("ERROR: no password found in SUPABASE_STAGING_DB_URL", file=sys.stderr)
-    print(f"  URL scheme: {parsed.scheme}", file=sys.stderr)
-    print(f"  URL has user: {parsed.username is not None}", file=sys.stderr)
-    print(f"  URL has host: {parsed.hostname}", file=sys.stderr)
-    sys.exit(2)
-
-print(pw, end="")
-PYEOF
-)
+          # urllib.parse.urlparse handles all URL formats including percent-encoding.
+          # Double-quoted -c string; Python uses single quotes internally (no bash $ expansion risk).
+          # sys.stdout.write avoids the newline that print() would add; exits 1 if no password found.
+          set +e
+          DB_PASS=$(python3 -c "import os,sys,urllib.parse as p;u=p.urlparse(os.environ.get('SUPABASE_DB_URL',''));pw=u.password;(sys.stdout.write(pw) if pw else (print('ERR: no password in SUPABASE_STAGING_DB_URL; scheme='+u.scheme+' host='+(u.hostname or 'none'),file=sys.stderr) or sys.exit(1)))")
           RC=$?
+          set -e
+
           if [ $RC -ne 0 ]; then
-            echo "ERROR: Python URL parse failed (exit $RC)"
-            echo "URL format is unrecognisable — cannot extract DB_PASS safely."
-            echo "Action required: add GitHub secret FREESCOUT_DB_PASS with the Supabase database password."
+            echo "ERROR: Python URL parse failed (exit $RC) — cannot extract DB_PASS"
+            echo "Action required: add GitHub secret FREESCOUT_DB_PASS with the Supabase password."
+            exit 1
+          fi
+          if [ -z "$DB_PASS" ]; then
+            echo "ERROR: DB_PASS is empty after extraction"
             exit 1
           fi
 
           echo "::add-mask::$DB_PASS"
           echo "db_pass=$DB_PASS" >> "$GITHUB_OUTPUT"
-          echo "✅ DB_PASS extracted (${#DB_PASS} chars)"
+          echo "DB_PASS extracted (${#DB_PASS} chars)"
 
       - name: Discover Coolify project + server
         id: discover
@@ -240,14 +228,7 @@ PYEOF
             "$COOLIFY_BASE/applications/$UUID/logs") || true
           echo "=== FreeScout container logs (HTTP $LOG_HTTP) ==="
           if [ "$LOG_HTTP" = "200" ]; then
-            python3 -c "
-import json, sys
-data = json.load(open('/tmp/fs_logs.json'))
-logs = data.get('logs', '') if isinstance(data, dict) else str(data)
-lines = logs.replace('\\\\n', '\n').split('\n')
-for l in lines[-60:]:
-    print(l)
-" 2>/dev/null || cat /tmp/fs_logs.json | tail -c 6000
+            python3 -c "import json,sys;d=json.load(open('/tmp/fs_logs.json'));logs=d.get('logs','') if isinstance(d,dict) else str(d);[print(l) for l in logs.replace('\\\\n','\n').split('\n')[-60:]]" 2>/dev/null || cat /tmp/fs_logs.json | tail -c 6000
           else
             cat /tmp/fs_logs.json 2>/dev/null | head -20 || true
           fi
