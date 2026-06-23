@@ -68,9 +68,11 @@ RESOLVED: [Founder] 2026-06-22 — DNS A record added (ops-hub-staging.inatechsh
 RESOLVED: [Founder] 2026-06-23 — 3 monitors created manually in UptimeRobot dashboard
   (free plan blocks newMonitor API — confirmed via getAccountDetails, active_subscription:null).
   Active monitors:
-    1. ops-hub-staging health  → https://ops-hub-staging.inatechshell.ca/health
-    2. ops-hub-staging inngest → https://ops-hub-staging.inatechshell.ca/api/inngest
-    3. litellm-staging health  → https://litellm-staging.inatechshell.ca/health
+    1. ops-hub-staging health → https://ops-hub-staging.inatechshell.ca/health
+    2. litellm-staging health → https://litellm-staging.inatechshell.ca/health
+    3. TTS app health         → TTS app URL
+  Note: /api/inngest monitor deleted — Inngest returns 405 on GET by design (signed POST
+  required); uptime monitors using GET would generate constant false alerts.
   T-14 ✅ Done. M1 criterion #9 ✅ Done. Sprint 1: 20/20 (100%).
 ```
 
