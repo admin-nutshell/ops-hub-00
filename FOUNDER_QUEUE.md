@@ -49,6 +49,31 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-25 — Add LITELLM_MASTER_KEY + NVIDIA_API_KEY as GitHub Actions secrets
+
+```
+BLOCKING: [Production Manager] configure-litellm-nvidia.yml (PR #110, run #28004013580)
+  cannot register meta/llama-3.3-70b-instruct in LiteLLM because LITELLM_MASTER_KEY
+  and NVIDIA_API_KEY are not GitHub Actions secrets (they live only in Coolify env vars).
+
+  Action required (~2 minutes):
+    1. Go to: https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
+    2. Add secret: LITELLM_MASTER_KEY
+       Value: the value already set in litellm-staging Coolify env vars
+    3. Add secret: NVIDIA_API_KEY
+       Value: same as already set in ops-hub-app Coolify env vars
+    4. Reply here: APPROVED: LITELLM_MASTER_KEY and NVIDIA_API_KEY added to GitHub secrets
+
+  After you reply, Production Manager will re-run configure-litellm-nvidia.yml to
+  register meta/llama-3.3-70b-instruct and verify NVIDIA NIM is wired into LiteLLM.
+
+  Impact if delayed: LiteLLM model registration is incomplete; NVIDIA NIM not yet
+    usable as a provider. All other Sprint 1 tasks are unaffected.
+  Linked: T-08, configure-litellm-nvidia.yml, run #28004013580
+```
+
+---
+
 ### ~~FQ-24 — BLOCKING: Set FreeScout custom domain in Coolify dashboard~~ — RESOLVED
 
 ```
