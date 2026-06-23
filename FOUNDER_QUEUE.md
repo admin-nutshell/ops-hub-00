@@ -49,27 +49,36 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-25 — Add LITELLM_MASTER_KEY + NVIDIA_API_KEY as GitHub Actions secrets
+### FQ-25 — BLOCKING: LITELLM_MASTER_KEY + NVIDIA_API_KEY GitHub secrets not resolving
 
 ```
-BLOCKING: [Production Manager] configure-litellm-nvidia.yml (PR #110, run #28004013580)
-  cannot register meta/llama-3.3-70b-instruct in LiteLLM because LITELLM_MASTER_KEY
-  and NVIDIA_API_KEY are not GitHub Actions secrets (they live only in Coolify env vars).
+BLOCKING: [Production Manager] configure-litellm-nvidia.yml run #28004326759 still
+  fails. Diagnostic: the workflow env dump shows both secrets resolve to empty string
+  (blank, not "***"). A correctly-set secret shows as "***" in GitHub Actions logs.
+  COOLIFY_API_TOKEN resolves correctly (shows "***") — confirming secrets DO work.
+
+  Root cause options:
+    A. Secret name mismatch — workflow expects EXACT names (case-sensitive):
+         LITELLM_MASTER_KEY
+         NVIDIA_API_KEY
+       Common mistakes: LITELLM_API_KEY, LITELLM_KEY, NVIDIA_NIM_API_KEY,
+         lowercase letters, extra spaces.
+    B. Secret value was pasted empty.
 
   Action required (~2 minutes):
     1. Go to: https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
-    2. Add secret: LITELLM_MASTER_KEY
-       Value: the value already set in litellm-staging Coolify env vars
-    3. Add secret: NVIDIA_API_KEY
-       Value: same as already set in ops-hub-app Coolify env vars
-    4. Reply here: APPROVED: LITELLM_MASTER_KEY and NVIDIA_API_KEY added to GitHub secrets
+    2. Verify or re-create secret named EXACTLY: LITELLM_MASTER_KEY
+       - Check the name matches character-for-character (underscore, not dash)
+       - Value: the LITELLM_MASTER_KEY from litellm-staging Coolify env vars
+       - Paste value, click Update
+    3. Verify or create secret named EXACTLY: NVIDIA_API_KEY
+       - Value: your NVIDIA NIM API key (same as in ops-hub-app Coolify env vars)
+    4. Reply here: APPROVED: secrets verified/re-created
 
-  After you reply, Production Manager will re-run configure-litellm-nvidia.yml to
-  register meta/llama-3.3-70b-instruct and verify NVIDIA NIM is wired into LiteLLM.
+  After reply, Production Manager re-runs configure-litellm-nvidia.yml.
 
-  Impact if delayed: LiteLLM model registration is incomplete; NVIDIA NIM not yet
-    usable as a provider. All other Sprint 1 tasks are unaffected.
-  Linked: T-08, configure-litellm-nvidia.yml, run #28004013580
+  Impact if delayed: NVIDIA NIM not wired into LiteLLM; agents cannot use it.
+  Linked: T-08, run #28004326759
 ```
 
 ---
