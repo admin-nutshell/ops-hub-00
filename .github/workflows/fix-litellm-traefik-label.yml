@@ -64,9 +64,8 @@ jobs:
               | sed 's/{{upstreams 80}}/{{upstreams 4000}}/g')
             NEW_B64=$(printf '%s' "$NEW_LABELS" | base64 -w 0)
           else
-            # Fallback: construct minimal labels from scratch
-            NEW_LABELS="traefik.enable=true
-traefik.http.services.http-0-${UUID}.loadbalancer.server.port=4000"
+            # Fallback: construct minimal labels from scratch (printf avoids literal newline in YAML)
+            NEW_LABELS=$(printf 'traefik.enable=true\ntraefik.http.services.http-0-%s.loadbalancer.server.port=4000\n' "$UUID")
             NEW_B64=$(printf '%s' "$NEW_LABELS" | base64 -w 0)
           fi
 
