@@ -123,7 +123,6 @@ jobs:
               name:                       "freescout-staging",
               docker_registry_image_name: "nfrastack/freescout:latest",
               ports_exposes:              "80",
-              fqdn:                       "https://freescout-staging.inatechshell.ca",
               instant_deploy:             false
             }')
           HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
@@ -139,6 +138,29 @@ jobs:
           [ -z "$UUID" ] || [ "$UUID" = "null" ] && { echo "ERROR: no UUID in create response"; exit 1; }
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
           echo "Created: $UUID"
+
+      - name: Set Coolify FQDN via PATCH (best-effort — API rejects for docker image apps)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          # Coolify API rejects fqdn in both create AND PATCH for dockerimage apps (422 "not allowed").
+          # Attempting anyway in case a future Coolify version adds support.
+          HTTP=$(curl -s --max-time 30 -o /tmp/fqdn_resp.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID" \
+            -d '{"fqdn":"https://freescout-staging.inatechshell.ca"}') || true
+          echo "FQDN PATCH → HTTP $HTTP"
+          jq '{message,errors}' /tmp/fqdn_resp.json 2>/dev/null || cat /tmp/fqdn_resp.json | head -5 || true
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "✅ FQDN set via API"
+          else
+            echo "⚠️  FQDN API rejected (HTTP $HTTP). Manual step required:"
+            echo "   1. Log into https://coolify.inatechshell.ca"
+            echo "   2. ops-hub-staging → freescout-staging → General/Settings"
+            echo "   3. Set Domains to: https://freescout-staging.inatechshell.ca"
+            echo "   4. Save + Redeploy"
+          fi
 
       - name: Set FreeScout environment variables (hardcoded correct creds)
         run: |
