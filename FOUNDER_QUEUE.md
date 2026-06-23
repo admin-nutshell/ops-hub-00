@@ -49,68 +49,63 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-26 — BLOCKING: Verify litellm-staging container health + env vars after configure-litellm-nvidia runs
+### FQ-27 — BLOCKING: litellm-staging returning HTTP 502 for 7+ hours — container appears crashed
 
 ```
-BLOCKING: [Production Manager] configure-litellm-nvidia.yml has run 3 times. Each run
-  restarts litellm-staging via Coolify API, but the container returns HTTP 502 for
-  3+ minutes after restart (longer than our polling window).
+BLOCKING: [Production Manager] litellm-staging has been returning HTTP 502 from all
+  external health checks since approximately 06:34 UTC 2026-06-23 — over 7 hours.
+  Two manual restarts were performed (founder confirmed "restarted" twice). The
+  configure-litellm-nvidia workflow also triggered a Coolify API restart at 06:34 UTC.
 
-  Two possible root causes — please verify in Coolify dashboard:
+  This is NOT a slow startup — 7 hours indicates the container is crashed, in a
+  crash loop, or stopped in Coolify.
 
-  A. Container is crashing on startup (most urgent):
-     Go to https://coolify.inatechshell.ca → ops-hub-staging → litellm-staging.
-     Check: does the container show as Running or Stopped/Error?
-     If stopped/error, expand the logs and report the last 20 lines.
+  Action required (< 10 minutes):
 
-  B. Env vars may have been modified by the workflow (PATCH vs POST API ambiguity):
-     Go to litellm-staging → Settings → Environment Variables.
-     Verify the following env vars are ALL present (not just NVIDIA_API_KEY):
-       - DATABASE_URL (or DB_* equivalent for LiteLLM's Postgres connection)
-       - LITELLM_MASTER_KEY
-       - STORE_MODEL_IN_DB (should be "True")
-       - NVIDIA_API_KEY (the new one we added)
-     If any are missing, tell Production Manager which ones — we'll restore them.
+  1. Go to https://coolify.inatechshell.ca → ops-hub-staging → litellm-staging
+  2. Check current status: Running, Stopped, or Error/Exited?
+  3. If Stopped/Error:
+       a. Click the container to expand it
+       b. Go to "Logs" tab → copy last 30 lines
+       c. Reply here with: status + last 30 log lines
+  4. If Running (shows as Running but health still fails):
+       a. Click Logs → look for startup errors, DB connection errors, OOM
+       b. Reply with the same: last 30 lines
+  5. Also check: is there a Coolify deploy/build job queued or running?
+       If yes, cancel it and wait for it to stop before restarting manually.
 
-  After you check, reply here with what you found. We will fix and re-run.
+  IMPORTANT: Do NOT use the Coolify API or trigger any workflow to restart.
+  If a restart is needed, use the Coolify UI only (simple docker restart, not redeploy).
+  The Coolify API POST /restart triggers a full image redeploy (~10+ min), which
+  was the root cause of prior outages. This workflow bug is fixed in PR #116/#117.
 
-  Impact if delayed: NVIDIA NIM cannot be registered; agents cannot call LLMs
-    via litellm-staging.
-  Linked: T-08, FQ-25 (resolved), runs #28005124125 + #28005330324
+  After you reply with the logs, Production Manager will diagnose and advise.
+
+  Impact: NVIDIA NIM not registered; agents cannot call LLMs via litellm-staging.
+    T-08 blocked. Model registration workflow ready (PR #117 merged) — only waiting
+    for litellm-staging to be healthy.
+  Linked: T-08, FQ-25 (resolved), FQ-26 (resolved), PRs #113–#117
 ```
 
 ---
 
-### FQ-25 — BLOCKING: LITELLM_MASTER_KEY + NVIDIA_API_KEY GitHub secrets not resolving
+### ~~FQ-26 — BLOCKING: Verify litellm-staging container health + env vars~~ — RESOLVED
 
 ```
-BLOCKING: [Production Manager] configure-litellm-nvidia.yml run #28004326759 still
-  fails. Diagnostic: the workflow env dump shows both secrets resolve to empty string
-  (blank, not "***"). A correctly-set secret shows as "***" in GitHub Actions logs.
-  COOLIFY_API_TOKEN resolves correctly (shows "***") — confirming secrets DO work.
+RESOLVED: [Founder] 2026-06-23 — litellm-staging confirmed Running (up 20 minutes).
+  All env vars present: DATABASE_URL ✅, LITELLM_MASTER_KEY ✅, STORE_MODEL_IN_DB=True ✅,
+  NVIDIA_API_KEY ✅. Workflow re-triggered. A new issue was subsequently found (see FQ-27).
+  Linked: T-08, FQ-27
+```
 
-  Root cause options:
-    A. Secret name mismatch — workflow expects EXACT names (case-sensitive):
-         LITELLM_MASTER_KEY
-         NVIDIA_API_KEY
-       Common mistakes: LITELLM_API_KEY, LITELLM_KEY, NVIDIA_NIM_API_KEY,
-         lowercase letters, extra spaces.
-    B. Secret value was pasted empty.
+---
 
-  Action required (~2 minutes):
-    1. Go to: https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
-    2. Verify or re-create secret named EXACTLY: LITELLM_MASTER_KEY
-       - Check the name matches character-for-character (underscore, not dash)
-       - Value: the LITELLM_MASTER_KEY from litellm-staging Coolify env vars
-       - Paste value, click Update
-    3. Verify or create secret named EXACTLY: NVIDIA_API_KEY
-       - Value: your NVIDIA NIM API key (same as in ops-hub-app Coolify env vars)
-    4. Reply here: APPROVED: secrets verified/re-created
+### ~~FQ-25 — BLOCKING: LITELLM_MASTER_KEY + NVIDIA_API_KEY GitHub secrets not resolving~~ — RESOLVED
 
-  After reply, Production Manager re-runs configure-litellm-nvidia.yml.
-
-  Impact if delayed: NVIDIA NIM not wired into LiteLLM; agents cannot use it.
-  Linked: T-08, run #28004326759
+```
+RESOLVED: [Founder] 2026-06-23 — Both secrets confirmed set in GitHub Actions:
+  LITELLM_MASTER_KEY ✅ and NVIDIA_API_KEY ✅. Workflow re-triggered successfully.
+  Linked: T-08, FQ-26
 ```
 
 ---
