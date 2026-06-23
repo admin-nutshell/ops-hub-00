@@ -1,0 +1,145 @@
+name: Fix FreeScout APP_URL + APP_DOMAIN
+
+# Fixes: visiting https://freescout-staging.inatechshell.ca redirects to TTS app URL.
+# Root cause: APP_URL env var in freescout-staging is wrong.
+# Fix: upsert APP_URL + APP_DOMAIN, also PATCH Coolify FQDN, restart, verify.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  CORRECT_APP_URL: "https://freescout-staging.inatechshell.ca"
+  CORRECT_APP_DOMAIN: "freescout-staging.inatechshell.ca"
+
+jobs:
+  fix-appurl:
+    name: Fix FreeScout APP_URL + restart
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    steps:
+      - name: Get freescout-staging UUID + current env vars
+        id: app
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          [ "$HTTP" != "200" ] && { echo "ERROR: /applications HTTP $HTTP"; cat /tmp/apps.json; exit 1; }
+
+          echo "=== All Coolify applications ==="
+          jq -r '.[] | "  \(.name) [\(.status // "?")] uuid=\(.uuid) fqdn=\(.fqdn // "(none)")"' \
+            /tmp/apps.json 2>/dev/null || true
+
+          UUID=$(jq -r '.[] | select(.name == "freescout-staging") | .uuid' /tmp/apps.json 2>/dev/null)
+          [ -z "$UUID" ] || [ "$UUID" = "null" ] && { echo "ERROR: freescout-staging not found"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "freescout-staging UUID: $UUID"
+
+          # Show current APP_URL / APP_DOMAIN / FQDN
+          HTTP2=$(curl -s --max-time 30 -o /tmp/app_detail.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          echo ""
+          echo "=== Current APP_URL / FQDN ==="
+          jq -r '
+            "  fqdn (Coolify): " + (.fqdn // "(not set)"),
+            ((.environment_variables // .envs // [])[]
+              | select(.key | test("^APP_URL|^APP_DOMAIN|^APP_KEY|^APP_ENV"))
+              | "  \(.key) = \(.value // "(not returned)")")
+          ' /tmp/app_detail.json 2>/dev/null || true
+
+      - name: Upsert APP_URL + APP_DOMAIN + correct Coolify FQDN
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+
+          upsert_env() {
+            local KEY="$1" VAL="$2"
+            local PAYLOAD
+            PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$VAL" '{key: $k, value: $v}')
+            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" -d "$PAYLOAD") || true
+            if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+              echo "  ✅ $KEY → PATCH $HTTP"; return 0
+            fi
+            echo "  PATCH $HTTP for $KEY — trying POST"
+            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" -d "$PAYLOAD") || true
+            if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+              echo "  ✅ $KEY → POST $HTTP"; return 0
+            fi
+            echo "  ❌ $KEY → both failed (HTTP $HTTP)"
+            cat /tmp/env_resp.json 2>/dev/null | head -5 || true
+            return 1
+          }
+
+          echo "=== Setting env vars ==="
+          upsert_env "APP_URL"    "$CORRECT_APP_URL"
+          upsert_env "APP_DOMAIN" "$CORRECT_APP_DOMAIN"
+
+          # Also PATCH the Coolify application FQDN so Caddy routes this domain to the container
+          echo ""
+          echo "=== Patching Coolify FQDN ==="
+          FQDN_PAYLOAD=$(jq -n --arg f "$CORRECT_APP_URL" '{fqdn: $f}')
+          FQDN_HTTP=$(curl -s --max-time 30 -o /tmp/fqdn_resp.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID" -d "$FQDN_PAYLOAD") || true
+          echo "  PATCH /applications/$UUID → HTTP $FQDN_HTTP"
+          jq '{fqdn, name, status}' /tmp/fqdn_resp.json 2>/dev/null || cat /tmp/fqdn_resp.json | head -10 || true
+
+      - name: Restart freescout-staging
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/restart")
+          echo "Restart → HTTP $HTTP"
+          jq . /tmp/restart.json 2>/dev/null || cat /tmp/restart.json || true
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ] && [ "$HTTP" != "202" ]; then
+            echo "Restart failed — trying /start"
+            HTTP2=$(curl -s --max-time 30 -o /tmp/start.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/start")
+            echo "/start → HTTP $HTTP2"
+          fi
+
+      - name: Wait 90s for restart
+        run: |
+          echo "Waiting 90s for FreeScout to restart with new env vars..."
+          sleep 90
+
+      - name: Verify FreeScout — no redirect to TTS
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+
+          # Capture final URL after redirects
+          FINAL_URL=$(curl -s --max-time 30 -o /dev/null -w "%{url_effective}" \
+            --location "$CORRECT_APP_URL")
+          HTTP=$(curl -s --max-time 30 -o /tmp/fs_body.json -w "%{http_code}" \
+            --location "$CORRECT_APP_URL")
+          echo "HTTP: $HTTP | Final URL: $FINAL_URL"
+
+          if echo "$FINAL_URL" | grep -q "app.inatechshell.ca"; then
+            echo "❌ Still redirecting to TTS: $FINAL_URL"
+            exit 1
+          fi
+          if [ "$HTTP" = "200" ]; then
+            echo "✅ FreeScout responding correctly at: $FINAL_URL"
+          else
+            echo "⚠️  HTTP $HTTP — may need more time to fully restart"
+          fi
+
+          # Coolify app state
+          jq -r '"Coolify status: " + (.status // "?") + " | fqdn: " + (.fqdn // "(none)")' \
+            <(curl -s --max-time 30 \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID") 2>/dev/null || true
