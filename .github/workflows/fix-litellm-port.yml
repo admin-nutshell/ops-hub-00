@@ -1,0 +1,121 @@
+name: Fix LiteLLM port — 80 → 4000
+
+# One-shot fix: Traefik was routing to port 80 but LiteLLM listens on 4000.
+# This workflow:
+#   1. PATCHes ports_exposes from 80 to 4000 on litellm-staging
+#   2. Triggers a Coolify redeploy (required — changing ports needs new container labels)
+#   3. Polls health for up to 15 min (redeploy takes longer than a simple restart)
+#   4. On success, chains into configure-litellm-nvidia.yml to register the NVIDIA NIM model
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write  # needed to dispatch configure-litellm-nvidia.yml
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  UUID: "h12xz8887fxvbvjts2hac8if"
+
+jobs:
+  fix-port:
+    name: Fix Traefik port mapping and redeploy
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+
+    steps:
+      - name: Get current application config (diagnostic)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/app.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          echo "GET /applications/$UUID → HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            jq '{name, ports_exposes, ports_mappings, status}' /tmp/app.json 2>/dev/null || true
+          else
+            cat /tmp/app.json | head -10 || true
+          fi
+
+      - name: PATCH ports_exposes from 80 to 4000
+        run: |
+          PAYLOAD='{"ports_exposes": "4000"}'
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch_resp.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID" \
+            -d "$PAYLOAD")
+          echo "PATCH /applications/$UUID → HTTP $HTTP"
+          cat /tmp/patch_resp.json | head -20 || true
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "✅ ports_exposes updated to 4000"
+          else
+            echo "❌ PATCH failed (HTTP $HTTP) — check payload format"
+            exit 1
+          fi
+
+      - name: Verify port was saved
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/app2.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          echo "GET /applications/$UUID → HTTP $HTTP"
+          jq '{name, ports_exposes, ports_mappings, status}' /tmp/app2.json 2>/dev/null || true
+          PORTS=$(jq -r '.ports_exposes // empty' /tmp/app2.json 2>/dev/null || true)
+          echo "ports_exposes is now: $PORTS"
+          if [ "$PORTS" = "4000" ]; then
+            echo "✅ Confirmed: ports_exposes = 4000"
+          else
+            echo "⚠️  ports_exposes is '$PORTS' (expected 4000) — proceeding with redeploy anyway"
+          fi
+
+      - name: Trigger redeploy (required to apply new Traefik port label)
+        run: |
+          # A full redeploy is required here — unlike a simple restart, changing
+          # ports_exposes changes the Traefik label on the container. Only a
+          # redeploy (recreate container) picks up the new label.
+          HTTP=$(curl -s --max-time 30 -o /tmp/deploy_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/restart") || true
+          echo "POST /applications/$UUID/restart → HTTP $HTTP"
+          jq '{message}' /tmp/deploy_resp.json 2>/dev/null || cat /tmp/deploy_resp.json | head -5 || true
+
+      - name: Wait for litellm-staging to become healthy (up to 15 min, every 20s)
+        run: |
+          LITELLM_URL="http://${UUID}.187.124.76.235.sslip.io"
+          echo "Polling $LITELLM_URL/health/readiness..."
+          echo "(Redeploy with port label change takes longer than a simple restart)"
+          DEADLINE=$(( $(date +%s) + 900 ))
+          HTTP=000
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
+              "$LITELLM_URL/health/readiness") || true
+            echo "$(date -u +%H:%M:%S)  /health/readiness → HTTP $HTTP"
+            [ "$HTTP" = "200" ] && { echo "✅ litellm-staging is healthy on port 4000"; break; }
+            sleep 20
+          done
+          if [ "$HTTP" != "200" ]; then
+            echo "⚠️  litellm-staging not healthy after 15 min (last HTTP $HTTP)"
+            echo "   Check Coolify dashboard for container logs"
+            exit 1
+          fi
+
+      - name: Register NVIDIA NIM model (chain into configure-litellm-nvidia.yml)
+        run: |
+          echo "Port fix confirmed healthy. Triggering NVIDIA NIM configuration..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/dispatch.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/admin-nutshell/ops-hub-00/actions/workflows/configure-litellm-nvidia.yml/dispatches" \
+            -d '{"ref": "main"}')
+          echo "Dispatch configure-litellm-nvidia.yml → HTTP $HTTP"
+          if [ "$HTTP" = "204" ]; then
+            echo "✅ configure-litellm-nvidia.yml triggered on main"
+            echo "   Monitor: https://github.com/admin-nutshell/ops-hub-00/actions/workflows/configure-litellm-nvidia.yml"
+          else
+            cat /tmp/dispatch.json | head -5 || true
+            echo "⚠️  Dispatch HTTP $HTTP — may need manual trigger"
+          fi
