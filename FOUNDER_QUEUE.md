@@ -62,40 +62,56 @@ RESOLVED: [Founder] 2026-06-22 — DNS A record added (ops-hub-staging.inatechsh
 
 ---
 
-### FQ-17 — One-time action: UptimeRobot API key type check + manual monitor creation fallback
+### FQ-17 — One-time action: Create 3 UptimeRobot monitors manually (API blocked by free plan)
 
 ```
-[Data Engineer] UptimeRobot provisioning workflow is still failing with access_denied
-  even after removing the interval parameter (PR #76). Root cause: the API key type
-  is likely incorrect, or the account has a restriction that blocks programmatic
-  monitor creation.
+[Production Manager] 2026-06-23 — ROOT CAUSE CONFIRMED (run #27993186811).
+  Main API Key is valid (getAccountDetails → stat:ok). Account plan:
+    active_subscription: null (FREE PLAN — no paid subscription)
+    monitor_interval: 5 min, monitor_limit: 50, total_monitors: 1 existing
 
-Diagnosis step (2 min):
-  1. Go to https://uptimerobot.com → My Settings → API Settings
-  2. Confirm the key in GitHub secret UPTIMEROBOT_API_KEY is the "Main API Key"
-     (NOT a "Monitor-Specific API Key" — those can only read/update that one monitor)
-  3. Run the following test in any terminal to confirm read access works:
-       curl -X POST "https://api.uptimerobot.com/v2/getAccountDetails" \
-         -d "api_key=<your-key>&format=json"
-     If "stat":"ok" → key is valid; if "stat":"fail" → wrong key type
+  UptimeRobot's free plan no longer allows API-based monitor creation.
+  newMonitor returns "access_denied: You are not allowed to use some settings
+  with your current plan." for ALL monitors, regardless of parameters.
+  This is a permanent plan restriction — no script fix can work on the free plan.
 
-Option A (recommended — re-enable agent automation):
-  Update the GitHub secret with the correct Main API Key:
-    gh secret set UPTIMEROBOT_API_KEY --body "<main-api-key>"
-  Then re-run the workflow:
+  Automation path exhausted. The only $0 path is manual dashboard creation
+  (Option B below). Option A (upgrade to Solo ~$7/month) enables API creation
+  but is a cost decision.
+
+Option B — manual dashboard creation (recommended, 5 min, $0):
+  Log in to https://uptimerobot.com → Add New Monitor for each:
+
+  1. ops-hub-app (staging)
+     Monitor Type: HTTP(s)
+     Friendly Name: ops-hub-app (staging)
+     URL: https://ops-hub-staging.inatechshell.ca/health
+     Monitoring Interval: 5 minutes
+     Alert Contacts: mai@leelaecospa.com
+
+  2. LiteLLM (staging)
+     Monitor Type: HTTP(s)
+     Friendly Name: LiteLLM (staging)
+     URL: http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health
+     Monitoring Interval: 5 minutes
+     Alert Contacts: mai@leelaecospa.com
+
+  3. FreeScout (staging)
+     Monitor Type: HTTP(s)
+     Friendly Name: FreeScout (staging)
+     URL: http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io
+     Monitoring Interval: 5 minutes
+     Alert Contacts: mai@leelaecospa.com
+
+  After creating all 3, reply: RESOLVED: [date] — 3 monitors active.
+
+Option A — upgrade UptimeRobot to Solo (~$7 CAD/month):
+  Paid plan unlocks newMonitor API. Then re-run:
     gh workflow run provision-uptimerobot.yml --repo admin-nutshell/ops-hub-00
-
-Option B (self-service, 5 min):
-  Manually create 3 HTTP monitors in UptimeRobot dashboard:
-    1. ops-hub-app: https://ops-hub-staging.inatechshell.ca/health
-    2. LiteLLM:     http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health
-    3. FreeScout:   http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io
-  5-minute interval; alert email: mai@leelaecospa.com
-
-Reply: RESOLVED: [date] — Option A/B; all 3 monitors active.
+  Note: cost decision; below $20/mo threshold but agent flags for awareness.
 
 Impact if delayed: No uptime alerts for staging (non-blocking for dev; blocking for M1 #9).
-Linked: T-14, PR #73, PR #76, scripts/provision-uptimerobot.sh
+Linked: T-14, PRs #73/#76/#91, scripts/provision-uptimerobot.sh
 ```
 
 ---

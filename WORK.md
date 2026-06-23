@@ -73,7 +73,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-11: Apply initial Supabase schema migrations | Tech Lead | ✅ Supabase provisioned; T-03 complete | ✅ **DONE (2026-06-21).** Both migrations applied via Supabase SQL Editor. All 6 tables live in `public` schema with RLS enabled. `ops_hub_app` role created. LiteLLM tables also present (expected — `STORE_MODEL_IN_DB=True`). FQ-15 resolved. | Jul 2 |
 | T-12: Set up Supabase Vault — store all LLM API keys and service secrets | Security Lead | ✅ Supabase provisioned; ✅ T-11 done | ✅ **DONE (2026-06-22, FQ-16 RESOLVED).** `ops_hub_app_login` role created (login=true, bypassrls=false); `langfuse_secret_key` + `ops_hub_app_password` stored in Vault; `internal.get_secret()` accessor created; anon/authenticated have no accessor access; `ops_hub_app` cannot read vault directly. All V1–V5 conditions verified by founder. T-18 integration test now unblocked for real login-path run. | Jul 2 |
 | T-13: Wire Sentry for Ops Hub (staging + prod) | Production Manager | ✅ Coolify provisioned | ✅ **DONE (2026-06-22).** "Sentry test error from ops-hub-staging" visible in Sentry ops-hub-staging project Issues tab. `SENTRY_DSN` confirmed in Coolify staging env vars. `/debug-sentry` endpoint (PR #89) uses `Sentry.captureException()` + 500 response — does not throw (avoids `uncaughtException` crash). `instrument.ts` preloads first (line-1 import in `index.ts`); `Sentry.init()` runs before all other modules. | Jul 2 |
-| T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **🔴 Blocked (FQ-17)** — PRs #73/#76 merged; workflow run #27966287847 returned `access_denied` for all 3 monitors (plan restriction — interval not the cause; likely wrong API key type). FQ-17 filed: founder checks API key is "Main API Key" and re-runs workflow, OR creates 3 monitors manually via UptimeRobot dashboard. | Jul 2 |
+| T-14: Wire UptimeRobot monitors for Ops Hub staging + prod | Production Manager | ✅ Coolify provisioned | **🔴 Blocked (FQ-17)** — Root cause confirmed (run #27993186811): UptimeRobot account is on **free plan** (`active_subscription: null`); free plan blocks `newMonitor` API entirely. No script fix possible. **Only path: founder manually creates 3 monitors in UptimeRobot dashboard** (FQ-17 updated with step-by-step instructions). | Jul 2 |
 
 ### Track C — CI/CD & Eval Gate (starts after T-05 + infra available)
 
@@ -110,6 +110,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 ### PM
 Sprint 1 planned (2026-06-18). Monitoring M1 checklist. Next: Friday July 4 sprint retro to `docs/retros/sprint-1.md`.
+
+**2026-06-23 — T-14 UptimeRobot: root cause confirmed.** Free plan blocks `newMonitor` API (`active_subscription: null`). Script automation exhausted — manual dashboard creation required. FQ-17 updated with step-by-step instructions for founder. Sprint 1 still at 19/20 (95%); T-14 unblocks M1 #9 once founder creates 3 monitors.
 
 **2026-06-22 — Sprint 1 status: 19/20 tasks done (95%).** T-09 LangFuse ✅ Done (health-check trace verified in LangFuse Cloud US). T-13 Sentry ✅ Done (error verified in Sentry dashboard; SENTRY_DSN in Coolify). Only T-14 (UptimeRobot — FQ-17) remains open.
 
