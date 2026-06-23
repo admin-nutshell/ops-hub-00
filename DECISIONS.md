@@ -380,3 +380,18 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   of index.ts — Sentry.init() runs before all other modules. Sprint 1: 19/20 (95%).
   Only T-14 (UptimeRobot, FQ-17) remains.
 ```
+
+### 2026-06-23 — T-14 UptimeRobot root cause confirmed: free plan API restriction
+
+```
+2026-06-23 [Production Manager] T-14 UptimeRobot: root cause confirmed via getAccountDetails
+  (run #27993186811). Account active_subscription: null — free plan.
+  UptimeRobot free plan blocks newMonitor API entirely: "access_denied: You are not allowed
+  to use some settings with your current plan." This error is permanent — not fixable via
+  script parameters (format=json removal tested in PR #91, no effect). API write access
+  (newMonitor/editMonitor/deleteMonitor) requires a paid plan.
+  Decision: automation path exhausted. FQ-17 updated with manual dashboard creation
+  instructions (Option B, $0, 5 min founder action). Option A (Solo plan ~$7 CAD/month)
+  would re-enable API automation but is a cost decision flagged to founder.
+  T-14 stays 🔴 Blocked until founder completes FQ-17 Option B or upgrades plan.
+```
