@@ -62,56 +62,16 @@ RESOLVED: [Founder] 2026-06-22 — DNS A record added (ops-hub-staging.inatechsh
 
 ---
 
-### FQ-17 — One-time action: Create 3 UptimeRobot monitors manually (API blocked by free plan)
+### ~~FQ-17 — One-time action: Create 3 UptimeRobot monitors manually (API blocked by free plan)~~ — RESOLVED
 
 ```
-[Production Manager] 2026-06-23 — ROOT CAUSE CONFIRMED (run #27993186811).
-  Main API Key is valid (getAccountDetails → stat:ok). Account plan:
-    active_subscription: null (FREE PLAN — no paid subscription)
-    monitor_interval: 5 min, monitor_limit: 50, total_monitors: 1 existing
-
-  UptimeRobot's free plan no longer allows API-based monitor creation.
-  newMonitor returns "access_denied: You are not allowed to use some settings
-  with your current plan." for ALL monitors, regardless of parameters.
-  This is a permanent plan restriction — no script fix can work on the free plan.
-
-  Automation path exhausted. The only $0 path is manual dashboard creation
-  (Option B below). Option A (upgrade to Solo ~$7/month) enables API creation
-  but is a cost decision.
-
-Option B — manual dashboard creation (recommended, 5 min, $0):
-  Log in to https://uptimerobot.com → Add New Monitor for each:
-
-  1. ops-hub-app (staging)
-     Monitor Type: HTTP(s)
-     Friendly Name: ops-hub-app (staging)
-     URL: https://ops-hub-staging.inatechshell.ca/health
-     Monitoring Interval: 5 minutes
-     Alert Contacts: mai@leelaecospa.com
-
-  2. LiteLLM (staging)
-     Monitor Type: HTTP(s)
-     Friendly Name: LiteLLM (staging)
-     URL: http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health
-     Monitoring Interval: 5 minutes
-     Alert Contacts: mai@leelaecospa.com
-
-  3. FreeScout (staging)
-     Monitor Type: HTTP(s)
-     Friendly Name: FreeScout (staging)
-     URL: http://y4b8nibdtizby6ys3el2gad4.187.124.76.235.sslip.io
-     Monitoring Interval: 5 minutes
-     Alert Contacts: mai@leelaecospa.com
-
-  After creating all 3, reply: RESOLVED: [date] — 3 monitors active.
-
-Option A — upgrade UptimeRobot to Solo (~$7 CAD/month):
-  Paid plan unlocks newMonitor API. Then re-run:
-    gh workflow run provision-uptimerobot.yml --repo admin-nutshell/ops-hub-00
-  Note: cost decision; below $20/mo threshold but agent flags for awareness.
-
-Impact if delayed: No uptime alerts for staging (non-blocking for dev; blocking for M1 #9).
-Linked: T-14, PRs #73/#76/#91, scripts/provision-uptimerobot.sh
+RESOLVED: [Founder] 2026-06-23 — 3 monitors created manually in UptimeRobot dashboard
+  (free plan blocks newMonitor API — confirmed via getAccountDetails, active_subscription:null).
+  Active monitors:
+    1. ops-hub-staging health  → https://ops-hub-staging.inatechshell.ca/health
+    2. ops-hub-staging inngest → https://ops-hub-staging.inatechshell.ca/api/inngest
+    3. litellm-staging health  → https://litellm-staging.inatechshell.ca/health
+  T-14 ✅ Done. M1 criterion #9 ✅ Done. Sprint 1: 20/20 (100%).
 ```
 
 ---
