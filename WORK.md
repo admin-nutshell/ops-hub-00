@@ -27,7 +27,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **T-10 DONE (2026-06-21).** FreeScout v2.1.2 running on Coolify staging; health check green; Supabase Postgres connected via session pooler (aws-1-ca-central-1). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **Done (2026-06-22).** T-15 + T-17 complete. 4 required checks: Lint & Type Check, Unit Tests, Security Scan, Eval Gate. Staging auto-deploy on merge via `main-deploy.yml`. |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | ✅ **Done (2026-06-22).** 11 eval cases (PR #65, T-16); `Eval Gate` CI job validates all 11 eval files on every PR (PR #75, T-17). |
-| 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ✅ **Done (2026-06-23).** Sentry: error verified in Sentry dashboard; `SENTRY_DSN` in Coolify. UptimeRobot: 3 monitors active — ops-hub-staging health, ops-hub-staging inngest, litellm-staging health. FQ-17 resolved. |
+| 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ✅ **Done (2026-06-23).** Sentry: error verified in Sentry dashboard; `SENTRY_DSN` in Coolify. UptimeRobot: 3 monitors active — ops-hub-staging health, litellm-staging health, TTS app health. FQ-17 resolved. |
 | 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | 🔒 Blocked on #4, #6, #7 |
 | 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🔒 Blocked on #10 |
 | 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Blocked on #10 |
