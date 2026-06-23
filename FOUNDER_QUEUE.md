@@ -49,6 +49,38 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-24 — BLOCKING: Set FreeScout custom domain in Coolify dashboard (API cannot do this)
+
+```
+BLOCKING: [Production Manager] FreeScout loads correctly but all traffic to
+  https://freescout-staging.inatechshell.ca is routed by Caddy to the TTS app
+  instead of FreeScout, because the Coolify FQDN for freescout-staging is not set.
+
+  Root cause: Coolify's API rejects the 'fqdn' field for docker image type apps on
+  both create AND PATCH (HTTP 422 "This field is not allowed."). The only way to set
+  the custom domain for a docker image app is through the Coolify UI.
+
+  Action required (~3 minutes):
+    1. Log into Coolify: https://coolify.inatechshell.ca
+    2. Navigate to: ops-hub-staging project → freescout-staging service
+    3. Click on freescout-staging → find "General" or "Settings" tab
+    4. Find the "Domains" or "FQDN" field
+    5. Enter: https://freescout-staging.inatechshell.ca
+    6. Click Save
+    7. Click "Redeploy" or "Restart" to apply the new domain routing
+
+  After saving, Caddy will automatically route https://freescout-staging.inatechshell.ca
+  to the FreeScout container. The container is already running with correct DB credentials
+  and APP_URL. No code changes needed after this.
+
+  Reply here: APPROVED: FreeScout domain set in Coolify
+
+  Impact if delayed: FreeScout redirects to TTS login page — Sprint 2 E2E test blocked.
+  Linked: T-10, run #28002459066 (FQDN API 422), PR #106/107
+```
+
+---
+
 ### ~~FQ-22 — BLOCKING: Add FREESCOUT_DB_PASS secret~~ — RESOLVED (superseded by FQ-23)
 
 ```
