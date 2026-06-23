@@ -49,37 +49,20 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-27 — BLOCKING: litellm-staging 502 — Traefik port mismatch fixed in DB; needs UI Redeploy
+### ~~FQ-27 — BLOCKING: litellm-staging 502 — Traefik port mismatch~~ — IN FLIGHT (no founder action needed)
 
 ```
-BLOCKING: [Production Manager] Root cause found and DB config fixed. One manual
-  step remaining: click Redeploy from the Coolify UI.
+UPDATE 2026-06-23: [Production Manager] No founder action required.
+  Automated fix deployed (PR #122, fix-litellm-traefik-label.yml):
+  - custom_labels set with traefik.*.loadbalancer.server.port=4000
+  - Container stop → start cycle forced container recreation with new labels
+  - Steps 1–6 ✅ complete; health poll in progress
+  - configure-litellm-nvidia.yml auto-dispatches on successful health
 
-  WHAT WAS FOUND:
-    Traefik label: loadbalancer.server.port = 80
-    LiteLLM actual port: 4000
-    This caused every request to hit port 80 (nothing listening) → Bad Gateway 502.
-    This was the root cause of 7+ hours of 502s.
+  If litellm-staging is still 502 after this workflow completes (~15 min from now),
+  Production Manager will file a new FQ. No manual Coolify UI action needed.
 
-  WHAT WAS FIXED (automated, PR #119):
-    ✅ ports_exposes patched from 80 to 4000 via Coolify API PATCH
-       (confirmed: GET /applications showed ports_exposes: "4000" after patch)
-
-  WHAT STILL NEEDS YOUR ACTION (< 2 minutes):
-    The Coolify API POST /restart restarts the existing container with OLD labels.
-    To apply the updated port (4000) to the Traefik label, Coolify must recreate
-    the container with new labels. Only the Coolify UI "Redeploy" button does this.
-
-    1. Go to https://coolify.inatechshell.ca → ops-hub-staging → litellm-staging
-    2. Click "Redeploy" (NOT "Restart" — Redeploy recreates the container)
-    3. Wait until status shows Running (1–5 min)
-    4. Reply: APPROVED: redeployed
-    Production Manager will trigger configure-litellm-nvidia.yml immediately after.
-
-  DO NOT trigger any workflow or restart via API — only the UI Redeploy button.
-
-  Impact: NVIDIA NIM still not registered; agents cannot call LLMs via litellm-staging.
-  Linked: T-08, PRs #116–#120 (port fix + workflow fixes all merged)
+  Linked: T-08, PRs #119–#122, configure-litellm-nvidia.yml
 ```
 
 ---
