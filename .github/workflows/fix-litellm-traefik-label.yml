@@ -2,14 +2,15 @@ name: Fix LiteLLM Traefik label — force port 4000
 
 # LiteLLM is confirmed running internally at port 4000 (returns 401 = auth required).
 # Root cause: Traefik loadbalancer.server.port label is still 80 on the running container.
-# The previous ports_exposes PATCH + API restart preserved old container labels.
+# Coolify stores custom_labels as base64; PATCH requires base64 input.
 #
 # This workflow:
-#   1. Dumps the full application config to find Traefik service name and current label state
-#   2. Adds an explicit custom_labels override: traefik.*.loadbalancer.server.port=4000
-#   3. Triggers a stop → start cycle (not restart) which forces container recreation
-#   4. Polls health for up to 15 min
-#   5. On success, dispatches configure-litellm-nvidia.yml
+#   1. GETs current custom_labels (base64)
+#   2. Decodes, replaces port=80 → port=4000 in both Traefik and Caddy labels
+#   3. Re-encodes as base64 and PATCHes back (also sets ports_exposes=4000)
+#   4. Stop → start (not restart) to force container recreation with new labels
+#   5. Polls health for up to 15 min
+#   6. On success, dispatches configure-litellm-nvidia.yml
 on:
   workflow_dispatch:
 
@@ -30,94 +31,107 @@ jobs:
       LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
 
     steps:
-      - name: Dump full application config
-        id: config
+      - name: Get current custom_labels and decode
+        id: labels
         run: |
-          HTTP=$(curl -s --max-time 30 -o /tmp/app_full.json -w "%{http_code}" \
+          HTTP=$(curl -s --max-time 30 -o /tmp/app.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID")
           echo "GET /applications/$UUID → HTTP $HTTP"
           if [ "$HTTP" != "200" ]; then
-            cat /tmp/app_full.json; exit 1
+            cat /tmp/app.json; exit 1
           fi
-          # Show key fields
-          echo "=== Port/label/name fields ==="
-          jq '{
-            name,
-            fqdn,
-            ports_exposes,
-            ports_mappings,
-            custom_labels,
-            status,
-            image: .docker_registry_image_name,
-            tag: .docker_registry_image_tag
-          }' /tmp/app_full.json || true
-          # Extract app name for service label construction
-          APP_NAME=$(jq -r '.name' /tmp/app_full.json)
-          echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
-          echo ""
-          echo "=== Current custom_labels ==="
-          jq -r '.custom_labels // "null"' /tmp/app_full.json || true
 
-      - name: Build and set custom_labels with explicit Traefik port=4000
+          # Show current state
+          jq '{name, ports_exposes, status}' /tmp/app.json
+
+          # Decode current custom_labels and show port references
+          CURRENT_B64=$(jq -r '.custom_labels // ""' /tmp/app.json)
+          if [ -n "$CURRENT_B64" ]; then
+            echo "=== Current labels (decoded) ==="
+            echo "$CURRENT_B64" | base64 -d
+            echo ""
+            echo "=== Port references in current labels ==="
+            echo "$CURRENT_B64" | base64 -d | grep -i "port\|upstream" || echo "(none found)"
+          else
+            echo "custom_labels is empty"
+          fi
+
+          # Decode, replace port=80 with port=4000, re-encode
+          if [ -n "$CURRENT_B64" ]; then
+            NEW_LABELS=$(echo "$CURRENT_B64" | base64 -d \
+              | sed 's/\.loadbalancer\.server\.port=80/.loadbalancer.server.port=4000/g' \
+              | sed 's/{{upstreams 80}}/{{upstreams 4000}}/g')
+            NEW_B64=$(printf '%s' "$NEW_LABELS" | base64 -w 0)
+          else
+            # Fallback: construct minimal labels from scratch
+            NEW_LABELS="traefik.enable=true
+traefik.http.services.http-0-${UUID}.loadbalancer.server.port=4000"
+            NEW_B64=$(printf '%s' "$NEW_LABELS" | base64 -w 0)
+          fi
+
+          echo "=== New labels (decoded — verify port=4000) ==="
+          echo "$NEW_B64" | base64 -d | grep -i "port\|upstream"
+          echo "new_b64=$NEW_B64" >> "$GITHUB_OUTPUT"
+
+      - name: PATCH custom_labels (base64) and ports_exposes=4000
         run: |
-          APP_NAME="${{ steps.config.outputs.app_name }}"
-          # Coolify Traefik service label format: {app_name}-{uuid}
-          SERVICE="${APP_NAME}-$UUID"
-          echo "Traefik service name candidate: $SERVICE"
-
-          # Build custom_labels override. We set both the UUID-based and name-based
-          # service identifiers to cover all Coolify label name conventions.
-          NEW_LABELS="traefik.http.services.${SERVICE}.loadbalancer.server.port=4000\ntraefik.http.services.${APP_NAME}.loadbalancer.server.port=4000"
-          echo "Setting custom_labels:"
-          printf "%b\n" "$NEW_LABELS"
-
-          # PATCH to set custom_labels
+          NEW_B64="${{ steps.labels.outputs.new_b64 }}"
           PAYLOAD=$(jq -n \
-            --arg labels "$(printf "%b" "$NEW_LABELS")" \
+            --arg labels "$NEW_B64" \
             --arg ports "4000" \
             '{custom_labels: $labels, ports_exposes: $ports}')
 
-          HTTP=$(curl -s --max-time 30 -o /tmp/patch2.json -w "%{http_code}" -X PATCH \
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID" \
             -d "$PAYLOAD")
           echo "PATCH /applications/$UUID → HTTP $HTTP"
-          cat /tmp/patch2.json | head -20 || true
+          cat /tmp/patch.json | head -10 || true
 
           if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-            echo "✅ custom_labels + ports_exposes=4000 saved"
+            echo "✅ custom_labels (port=4000) + ports_exposes=4000 saved"
           else
-            echo "⚠️  PATCH HTTP $HTTP — proceeding anyway"
+            echo "❌ PATCH failed (HTTP $HTTP)"
+            exit 1
           fi
 
-      - name: Verify custom_labels were saved
+      - name: Verify saved labels decode to port=4000
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/app2.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID")
           echo "GET /applications/$UUID → HTTP $HTTP"
-          jq '{ports_exposes, custom_labels}' /tmp/app2.json 2>/dev/null || true
+          SAVED_B64=$(jq -r '.custom_labels // ""' /tmp/app2.json)
+          echo "=== Saved labels port/upstream refs ==="
+          echo "$SAVED_B64" | base64 -d | grep -i "port\|upstream" || echo "(none)"
+          PORTS=$(jq -r '.ports_exposes' /tmp/app2.json)
+          echo "ports_exposes: $PORTS"
+          # Confirm no port=80 remains
+          if echo "$SAVED_B64" | base64 -d | grep -q "port=80"; then
+            echo "❌ port=80 still present in labels after PATCH"
+            exit 1
+          fi
+          echo "✅ No port=80 in labels — port=4000 confirmed"
 
-      - name: Stop container (to force full container recreation on next start)
+      - name: Stop container (destroy old container with wrong labels)
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/stop.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID/stop") || true
           echo "POST /stop → HTTP $HTTP"
-          cat /tmp/stop.json | head -5 || true
-          # Brief pause to let the stop complete
+          jq '.message // empty' /tmp/stop.json 2>/dev/null || true
           sleep 10
 
-      - name: Start container (Coolify recreates with updated labels)
+      - name: Start container (Coolify creates new container with updated labels)
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/start.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID/start") || true
           echo "POST /start → HTTP $HTTP"
-          cat /tmp/start.json | head -5 || true
+          jq '.message // empty' /tmp/start.json 2>/dev/null || true
 
       - name: Poll health via sslip.io (up to 15 min, every 20s)
         id: health
@@ -131,24 +145,24 @@ jobs:
               "$LITELLM_URL/health/readiness") || true
             echo "$(date -u +%H:%M:%S)  /health/readiness → HTTP $HTTP"
             [ "$HTTP" = "200" ] && break
-            # 401 on the /health path would also mean Traefik is reaching LiteLLM
-            # but LiteLLM requires auth on this endpoint — treat as healthy
             sleep 20
           done
           echo "health_code=$HTTP" >> "$GITHUB_OUTPUT"
           if [ "$HTTP" = "200" ]; then
-            echo "✅ litellm-staging healthy — Traefik port label fixed"
+            echo "✅ litellm-staging healthy via Traefik — port label fix confirmed"
           else
-            echo "⚠️  Health: HTTP $HTTP after 15 min"
-            # Also try the direct custom domain
+            echo ""
+            echo "⚠️  sslip.io: HTTP $HTTP after 15 min"
+            # Also check custom domain
             CDN_HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
               "https://litellm-staging.inatechshell.ca/health") || true
             echo "Custom domain /health → HTTP $CDN_HTTP"
             if [ "$CDN_HTTP" = "200" ] || [ "$CDN_HTTP" = "401" ]; then
-              echo "✅ Custom domain reachable (HTTP $CDN_HTTP) — Traefik routing fixed"
+              echo "✅ Custom domain reachable (HTTP $CDN_HTTP)"
               HTTP=$CDN_HTTP
             else
-              echo "❌ Both sslip.io and custom domain failing — label may still be wrong"
+              echo "❌ Both endpoints failing"
+              echo "   Last sslip.io HTTP: $HTTP, custom domain: $CDN_HTTP"
               exit 1
             fi
           fi
@@ -158,7 +172,7 @@ jobs:
         run: |
           HEALTH="${{ steps.health.outputs.health_code }}"
           if [ "$HEALTH" = "200" ] || [ "$HEALTH" = "401" ]; then
-            echo "LiteLLM reachable via Traefik — triggering NVIDIA NIM registration..."
+            echo "LiteLLM reachable — triggering NVIDIA NIM registration..."
             HTTP=$(curl -s --max-time 30 -o /tmp/dispatch.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github.v3+json" \
