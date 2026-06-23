@@ -6,14 +6,16 @@ name: Configure LiteLLM — NVIDIA NIM provider
 # from scratch (DB reset clears registered models).
 #
 # Prerequisites:
-#   GitHub Actions secrets required:
-#     COOLIFY_API_TOKEN   — Coolify admin API token
-#     LITELLM_MASTER_KEY  — LiteLLM admin key (set in Coolify litellm-staging env vars)
-#     NVIDIA_API_KEY      — NVIDIA NIM API key (will be synced to litellm-staging env)
+#   1. litellm-staging must be Running in Coolify (verify before triggering)
+#   2. GitHub Actions secrets required:
+#        COOLIFY_API_TOKEN   — Coolify admin API token
+#        LITELLM_MASTER_KEY  — LiteLLM admin key (must match Coolify env var)
+#        NVIDIA_API_KEY      — NVIDIA NIM API key (must be set in Coolify env vars)
 #
-# Strategy: check health BEFORE touching anything. If the container is already
-# healthy (HTTP 200), skip the disruptive env-sync and restart steps entirely
-# and go straight to model registration. Only restart when the container is down.
+# This workflow NEVER restarts litellm-staging. The Coolify API restart triggers
+# a full redeploy (image pull + rebuild) which causes 10+ min outages. If
+# litellm-staging is down, restart it from the Coolify dashboard, wait for
+# it to show as Running, then re-trigger this workflow.
 on:
   workflow_dispatch:
 
@@ -31,16 +33,15 @@ jobs:
     env:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
       LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
-      NVIDIA_KEY: ${{ secrets.NVIDIA_API_KEY }}
 
     steps:
-      - name: Find litellm-staging UUID and check current health
+      - name: Find litellm-staging UUID and verify health
         id: app
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications")
-          [ "$HTTP" != "200" ] && { echo "ERROR: /applications HTTP $HTTP"; cat /tmp/apps.json; exit 1; }
+          [ "$HTTP" != "200" ] && { echo "ERROR: Coolify API /applications HTTP $HTTP"; cat /tmp/apps.json; exit 1; }
           UUID=$(jq -r '.[] | select(.name == "litellm-staging") | .uuid' /tmp/apps.json 2>/dev/null)
           [ -z "$UUID" ] || [ "$UUID" = "null" ] && { echo "ERROR: litellm-staging not found in Coolify"; exit 1; }
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
@@ -51,75 +52,36 @@ jobs:
           echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
           echo "litellm-staging URL: $LITELLM_URL"
 
-          # Check health BEFORE doing anything — if already healthy, skip restart
-          PRE_HEALTH=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
+          # Verify health — this workflow never restarts the container. If not healthy,
+          # go to https://coolify.inatechshell.ca, restart litellm-staging from the UI,
+          # wait for Running status, then re-trigger this workflow.
+          HEALTH=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
             "$LITELLM_URL/health/readiness") || true
-          echo "Pre-run health: HTTP $PRE_HEALTH"
-          if [ "$PRE_HEALTH" = "200" ]; then
-            echo "already_healthy=true" >> "$GITHUB_OUTPUT"
-            echo "✅ litellm-staging already healthy — skipping env sync and restart"
-          else
-            echo "already_healthy=false" >> "$GITHUB_OUTPUT"
-            echo "⚠️  litellm-staging not healthy (HTTP $PRE_HEALTH) — will sync env + restart"
+          echo "Health check: HTTP $HEALTH"
+          if [ "$HEALTH" != "200" ]; then
+            echo ""
+            echo "ERROR: litellm-staging is not healthy (HTTP $HEALTH)"
+            echo ""
+            echo "Action required:"
+            echo "  1. Go to https://coolify.inatechshell.ca"
+            echo "  2. Navigate to ops-hub-staging → litellm-staging"
+            echo "  3. Restart the container from the Coolify UI (NOT via the Coolify API)"
+            echo "  4. Wait until it shows as Running (usually 1-2 minutes)"
+            echo "  5. Re-trigger this workflow: configure-litellm-nvidia.yml"
+            echo ""
+            echo "NOTE: If the container shows as Running but this check still fails,"
+            echo "  wait 30 more seconds and try again — LiteLLM needs time to initialize."
+            exit 1
           fi
-
-      - name: Sync NVIDIA_API_KEY to litellm-staging env vars
-        if: steps.app.outputs.already_healthy != 'true'
-        run: |
-          UUID="${{ steps.app.outputs.uuid }}"
-          if [ -z "$NVIDIA_KEY" ]; then
-            echo "⚠️  NVIDIA_API_KEY GitHub secret is empty — skipping Coolify env var sync"
-            echo "   Ensure NVIDIA_API_KEY is set in litellm-staging Coolify env vars manually"
-          else
-            echo "::add-mask::$NVIDIA_KEY"
-            PAYLOAD=$(jq -n --arg v "$NVIDIA_KEY" '{key: "NVIDIA_API_KEY", value: $v}')
-            # Try POST first; 409 means var already exists (treat as success)
-            HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-              -H "Accept: application/json" \
-              "$COOLIFY_BASE/applications/$UUID/envs" -d "$PAYLOAD") || true
-            if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-              echo "✅ NVIDIA_API_KEY created on litellm-staging (POST HTTP $HTTP)"
-            elif [ "$HTTP" = "409" ]; then
-              echo "ℹ️  NVIDIA_API_KEY already exists (HTTP 409) — already set, proceeding"
-            else
-              echo "❌ Failed to set NVIDIA_API_KEY on litellm-staging (POST HTTP $HTTP)"
-              cat /tmp/env_resp.json 2>/dev/null | head -5 || true
-            fi
-          fi
-
-      - name: Restart litellm-staging to pick up NVIDIA_API_KEY
-        if: steps.app.outputs.already_healthy != 'true'
-        run: |
-          UUID="${{ steps.app.outputs.uuid }}"
-          HTTP=$(curl -s --max-time 30 -o /tmp/restart.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$UUID/restart") || true
-          echo "Restart → HTTP $HTTP"
-          jq '{message}' /tmp/restart.json 2>/dev/null || cat /tmp/restart.json | head -3 || true
-
-      - name: Wait for litellm-staging to become healthy (up to 8 min)
-        if: steps.app.outputs.already_healthy != 'true'
-        run: |
-          echo "Polling $LITELLM_BASE/health/readiness (max 8 min, every 15s)..."
-          DEADLINE=$(( $(date +%s) + 480 ))
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
-              "$LITELLM_BASE/health/readiness") || true
-            echo "$(date -u +%H:%M:%S)  /health/readiness → HTTP $HTTP"
-            [ "$HTTP" = "200" ] && { echo "✅ litellm-staging is healthy"; break; }
-            sleep 15
-          done
-          if [ "$HTTP" != "200" ]; then
-            echo "⚠️  litellm-staging not healthy after 8 min (last HTTP $HTTP) — proceeding anyway"
-          fi
+          echo "✅ litellm-staging is healthy — proceeding to model registration"
 
       - name: Register NVIDIA NIM model in LiteLLM database
         id: register
         run: |
           if [ -z "$LITELLM_KEY" ]; then
-            echo "ERROR: LITELLM_MASTER_KEY secret is empty — cannot register model"
+            echo "ERROR: LITELLM_MASTER_KEY secret is empty"
             echo "Add LITELLM_MASTER_KEY to GitHub Actions secrets and re-run this workflow"
+            echo "Value must match the LITELLM_MASTER_KEY env var in Coolify litellm-staging"
             exit 1
           fi
           echo "::add-mask::$LITELLM_KEY"
@@ -145,9 +107,14 @@ jobs:
           jq . /tmp/model_resp.json 2>/dev/null || cat /tmp/model_resp.json | head -10 || true
 
           if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-            echo "✅ Registered: meta/llama-3.3-70b-instruct → NVIDIA NIM (https://integrate.api.nvidia.com/v1)"
+            echo "✅ Registered: meta/llama-3.3-70b-instruct → NVIDIA NIM"
+          elif [ "$HTTP" = "400" ]; then
+            # LiteLLM returns 400 when the model is already registered — not an error
+            MSG=$(jq -r '.error // .detail // .message // empty' /tmp/model_resp.json 2>/dev/null || true)
+            echo "ℹ️  POST /model/new HTTP 400 — model may already be registered: $MSG"
+            echo "   Proceeding to verify..."
           else
-            echo "⚠️  POST /model/new HTTP $HTTP (may already be registered — proceeding to verify)"
+            echo "⚠️  POST /model/new HTTP $HTTP — proceeding to verify"
           fi
 
       - name: Verify model appears in /model/info
@@ -158,27 +125,30 @@ jobs:
             -H "Accept: application/json" \
             "$LITELLM_BASE/model/info")
           echo "GET /model/info → HTTP $HTTP"
-          if [ "$HTTP" = "200" ]; then
-            COUNT=$(jq '[.data[] | select(.model_name == "meta/llama-3.3-70b-instruct")] | length' \
-              /tmp/model_info.json 2>/dev/null || echo 0)
-            jq '[.data[] | select(.model_name == "meta/llama-3.3-70b-instruct") | {model_name, litellm_params}]' \
-              /tmp/model_info.json 2>/dev/null || true
-            if [ "$COUNT" -gt "0" ]; then
-              echo "✅ meta/llama-3.3-70b-instruct confirmed in LiteLLM registry ($COUNT entry/entries)"
-              echo ""
-              echo "=== litellm-staging NVIDIA NIM integration complete ==="
-              echo "  Model:    meta/llama-3.3-70b-instruct"
-              echo "  Provider: NVIDIA NIM (https://integrate.api.nvidia.com/v1)"
-              echo "  Key ref:  os.environ/NVIDIA_API_KEY"
-              echo "  Usage:    POST https://litellm-staging.inatechshell.ca/chat/completions"
-              echo "            Authorization: Bearer <LITELLM_MASTER_KEY>"
-              echo "            {\"model\": \"meta/llama-3.3-70b-instruct\", \"messages\": [...]}"
-            else
-              echo "⚠️  meta/llama-3.3-70b-instruct not found in /model/info"
-              echo "   Check that LITELLM_MASTER_KEY is correct and litellm-staging is running"
-              jq '.data[] | .model_name' /tmp/model_info.json 2>/dev/null | head -10 || true
-            fi
-          else
-            echo "⚠️  /model/info HTTP $HTTP — litellm-staging may still be restarting"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /model/info HTTP $HTTP — unexpected after a healthy pre-check"
             cat /tmp/model_info.json 2>/dev/null | head -5 || true
+            exit 1
+          fi
+
+          COUNT=$(jq '[.data[] | select(.model_name == "meta/llama-3.3-70b-instruct")] | length' \
+            /tmp/model_info.json 2>/dev/null || echo 0)
+          jq '[.data[] | select(.model_name == "meta/llama-3.3-70b-instruct") | {model_name, litellm_params}]' \
+            /tmp/model_info.json 2>/dev/null || true
+
+          if [ "$COUNT" -gt "0" ]; then
+            echo "✅ meta/llama-3.3-70b-instruct confirmed in LiteLLM registry ($COUNT entry/entries)"
+            echo ""
+            echo "=== litellm-staging NVIDIA NIM integration complete ==="
+            echo "  Model:    meta/llama-3.3-70b-instruct"
+            echo "  Provider: NVIDIA NIM (https://integrate.api.nvidia.com/v1)"
+            echo "  Key ref:  os.environ/NVIDIA_API_KEY  (read from container env at request time)"
+            echo "  Usage:    POST https://litellm-staging.inatechshell.ca/chat/completions"
+            echo "            Authorization: Bearer <LITELLM_MASTER_KEY>"
+            echo '            {"model": "meta/llama-3.3-70b-instruct", "messages": [...]}'
+          else
+            echo "ERROR: meta/llama-3.3-70b-instruct NOT found in /model/info after registration"
+            echo "Models currently in registry:"
+            jq '.data[] | .model_name' /tmp/model_info.json 2>/dev/null | head -20 || true
+            exit 1
           fi
