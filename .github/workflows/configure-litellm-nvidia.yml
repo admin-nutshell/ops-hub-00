@@ -86,24 +86,19 @@ jobs:
           echo "Restart → HTTP $HTTP"
           jq '{message}' /tmp/restart.json 2>/dev/null || cat /tmp/restart.json | head -3 || true
 
-      - name: Wait 60s for litellm-staging to restart
+      - name: Wait for litellm-staging to become healthy (up to 3 min)
         run: |
-          echo "Waiting 60s for litellm-staging to restart with new env vars..."
-          sleep 60
-
-      - name: Verify litellm-staging is healthy
-        run: |
-          HTTP=$(curl -s --max-time 30 -o /tmp/lm_health.json -w "%{http_code}" \
-            "$LITELLM_BASE/health/readiness") || true
-          echo "GET /health/readiness → HTTP $HTTP"
-          cat /tmp/lm_health.json 2>/dev/null | head -5 || true
-          if [ "$HTTP" != "200" ]; then
-            echo "⚠️  Not yet healthy — waiting 30s more..."
-            sleep 30
-            HTTP2=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" \
+          echo "Polling $LITELLM_BASE/health/readiness (max 3 min, every 15s)..."
+          DEADLINE=$(( $(date +%s) + 180 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
               "$LITELLM_BASE/health/readiness") || true
-            echo "Retry → HTTP $HTTP2"
-            [ "$HTTP2" = "200" ] || echo "⚠️  Still not 200 — proceeding to model registration anyway"
+            echo "$(date -u +%H:%M:%S)  /health/readiness → HTTP $HTTP"
+            [ "$HTTP" = "200" ] && { echo "✅ litellm-staging is healthy"; break; }
+            sleep 15
+          done
+          if [ "$HTTP" != "200" ]; then
+            echo "⚠️  litellm-staging not healthy after 3 min (last HTTP $HTTP) — proceeding anyway"
           fi
 
       - name: Register NVIDIA NIM model in LiteLLM database
