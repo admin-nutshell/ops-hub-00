@@ -1,4 +1,4 @@
-name: FreeScout Redeploy v3 — hardcoded creds + Python URL parse
+name: FreeScout Redeploy v3 - hardcoded creds + Python URL parse
 
 # Fixes persistent "tenant/user not found" caused by broken bash URL parser.
 # Strategy:
