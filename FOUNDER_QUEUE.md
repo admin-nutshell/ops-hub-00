@@ -49,25 +49,57 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-22 — BLOCKING: Add FREESCOUT_DB_PASS secret so FreeScout can connect to Supabase
+### ~~FQ-22 — BLOCKING: Add FREESCOUT_DB_PASS secret~~ — RESOLVED (superseded by FQ-23)
 
 ```
-BLOCKING: [Production Manager] FreeScout (T-10) is returning 502. Root cause: the
-  SUPABASE_STAGING_DB_URL secret is not in a standard PostgreSQL URL or DSN format
-  that agents can parse to extract the database password. FreeScout is receiving
-  a wrong/missing password and fails the Supabase connection check on startup.
+RESOLVED: [Founder] 2026-06-23 — FREESCOUT_DB_PASS secret added. However, v3 redeploy
+  (run #28000210274) revealed a new blocker: the Supabase master password contains an
+  '@' character. The psql client inside nfrastack/freescout splits the connection URL
+  on the FIRST '@', making the host resolve to '24zakhsh@pooler-hostname' — DNS fails.
+  New action needed: see FQ-23 BLOCKING below.
+  Linked: T-10, FQ-23
+```
 
-  Action required (< 5 minutes):
-    1. Open: https://supabase.com → your Ops Hub project → Settings → Database
-    2. Copy the "Database password" (the master password for the project)
+---
+
+### FQ-23 — BLOCKING: Create dedicated FreeScout DB user in Supabase (password cannot contain '@')
+
+```
+BLOCKING: [Production Manager] FreeScout still returns 502 after FREESCOUT_DB_PASS was added.
+
+  Root cause (confirmed from container logs, run #28000210274):
+    The psql binary inside nfrastack/freescout is old — it splits the connection URL on
+    the FIRST '@' character. Your Supabase master password contains '@', so psql builds
+    a malformed hostname ("24zakhsh@aws-1-ca-central-1.pooler.supabase.com") and fails
+    DNS resolution. This cannot be fixed in the workflow or the Docker image.
+
+  Solution: Create a dedicated FreeScout DB user with a simple alphanumeric password.
+  This is a ~2-minute action in Supabase SQL Editor.
+
+  Action required:
+    1. Open Supabase → Ops Hub project → SQL Editor
+    2. Run this SQL exactly as written:
+
+       CREATE ROLE freescout_user WITH LOGIN PASSWORD 'FreeScoutStaging2026' NOSUPERUSER NOCREATEDB NOCREATEROLE;
+       GRANT CONNECT ON DATABASE postgres TO freescout_user;
+       GRANT USAGE, CREATE ON SCHEMA public TO freescout_user;
+       GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO freescout_user;
+       GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO freescout_user;
+       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO freescout_user;
+       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO freescout_user;
+
     3. Go to: https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
-    4. Add a new secret:  Name: FREESCOUT_DB_PASS  Value: [the password you copied]
-    5. Reply here: APPROVED: FREESCOUT_DB_PASS secret added
+    4. Update secret FREESCOUT_DB_PASS → Value: FreeScoutStaging2026
+    5. Reply here: APPROVED: freescout_user created
 
-  After you add the secret, Production Manager will immediately re-run the deploy.
+  After your reply, Production Manager will update the workflow to use
+  freescout_user.yocoljutbiizdbfraapx and redeploy immediately.
+
+  Do NOT change the main Supabase password — only the FREESCOUT_DB_PASS secret changes.
+  LiteLLM and other services are unaffected.
 
   Impact if delayed: FreeScout remains at 502 — Sprint 2 E2E test cannot start.
-  Linked: T-10, run #27999780081 (v3 deploy — failed at password extraction)
+  Linked: T-10, run #28000210274 (v3 deploy — psql '@' host-split failure), FQ-22 (resolved)
 ```
 
 ---
