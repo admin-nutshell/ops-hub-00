@@ -123,6 +123,7 @@ jobs:
               name:                       "freescout-staging",
               docker_registry_image_name: "nfrastack/freescout:latest",
               ports_exposes:              "80",
+              fqdn:                       "https://freescout-staging.inatechshell.ca",
               instant_deploy:             false
             }')
           HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
