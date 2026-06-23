@@ -10,6 +10,10 @@ name: Configure LiteLLM — NVIDIA NIM provider
 #     COOLIFY_API_TOKEN   — Coolify admin API token
 #     LITELLM_MASTER_KEY  — LiteLLM admin key (set in Coolify litellm-staging env vars)
 #     NVIDIA_API_KEY      — NVIDIA NIM API key (will be synced to litellm-staging env)
+#
+# Strategy: check health BEFORE touching anything. If the container is already
+# healthy (HTTP 200), skip the disruptive env-sync and restart steps entirely
+# and go straight to model registration. Only restart when the container is down.
 on:
   workflow_dispatch:
 
@@ -30,7 +34,7 @@ jobs:
       NVIDIA_KEY: ${{ secrets.NVIDIA_API_KEY }}
 
     steps:
-      - name: Find litellm-staging UUID
+      - name: Find litellm-staging UUID and check current health
         id: app
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
@@ -47,23 +51,37 @@ jobs:
           echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
           echo "litellm-staging URL: $LITELLM_URL"
 
+          # Check health BEFORE doing anything — if already healthy, skip restart
+          PRE_HEALTH=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
+            "$LITELLM_URL/health/readiness") || true
+          echo "Pre-run health: HTTP $PRE_HEALTH"
+          if [ "$PRE_HEALTH" = "200" ]; then
+            echo "already_healthy=true" >> "$GITHUB_OUTPUT"
+            echo "✅ litellm-staging already healthy — skipping env sync and restart"
+          else
+            echo "already_healthy=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️  litellm-staging not healthy (HTTP $PRE_HEALTH) — will sync env + restart"
+          fi
+
       - name: Sync NVIDIA_API_KEY to litellm-staging env vars
+        if: steps.app.outputs.already_healthy != 'true'
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           if [ -z "$NVIDIA_KEY" ]; then
             echo "⚠️  NVIDIA_API_KEY GitHub secret is empty — skipping Coolify env var sync"
             echo "   Ensure NVIDIA_API_KEY is set in litellm-staging Coolify env vars manually"
-            echo "   then re-run this workflow to register the model"
           else
             echo "::add-mask::$NVIDIA_KEY"
             PAYLOAD=$(jq -n --arg v "$NVIDIA_KEY" '{key: "NVIDIA_API_KEY", value: $v}')
-            # Use POST (upsert), not PATCH — Coolify PATCH /envs may replace ALL env vars
+            # Try POST first; 409 means var already exists (treat as success)
             HTTP=$(curl -s --max-time 30 -o /tmp/env_resp.json -w "%{http_code}" -X POST \
               -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
               -H "Accept: application/json" \
               "$COOLIFY_BASE/applications/$UUID/envs" -d "$PAYLOAD") || true
             if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-              echo "✅ NVIDIA_API_KEY upserted on litellm-staging (POST HTTP $HTTP)"
+              echo "✅ NVIDIA_API_KEY created on litellm-staging (POST HTTP $HTTP)"
+            elif [ "$HTTP" = "409" ]; then
+              echo "ℹ️  NVIDIA_API_KEY already exists (HTTP 409) — already set, proceeding"
             else
               echo "❌ Failed to set NVIDIA_API_KEY on litellm-staging (POST HTTP $HTTP)"
               cat /tmp/env_resp.json 2>/dev/null | head -5 || true
@@ -71,6 +89,7 @@ jobs:
           fi
 
       - name: Restart litellm-staging to pick up NVIDIA_API_KEY
+        if: steps.app.outputs.already_healthy != 'true'
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           HTTP=$(curl -s --max-time 30 -o /tmp/restart.json -w "%{http_code}" -X POST \
@@ -80,6 +99,7 @@ jobs:
           jq '{message}' /tmp/restart.json 2>/dev/null || cat /tmp/restart.json | head -3 || true
 
       - name: Wait for litellm-staging to become healthy (up to 8 min)
+        if: steps.app.outputs.already_healthy != 'true'
         run: |
           echo "Polling $LITELLM_BASE/health/readiness (max 8 min, every 15s)..."
           DEADLINE=$(( $(date +%s) + 480 ))
