@@ -139,6 +139,29 @@ jobs:
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
           echo "Created: $UUID"
 
+      - name: Set Coolify FQDN via PATCH (best-effort — API rejects for docker image apps)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          # Coolify API rejects fqdn in both create AND PATCH for dockerimage apps (422 "not allowed").
+          # Attempting anyway in case a future Coolify version adds support.
+          HTTP=$(curl -s --max-time 30 -o /tmp/fqdn_resp.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID" \
+            -d '{"fqdn":"https://freescout-staging.inatechshell.ca"}') || true
+          echo "FQDN PATCH → HTTP $HTTP"
+          jq '{message,errors}' /tmp/fqdn_resp.json 2>/dev/null || cat /tmp/fqdn_resp.json | head -5 || true
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "✅ FQDN set via API"
+          else
+            echo "⚠️  FQDN API rejected (HTTP $HTTP). Manual step required:"
+            echo "   1. Log into https://coolify.inatechshell.ca"
+            echo "   2. ops-hub-staging → freescout-staging → General/Settings"
+            echo "   3. Set Domains to: https://freescout-staging.inatechshell.ca"
+            echo "   4. Save + Redeploy"
+          fi
+
       - name: Set FreeScout environment variables (hardcoded correct creds)
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
@@ -211,13 +234,22 @@ jobs:
       - name: Verify FreeScout health
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
-          FS_HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 --location \
+
+          # Do NOT follow redirects — capture the direct response + redirect target.
+          FS_HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 \
             "https://freescout-staging.inatechshell.ca")
+          LOCATION=$(curl -o /dev/null -s -w "%{redirect_url}" --max-time 30 \
+            "https://freescout-staging.inatechshell.ca" 2>/dev/null || true)
           echo "HTTP status: $FS_HTTP"
-          if [ "$FS_HTTP" = "200" ]; then
-            echo "✅ FreeScout UP at https://freescout-staging.inatechshell.ca"
+          echo "Redirect target (if any): ${LOCATION:-(none)}"
+
+          if echo "$LOCATION" | grep -q "app.inatechshell.ca"; then
+            echo "❌ Routing to TTS app — Coolify FQDN not set for freescout-staging"
+            echo "   Check Coolify dashboard and set domain to https://freescout-staging.inatechshell.ca"
+          elif [ "$FS_HTTP" = "200" ] || [ "$FS_HTTP" = "302" ] || [ "$FS_HTTP" = "301" ]; then
+            echo "✅ FreeScout responding at https://freescout-staging.inatechshell.ca (HTTP $FS_HTTP)"
           else
-            echo "⚠️  HTTP $FS_HTTP — may still be starting or DB connection failed"
+            echo "⚠️  HTTP $FS_HTTP — container may still be starting"
           fi
 
           APP_HTTP=$(curl -s --max-time 30 -o /tmp/app_state.json -w "%{http_code}" \
