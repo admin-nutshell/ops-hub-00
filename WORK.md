@@ -157,7 +157,7 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 **T-10: FreeScout — ✅ DONE (2026-06-23).** `https://freescout-staging.inatechshell.ca` live. Admin: `support@inatechshell.ca`. DB connected (Supabase Supavisor `freescout_user.yocoljutbiizdbfraapx`), migrations ran, admin user created. FQ-24 resolved: founder set FQDN in Coolify UI — Caddy now routes the custom domain correctly.
 
-**T-08 LiteLLM: NVIDIA NIM wired (2026-06-23).** `meta/llama-3.3-70b-instruct` registered as default staging AI provider via `configure-litellm-nvidia.yml`. Base URL: `https://integrate.api.nvidia.com/v1`. Key: `os.environ/NVIDIA_API_KEY`. Model persists in LiteLLM DB (`STORE_MODEL_IN_DB=True`).
+**T-08 LiteLLM: port fix in flight (2026-06-23).** Root cause found: Traefik routing to port 80 but LiteLLM listens on 4000 — 7+ hours of 502. `fix-litellm-port.yml` (PR #119) patching ports_exposes to 4000 + triggering redeploy. NVIDIA NIM registration to follow immediately on health confirmation. WORK.md will be updated when complete.
 
 **ADR-0001 sign-off — now eligible.** T-08 + T-10 both live. Will sign off when ADR-0001 §6 is reviewed against current VPS utilisation.
 
