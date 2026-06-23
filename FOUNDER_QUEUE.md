@@ -62,44 +62,22 @@ RESOLVED: [Founder] 2026-06-23 — FREESCOUT_DB_PASS secret added. However, v3 r
 
 ---
 
-### FQ-23 — BLOCKING: Create dedicated FreeScout DB user in Supabase (password cannot contain '@')
+### ~~FQ-23 — BLOCKING: Create dedicated FreeScout DB user in Supabase~~ — RESOLVED
 
 ```
-BLOCKING: [Production Manager] FreeScout still returns 502 after FREESCOUT_DB_PASS was added.
+RESOLVED: [Founder] 2026-06-23 — freescout_user created in Supabase SQL Editor;
+  FREESCOUT_DB_PASS updated to FreeScoutStaging2026.
+  Production Manager updated workflow DB_USER → freescout_user.yocoljutbiizdbfraapx
+  (PR #104) and ran v3 redeploy (run #28001287578).
 
-  Root cause (confirmed from container logs, run #28000210274):
-    The psql binary inside nfrastack/freescout is old — it splits the connection URL on
-    the FIRST '@' character. Your Supabase master password contains '@', so psql builds
-    a malformed hostname ("24zakhsh@aws-1-ca-central-1.pooler.supabase.com") and fails
-    DNS resolution. This cannot be fixed in the workflow or the Docker image.
+  Container logs confirmed success:
+    - Empty database detected → migrations ran
+    - Admin user created: mai@leelaecospa.com
+    - nginx + php-fpm started
+    - HTTP 200 at https://freescout-staging.inatechshell.ca
 
-  Solution: Create a dedicated FreeScout DB user with a simple alphanumeric password.
-  This is a ~2-minute action in Supabase SQL Editor.
-
-  Action required:
-    1. Open Supabase → Ops Hub project → SQL Editor
-    2. Run this SQL exactly as written:
-
-       CREATE ROLE freescout_user WITH LOGIN PASSWORD 'FreeScoutStaging2026' NOSUPERUSER NOCREATEDB NOCREATEROLE;
-       GRANT CONNECT ON DATABASE postgres TO freescout_user;
-       GRANT USAGE, CREATE ON SCHEMA public TO freescout_user;
-       GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO freescout_user;
-       GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO freescout_user;
-       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO freescout_user;
-       ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO freescout_user;
-
-    3. Go to: https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
-    4. Update secret FREESCOUT_DB_PASS → Value: FreeScoutStaging2026
-    5. Reply here: APPROVED: freescout_user created
-
-  After your reply, Production Manager will update the workflow to use
-  freescout_user.yocoljutbiizdbfraapx and redeploy immediately.
-
-  Do NOT change the main Supabase password — only the FREESCOUT_DB_PASS secret changes.
-  LiteLLM and other services are unaffected.
-
-  Impact if delayed: FreeScout remains at 502 — Sprint 2 E2E test cannot start.
-  Linked: T-10, run #28000210274 (v3 deploy — psql '@' host-split failure), FQ-22 (resolved)
+  T-10 DONE. M1 criterion #6 complete. Sprint 2 E2E test unblocked.
+  Linked: T-10, PR #104, run #28001287578
 ```
 
 ---
