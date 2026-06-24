@@ -49,43 +49,55 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-35 — BLOCKING: [Tech Lead] Run T-22 migration + add LITELLM env vars to Coolify ops-hub-app
+### FQ-36 — URGENT: [Tech Lead] Fix LITELLM_URL in Coolify — wrong URL causes TLS failure, ticket triage broken
 
 ```
-BLOCKING: [Tech Lead] Two actions required before T-22 can be validated end-to-end.
+URGENT: [Tech Lead] T-22 ticket triage is running but EVERY run fails with:
+  TypeError: fetch failed — self-signed certificate
 
---- Action 1: Run T-22 migration in Supabase SQL Editor (same pattern as FQ-31) ---
-File: supabase/migrations/20260624000000_t22_ticket_triage_columns.sql
-  Adds three columns to the tickets table:
-    - urgency text check (critical/high/normal/low)
-    - category text
-    - routing text
-  Idempotent (IF NOT EXISTS / IF NOT EXISTS guards) — safe to re-run.
-  Do this BEFORE deploying the app; the triage UPDATE will fail at runtime without these columns.
+Root cause: LITELLM_URL is set to https://litellm-staging.inatechshell.ca but
+  litellm-staging serves Traefik's default self-signed cert (not Let's Encrypt).
+  Node.js in the ops-hub container rejects it. Ticket triage is completely broken.
 
---- Action 2: Add env vars in Coolify → ops-hub-app → Environment ---
+DO NOT set NODE_TLS_REJECT_UNAUTHORIZED=0 — that is a security hole.
 
-  Key:   LITELLM_URL
-  Value: https://litellm-staging.inatechshell.ca
-  (the LiteLLM base URL — no trailing slash; the app appends /chat/completions)
+--- Fix (1 minute, manual) ---
 
-  Key:   LITELLM_MASTER_KEY
-  Value: <the LITELLM_MASTER_KEY value already stored in Coolify litellm-staging env vars>
-  (same key used by litellm-staging — do not generate a new one)
+  In Coolify → ops-hub-app → Environment Variables:
+  CHANGE  LITELLM_URL  from: https://litellm-staging.inatechshell.ca
+                         to: http://litellm-staging:4000
 
-Then: Redeploy ops-hub-app (or restart the container) so the new values are picked up.
+  Both services share the same Coolify Docker network. The internal URL bypasses TLS
+  entirely and is the correct architecture for service-to-service calls.
 
-Note: LITELLM_MASTER_KEY is already set in the litellm-staging service in Coolify.
-  Copy it from there — do not paste in this file; store it only in Coolify env vars.
+  After changing: click Save + Restart (or Redeploy) to apply the new value.
 
-Verify: check Inngest dashboard after redeploy. The next sweepNewTickets cron (fires every
-  5 min) will pick up the 2 existing tickets (freescout_conversation_id: 6 + 7, state='new')
-  and triage them. In the tickets table, confirm state='triaged' and urgency/category/routing
-  are populated (e.g. urgency='high', category='auth', routing='engineering').
+--- Fix (automated, after PR merge) ---
 
-Impact if delayed: all ticket triage attempts fail; T-22 cannot be validated end-to-end.
-  The two existing tickets will remain at state='new' until both actions are complete.
-Linked: T-22 (PR #141), T-08 (LiteLLM done), DECISIONS.md 2026-06-23
+  Alternatively, merge PR #143 (fix/litellm-tls → main) then:
+    gh workflow run fix-litellm-tls.yml
+  The workflow updates the env var, restarts ops-hub-app, and re-syncs Inngest automatically.
+
+--- Verify ---
+
+  Within 5 min of the restart, sweepNewTickets cron will fire and triage conv 6 + 7.
+  In Supabase: SELECT id, state, urgency, category, routing FROM tickets WHERE
+    freescout_conversation_id IN (6,7);
+  Expected: state='triaged', urgency/category/routing populated.
+
+Impact if delayed: T-22 cannot be validated. Conv 6+7 remain at state='new'. T-23 blocked.
+Linked: T-22 (PR #141), FQ-35 (migration + LITELLM_MASTER_KEY done), PR #143
+```
+
+---
+
+### ~~FQ-35 — BLOCKING: [Tech Lead] Run T-22 migration + add LITELLM env vars to Coolify ops-hub-app~~ — PARTIALLY RESOLVED
+
+```
+PARTIAL: Actions 1 (migration) and 2 (LITELLM_MASTER_KEY) appear complete — ticket-triage
+  runs are firing and reaching LiteLLM. However LITELLM_URL was set to the wrong value
+  (https:// URL with a self-signed cert). See FQ-36 for the corrective action.
+Linked: FQ-36 (active)
 ```
 
 ---
