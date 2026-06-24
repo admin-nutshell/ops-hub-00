@@ -1,0 +1,216 @@
+name: Diagnose LiteLLM connectivity (read-only, no changes)
+
+# Pure diagnostic — makes ZERO changes to any running service.
+# Answers: is litellm-staging reachable? Are both apps on the same Docker network?
+# Run this before attempting any LITELLM_URL fix.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+
+jobs:
+  diagnose:
+    name: Topology + reachability check
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    steps:
+      # ── 1. litellm-staging full config ───────────────────────────────────────
+      - name: Get litellm-staging full config
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID")
+          echo "=== litellm-staging (HTTP $HTTP) ==="
+          jq '{
+            name,
+            status,
+            fqdn,
+            ports_exposes,
+            project_uuid: (.project_id // .project_uuid // "N/A"),
+            environment_name: (.environment // .environment_name // "N/A"),
+            docker_compose_domains,
+            container_name: (.container_name // "N/A"),
+            docker_registry_image_name,
+            docker_registry_image_tag
+          }' /tmp/litellm.json 2>/dev/null \
+            || echo "jq parse failed — raw:"; cat /tmp/litellm.json | head -30
+
+      # ── 2. ops-hub-app full config ───────────────────────────────────────────
+      - name: Find ops-hub-app UUID and full config
+        id: app
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR fetching /applications: HTTP $HTTP"; cat /tmp/apps.json; exit 1
+          fi
+          # Print names so we can see what projects exist
+          echo "=== All application names ==="
+          jq -r '.[] | "\(.name) | project=\(.project_id // .project_uuid // "?") | env=\(.environment // .environment_name // "?") | status=\(.status)"' \
+            /tmp/apps.json 2>/dev/null || cat /tmp/apps.json | head -30
+
+          OPS_UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null)
+          echo ""
+          echo "=== ops-hub-app UUID: $OPS_UUID ==="
+          if [ -n "$OPS_UUID" ] && [ "$OPS_UUID" != "null" ]; then
+            OPS_HTTP=$(curl -s --max-time 30 -o /tmp/opshub.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$OPS_UUID")
+            jq '{
+              name,
+              status,
+              fqdn,
+              ports_exposes,
+              project_uuid: (.project_id // .project_uuid // "N/A"),
+              environment_name: (.environment // .environment_name // "N/A"),
+              container_name: (.container_name // "N/A")
+            }' /tmp/opshub.json 2>/dev/null \
+              || echo "jq parse failed — raw:"; cat /tmp/opshub.json | head -20
+            echo "ops_uuid=$OPS_UUID" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 3. Coolify projects list (reveals network grouping) ──────────────────
+      - name: List Coolify projects and environments
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/projects.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects")
+          echo "=== Coolify projects (HTTP $HTTP) ==="
+          jq -r '.[] | "Project: \(.name) [\(.uuid)]" + "\n  Environments: " + ([.environments[]?.name] | join(", "))' \
+            /tmp/projects.json 2>/dev/null || cat /tmp/projects.json | head -30
+
+          # Print which project each app belongs to
+          echo ""
+          echo "=== Which project contains litellm-staging? ==="
+          LITELLM_PROJ=$(jq -r '.project_id // .project_uuid // empty' /tmp/litellm.json 2>/dev/null || true)
+          echo "litellm-staging project_id: '$LITELLM_PROJ'"
+
+          OPS_PROJ=$(jq -r '.project_id // .project_uuid // empty' /tmp/opshub.json 2>/dev/null || true)
+          echo "ops-hub-app project_id:     '$OPS_PROJ'"
+
+          if [ -n "$LITELLM_PROJ" ] && [ "$LITELLM_PROJ" = "$OPS_PROJ" ]; then
+            echo "✅ SAME project → same Coolify Docker network (litellm-staging should resolve)"
+          elif [ -n "$LITELLM_PROJ" ] && [ -n "$OPS_PROJ" ]; then
+            echo "⚠️  DIFFERENT projects → DIFFERENT Docker networks"
+            echo "   'http://litellm-staging:4000' WON'T resolve from ops-hub-app"
+            echo "   Fix requires: attach both to the same network OR use the sslip.io hairpin URL"
+          else
+            echo "Could not determine projects from API response — check raw output above"
+          fi
+
+      # ── 4. External reachability of litellm-staging ──────────────────────────
+      - name: Test litellm-staging from GitHub Actions runner (external)
+        run: |
+          echo "=== External reachability tests (run from GitHub Actions, NOT inside Docker) ==="
+
+          # HTTP via sslip.io (what configure-litellm-nvidia.yml uses)
+          SSLIP_URL="http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io"
+          echo "--- Test 1: GET ${SSLIP_URL}/health ---"
+          HTTP=$(curl -s --max-time 15 -o /tmp/sslip_health.txt -w "%{http_code}" \
+            "${SSLIP_URL}/health" || echo "000")
+          echo "HTTP $HTTP"
+          cat /tmp/sslip_health.txt 2>/dev/null | head -5
+          [ "$HTTP" = "200" ] && echo "✅ LiteLLM is UP at sslip.io HTTP" \
+                              || echo "❌ sslip.io HTTP: HTTP $HTTP"
+
+          # HTTPS via custom domain
+          echo "--- Test 2: GET https://litellm-staging.inatechshell.ca/health ---"
+          HTTP2=$(curl -s --max-time 15 -o /tmp/https_health.txt -w "%{http_code}" \
+            "https://litellm-staging.inatechshell.ca/health" || echo "000")
+          echo "HTTP $HTTP2"
+          cat /tmp/https_health.txt 2>/dev/null | head -5
+          [ "$HTTP2" = "200" ] && echo "✅ LiteLLM is UP at HTTPS custom domain" \
+                               || echo "❌ HTTPS custom domain: HTTP $HTTP2"
+
+          # LiteLLM /models endpoint (confirms auth layer works)
+          echo "--- Test 3: GET ${SSLIP_URL}/models (no auth, expect 401 or 200) ---"
+          HTTP3=$(curl -s --max-time 15 -o /tmp/sslip_models.txt -w "%{http_code}" \
+            "${SSLIP_URL}/models" || echo "000")
+          echo "HTTP $HTTP3 (401 = LiteLLM up but needs auth ✅, 000 = unreachable)"
+          cat /tmp/sslip_models.txt 2>/dev/null | head -5
+
+      # ── 5. What LITELLM_URL is currently set to in ops-hub-app ───────────────
+      - name: Check current LITELLM_URL env var in ops-hub-app
+        run: |
+          OPS_UUID="${{ steps.app.outputs.ops_uuid }}"
+          if [ -z "$OPS_UUID" ]; then echo "ops_uuid not set — skipping"; exit 0; fi
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_UUID/envs")
+          echo "=== ops-hub-app LITELLM_URL env var (HTTP $HTTP) ==="
+          jq -r '.[] | select(.key == "LITELLM_URL") | "LITELLM_URL=\(.value)"' \
+            /tmp/envs.json 2>/dev/null || echo "(not found or API error)"
+
+      # ── 6. In-container probe via /debug/litellm-connectivity endpoint ─────────
+      # Requires: PR #143 merged and deployed. If not yet deployed, this step
+      # returns a graceful "endpoint not available" message.
+      - name: Test LiteLLM from INSIDE ops-hub-app container (via debug endpoint)
+        run: |
+          OPS_UUID="${{ steps.app.outputs.ops_uuid }}"
+          if [ -z "$OPS_UUID" ]; then echo "ops_uuid not set — skipping"; exit 0; fi
+          STAGING_URL=$(jq -r '.fqdn // empty' /tmp/opshub.json 2>/dev/null | sed 's|/$||' || true)
+          if [ -z "$STAGING_URL" ]; then
+            echo "ops-hub-app FQDN not available — skipping container-internal probe"
+            exit 0
+          fi
+          echo "Calling $STAGING_URL/debug/litellm-connectivity ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/probe.json -w "%{http_code}" \
+            "$STAGING_URL/debug/litellm-connectivity" || echo "000")
+          if [ "$HTTP" = "200" ]; then
+            echo "=== LiteLLM reachability FROM INSIDE ops-hub-app container ==="
+            jq . /tmp/probe.json 2>/dev/null || cat /tmp/probe.json
+            echo ""
+            echo "Key: ERROR ENOTFOUND = DNS not resolving (different network)"
+            echo "     ERROR ETIMEDOUT = network isolation (SYN dropped)"
+            echo "     ERROR ECONNREFUSED = wrong port (resolves, but port closed)"
+            echo "     HTTP 200 = reachable ✅"
+          elif [ "$HTTP" = "404" ]; then
+            echo "⚠️  /debug/litellm-connectivity returned 404 — PR #143 not yet deployed"
+            echo "   Merge and deploy PR #143 first, then re-run this diagnostic."
+          elif [ "$HTTP" = "000" ]; then
+            echo "⚠️  ops-hub-app not reachable at $STAGING_URL — container may be down"
+          else
+            echo "⚠️  Unexpected HTTP $HTTP from debug endpoint"
+            cat /tmp/probe.json 2>/dev/null | head -5
+          fi
+
+      # ── 7. Summary + recommended action ──────────────────────────────────────
+      - name: Diagnosis summary
+        run: |
+          LITELLM_STATUS=$(jq -r '.status // "unknown"' /tmp/litellm.json 2>/dev/null)
+          LITELLM_PROJ=$(jq -r '.project_id // .project_uuid // "?"' /tmp/litellm.json 2>/dev/null)
+          OPS_PROJ=$(jq -r '.project_id // .project_uuid // "?"' /tmp/opshub.json 2>/dev/null)
+          CURRENT_URL=$(jq -r '.[] | select(.key == "LITELLM_URL") | .value' /tmp/envs.json 2>/dev/null || echo "?")
+
+          echo ""
+          echo "========================================================"
+          echo " DIAGNOSIS SUMMARY"
+          echo "========================================================"
+          echo " litellm-staging status:   $LITELLM_STATUS"
+          echo " litellm-staging project:  $LITELLM_PROJ"
+          echo " ops-hub-app project:      $OPS_PROJ"
+          echo " Current LITELLM_URL:      $CURRENT_URL"
+          echo ""
+          if [ "$LITELLM_PROJ" = "$OPS_PROJ" ]; then
+            echo " Network: SAME project → service name 'litellm-staging' should resolve"
+            echo " → Root cause is likely container down or wrong port, not networking"
+          else
+            echo " Network: DIFFERENT projects → 'litellm-staging' does NOT resolve from ops-hub-app"
+            echo ""
+            echo " RECOMMENDED FIX options:"
+            echo "  A) Coolify dashboard → litellm-staging → Settings → Add to Network"
+            echo "     → connect it to the same network as ops-hub-app"
+            echo "  B) Set LITELLM_URL=http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io"
+            echo "     → hairpin-NAT through the VPS public IP and Traefik"
+            echo "     → works as long as the VPS allows containers to reach its own external IP"
+            echo "     → run fix-litellm-tls.yml with LITELLM_URL overridden to this value"
+          fi
+          echo "========================================================"

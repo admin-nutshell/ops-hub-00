@@ -49,44 +49,63 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-36 — URGENT: [Tech Lead] Fix LITELLM_URL in Coolify — wrong URL causes TLS failure, ticket triage broken
+### ~~FQ-36 — URGENT: [Tech Lead] Fix LITELLM_URL in Coolify — wrong URL causes TLS failure, ticket triage broken~~ — PARTIAL: TLS fixed, now Docker networking
 
 ```
-URGENT: [Tech Lead] T-22 ticket triage is running but EVERY run fails with:
-  TypeError: fetch failed — self-signed certificate
+PARTIAL: Founder applied the manual fix (LITELLM_URL → http://litellm-staging:4000).
+  TLS error resolved ✅ but triage now fails with a ~3m TIMEOUT instead.
+  Diagnosis: ETIMEDOUT = SYN dropped = Docker network isolation.
+  'litellm-staging' hostname resolves but port 4000 is unreachable from ops-hub-app.
+  See FQ-37 for the active investigation and fix.
+Linked: FQ-37 (active)
+```
 
-Root cause: LITELLM_URL is set to https://litellm-staging.inatechshell.ca but
-  litellm-staging serves Traefik's default self-signed cert (not Let's Encrypt).
-  Node.js in the ops-hub container rejects it. Ticket triage is completely broken.
+---
 
-DO NOT set NODE_TLS_REJECT_UNAUTHORIZED=0 — that is a security hole.
+### FQ-37 — URGENT: [Tech Lead] LiteLLM unreachable from ops-hub-app — Docker network isolation
 
---- Fix (1 minute, manual) ---
+```
+URGENT: [Tech Lead] T-22 ticket triage is timing out after ~3 min on every run:
+  TypeError: fetch failed  (30s timeout added by PR #143 — surface time cut to 30s)
+
+Root cause (high confidence): ops-hub-app and litellm-staging are in DIFFERENT Coolify
+  projects. Coolify assigns each project its own Docker network. Service-to-service
+  hostnames like 'litellm-staging' only resolve within the same project/network.
+  Diagnosis: ETIMEDOUT (SYN dropped, ~3 min) = name resolves, but packets are dropped
+  between network segments. ENOTFOUND would indicate DNS failure; ECONNREFUSED would
+  indicate wrong port — neither applies here.
+
+Awaiting: Run diagnose-litellm.yml after merging PR #143 to confirm the project mismatch
+  and identify which URL works from inside the ops-hub-app container.
+
+--- Interim fix (1 minute, manual) ---
 
   In Coolify → ops-hub-app → Environment Variables:
-  CHANGE  LITELLM_URL  from: https://litellm-staging.inatechshell.ca
-                         to: http://litellm-staging:4000
+  CHANGE  LITELLM_URL  from: http://litellm-staging:4000
+                         to: http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io
 
-  Both services share the same Coolify Docker network. The internal URL bypasses TLS
-  entirely and is the correct architecture for service-to-service calls.
+  This hairpin-NAT URL exits the container to the VPS's own public IP on port 80 and
+  re-enters via Traefik → litellm-staging. It works regardless of Docker network topology.
+  CONFIRMED reachable from GitHub Actions runner (external). After Coolify change, restart
+  ops-hub-app to apply.
 
-  After changing: click Save + Restart (or Redeploy) to apply the new value.
+  NOTE: Do NOT use port 80 if there's a redirect to HTTPS — check that the HTTP URL
+  returns 200, not 301. If it redirects, add the FQDN cert fix first (see PR #143 step B).
 
---- Fix (automated, after PR merge) ---
+--- Permanent fix (recommended, after PR #143 merges) ---
 
-  Alternatively, merge PR #143 (fix/litellm-tls → main) then:
-    gh workflow run fix-litellm-tls.yml
-  The workflow updates the env var, restarts ops-hub-app, and re-syncs Inngest automatically.
+  Option A — Connect to same network (cleanest, one-time):
+    Coolify dashboard → litellm-staging → Settings → Connected Networks
+    Add the same network as ops-hub-app (likely 'coolify' or the ops-hub-staging network).
+    After this, 'http://litellm-staging:4000' will resolve correctly.
+    Set LITELLM_URL back to http://litellm-staging:4000 and restart ops-hub-app.
 
---- Verify ---
-
-  Within 5 min of the restart, sweepNewTickets cron will fire and triage conv 6 + 7.
-  In Supabase: SELECT id, state, urgency, category, routing FROM tickets WHERE
-    freescout_conversation_id IN (6,7);
-  Expected: state='triaged', urgency/category/routing populated.
+  Option B — Use sslip.io HTTP URL (already works, minimal change):
+    Set LITELLM_URL=http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io in Coolify.
+    The fix-litellm-tls.yml workflow (PR #143) will do this automatically.
 
 Impact if delayed: T-22 cannot be validated. Conv 6+7 remain at state='new'. T-23 blocked.
-Linked: T-22 (PR #141), FQ-35 (migration + LITELLM_MASTER_KEY done), PR #143
+Linked: T-22 (PR #141), FQ-35/FQ-36 (resolved), PR #143
 ```
 
 ---

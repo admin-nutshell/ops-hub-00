@@ -1,24 +1,26 @@
-name: Fix LiteLLM TLS — internal service URL + FQDN cert
+name: Fix LiteLLM URL + FQDN cert
 
 # Fixes two issues found when T-22 ticket-triage went live:
 #   1. litellm-staging serves Traefik's default self-signed cert (no FQDN set → no ACME)
-#   2. ops-hub-app's LITELLM_URL points to the public HTTPS URL, which Node.js rejects
+#   2. ops-hub-app's LITELLM_URL points to an unreachable URL
 #
-# Fix A (permanent, preferred):
-#   Update ops-hub-app LITELLM_URL to the internal Docker service URL
-#   http://litellm-staging:4000 — bypasses public TLS entirely.
-#   Coolify puts all apps on the same "coolify" Docker network; service-to-service calls
-#   use the container name as hostname. No cert required.
+# Fix A: Update ops-hub-app LITELLM_URL to a verified-working URL.
+#   Default: sslip.io HTTP URL (topology-independent; works across Docker networks).
+#   If litellm-staging and ops-hub-app share a Docker network, the internal service URL
+#   (http://litellm-staging:4000) is preferred — supply it via the litellm_url input.
+#   Run diagnose-litellm.yml first to confirm which URL works from inside the container.
 #
-# Fix B (belt-and-suspenders):
-#   Patch litellm-staging's FQDN in Coolify so Traefik adds the certresolver label
-#   and issues a Let's Encrypt cert on the next restart. External callers (e.g. ops-hub
-#   if it ever needs the public URL, curl health checks) then work over HTTPS.
+# Fix B (belt-and-suspenders): Patch litellm-staging FQDN so Traefik issues a Let's
+#   Encrypt cert on next restart — external HTTPS then works without TLS rejection.
 #
-# Run order: A is applied first (immediate fix). B follows (cleanup + correctness).
 # DO NOT use NODE_TLS_REJECT_UNAUTHORIZED=0 — that disables TLS verification globally.
 on:
   workflow_dispatch:
+    inputs:
+      litellm_url:
+        description: "LITELLM_URL to set — run diagnose-litellm.yml first to confirm"
+        required: false
+        default: "http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io"
 
 permissions:
   contents: read
@@ -26,7 +28,6 @@ permissions:
 env:
   COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
   LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
-  LITELLM_INTERNAL_URL: "http://litellm-staging:4000"
   LITELLM_FQDN: "https://litellm-staging.inatechshell.ca"
 
 jobs:
@@ -100,11 +101,12 @@ jobs:
           echo "DELETE → HTTP $DEL_HTTP"
           cat /tmp/del_env.json 2>/dev/null || true
 
-      - name: Create LITELLM_URL pointing to internal service
+      - name: Create LITELLM_URL pointing to verified URL
         run: |
           APP_UUID="${{ steps.app.outputs.uuid }}"
-          echo "Setting LITELLM_URL=$LITELLM_INTERNAL_URL on ops-hub-app..."
-          PAYLOAD=$(jq -n --arg k "LITELLM_URL" --arg v "$LITELLM_INTERNAL_URL" \
+          TARGET_URL="${{ github.event.inputs.litellm_url }}"
+          echo "Setting LITELLM_URL=$TARGET_URL on ops-hub-app..."
+          PAYLOAD=$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET_URL" \
             '{key: $k, value: $v}')
           HTTP=$(curl -s --max-time 30 -o /tmp/create_env.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
@@ -115,7 +117,7 @@ jobs:
           echo "POST /envs → HTTP $HTTP"
           jq . /tmp/create_env.json 2>/dev/null || cat /tmp/create_env.json
           if [ "$HTTP" = "201" ] || [ "$HTTP" = "200" ]; then
-            echo "✅ LITELLM_URL set to $LITELLM_INTERNAL_URL"
+            echo "✅ LITELLM_URL set to $TARGET_URL"
           else
             echo "ERROR: failed to set LITELLM_URL (HTTP $HTTP)"
             exit 1
@@ -219,13 +221,14 @@ jobs:
 
       - name: Summary
         run: |
+          TARGET_URL="${{ github.event.inputs.litellm_url }}"
           echo "=== Fix summary ==="
-          echo "Fix A (immediate): LITELLM_URL updated to $LITELLM_INTERNAL_URL"
+          echo "Fix A (immediate): LITELLM_URL updated to $TARGET_URL"
           echo "  ops-hub-app restarted and healthy."
-          echo "  ticket-triage calls LiteLLM over internal Docker network — no TLS required."
           echo ""
           echo "Fix B (cert): litellm-staging FQDN patched to $LITELLM_FQDN"
           echo "  Let's Encrypt cert will be issued on next litellm-staging restart."
           echo "  External HTTPS access will work after that restart."
           echo ""
           echo "Next: wait up to 5 min for sweepNewTickets cron to triage conv 6 + 7."
+          echo "  Verify: SELECT id, state, urgency FROM tickets WHERE freescout_conversation_id IN (6,7);"
