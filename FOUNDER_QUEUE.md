@@ -49,6 +49,60 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-32 — [Tech Lead] Add OPS_HUB_APP_LOGIN_URL env var to Coolify ops-hub-app
+
+```
+[Tech Lead] T-21 FreeScout poller needs a PostgreSQL connection string to connect as
+  ops_hub_app_login. This is the non-superuser connectable login role created in T-12
+  (PR #69) that enforces RLS without bypassing it.
+
+Action:
+  1. Get the ops_hub_app_login password from Supabase Vault (you stored it in T-12):
+       SELECT internal.get_secret('ops_hub_app_password');
+     (run in Supabase SQL Editor as the postgres role)
+  2. In Coolify: ops-hub-app → Environment → add env var:
+       Key:   OPS_HUB_APP_LOGIN_URL
+       Value: postgresql://ops_hub_app_login.<SUPABASE_PROJECT_REF>:<PASSWORD>@aws-1-ca-central-1.pooler.supabase.com:5432/postgres?sslmode=require
+       (replace <SUPABASE_PROJECT_REF> with yocoljutbiizdbfraapx and <PASSWORD> from step 1)
+  3. Redeploy ops-hub-app after adding the env var.
+
+Impact if delayed: T-21 Inngest cron cannot connect to Supabase; FreeScout polling won't start.
+  T-22 is unblocked (it uses LiteLLM, not this DB path).
+Linked: T-21 (PR feat/t21-supabase-polling), T-12, DECISIONS.md 2026-06-23
+```
+
+---
+
+### FQ-31 — [Tech Lead] Apply T-21 migration in Supabase SQL Editor
+
+```
+[Tech Lead] T-21 requires a new migration that: (1) adds freescout_conversation_id column
+  to tickets for dedup, (2) seeds a staging support tenant, (3) grants SELECT on FreeScout
+  tables to ops_hub_app.
+
+Action: In Supabase SQL Editor (as service_role / postgres user), run:
+  supabase/migrations/20260623180000_t21_freescout_intake.sql
+  (copy-paste the file contents, same pattern as the T-11 runbook)
+
+Verify after running:
+  SELECT column_name FROM information_schema.columns
+    WHERE table_name = 'tickets' AND column_name = 'freescout_conversation_id';
+  -- should return 1 row
+
+  SELECT id, name FROM tenants WHERE id = '00000000-0000-0000-0000-000000000010';
+  -- should return staging-support tenant
+
+  SELECT grantee, privilege_type FROM information_schema.role_table_grants
+    WHERE table_name = 'conversations' AND grantee = 'ops_hub_app';
+  -- should return SELECT privilege
+
+Impact if delayed: T-21 poller will fail on startup (missing column, missing GRANT).
+  T-22 is unblocked (does not depend on this migration).
+Linked: T-21 (PR feat/t21-supabase-polling), DECISIONS.md 2026-06-23
+```
+
+---
+
 ### FQ-30 — [Tech Lead] Remove FREESCOUT_API_KEY from Coolify ops-hub-app env vars (cleanup)
 
 ```
