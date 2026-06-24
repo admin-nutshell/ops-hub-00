@@ -214,9 +214,9 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 **Sprint 2 pre-sprint ops — in progress (2026-06-23):**
 
-**PT-1: FreeScout Webhooks module installation — ✅ automated solution built.**
-Root cause: FreeScout Settings → Webhooks does not exist because the Webhooks module is not installed (it's a free, separate module). Solution: custom Docker image `ghcr.io/admin-nutshell/ops-hub-00/freescout:latest` built from `docker/freescout/Dockerfile` — bakes in the Webhooks module files + init script that enables the module at container start. Workflow `build-freescout-custom-image.yml` builds, pushes to GHCR, updates Coolify, and does stop→start. Trigger: `gh workflow run build-freescout-custom-image.yml`.
-- Post-deployment founder action: Log into FreeScout → Manage → Settings → Webhooks → Add Webhook (URL: `https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout`, events: Conversation Created + Updated). FQ-30 filed.
+**PT-1: FreeScout Webhooks module installation — ✅ DEPLOYED (2026-06-23).**
+Custom Docker image `ghcr.io/admin-nutshell/ops-hub-00/freescout:latest` built and pushed to GHCR. Coolify `freescout-staging` updated to use custom image. Container restarted — FreeScout health HTTP 302 confirmed (workflow run #28069593718). Module activation script runs at container start via cont-init.d: downloads Webhooks from GitHub on first start, then runs `module:enable` + `migrate` on every start.
+- **Founder action required (FQ-30 Action 1):** Log into FreeScout → Manage → Settings → verify "Webhooks" appears → Add Webhook: URL `https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout`, events: Conversation Created + Updated.
 
 **PT-2: FreeScout API key — ⏳ pending founder retrieval.**
 FreeScout's REST API is built-in (no module needed). API key is at `https://freescout-staging.inatechshell.ca/settings/api`. Founder retrieves it → adds as `FREESCOUT_API_KEY` to Coolify staging env vars (on the **ops-hub-app**, not freescout-staging). FQ-30 includes this step. Docs: `docs/guides/freescout-modules.md §PT-2`.
