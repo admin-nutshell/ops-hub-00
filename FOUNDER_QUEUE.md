@@ -49,26 +49,41 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-32 — [Tech Lead] Add OPS_HUB_APP_LOGIN_URL env var to Coolify ops-hub-app
+### ~~FQ-32 — [Tech Lead] Add OPS_HUB_APP_LOGIN_URL env var to Coolify ops-hub-app~~ — SUPERSEDED by FQ-33
 
 ```
-[Tech Lead] T-21 FreeScout poller needs a PostgreSQL connection string to connect as
-  ops_hub_app_login. This is the non-superuser connectable login role created in T-12
-  (PR #69) that enforces RLS without bypassing it.
+RESOLVED (env var added) but with incorrect username format — missing project ref suffix.
+Supabase session pooler requires ops_hub_app_login.yocoljutbiizdbfraapx as the username,
+not ops_hub_app_login. pollFreeScout is failing with ENOIDENTIFIER.
+See FQ-33 for the corrected value.
+```
+
+---
+
+### FQ-33 — BLOCKING: [Tech Lead] Fix OPS_HUB_APP_LOGIN_URL — username missing project ref suffix
+
+```
+BLOCKING: [Tech Lead] pollFreeScout is failing every minute with:
+  "(ENOIDENTIFIER) no tenant identifier provided (external_id or sni_host)"
+
+Root cause: Supabase session pooler requires the username to include the project ref
+  as a dot-suffix so it can route to the correct tenant. The current value uses
+  just ops_hub_app_login; it must be ops_hub_app_login.yocoljutbiizdbfraapx.
 
 Action:
-  1. Get the ops_hub_app_login password from Supabase Vault (you stored it in T-12):
-       SELECT internal.get_secret('ops_hub_app_password');
-     (run in Supabase SQL Editor as the postgres role)
-  2. In Coolify: ops-hub-app → Environment → add env var:
-       Key:   OPS_HUB_APP_LOGIN_URL
-       Value: postgresql://ops_hub_app_login.<SUPABASE_PROJECT_REF>:<PASSWORD>@aws-1-ca-central-1.pooler.supabase.com:5432/postgres?sslmode=require
-       (replace <SUPABASE_PROJECT_REF> with yocoljutbiizdbfraapx and <PASSWORD> from step 1)
-  3. Redeploy ops-hub-app after adding the env var.
+  In Coolify: ops-hub-app → Environment → update OPS_HUB_APP_LOGIN_URL:
+    Key:   OPS_HUB_APP_LOGIN_URL
+    Value: postgresql://ops_hub_app_login.yocoljutbiizdbfraapx:<PASSWORD>@aws-1-ca-central-1.pooler.supabase.com:5432/postgres
+    (same password as before — only the username portion changes)
 
-Impact if delayed: T-21 Inngest cron cannot connect to Supabase; FreeScout polling won't start.
-  T-22 is unblocked (it uses LiteLLM, not this DB path).
-Linked: T-21 (PR feat/t21-supabase-polling), T-12, DECISIONS.md 2026-06-23
+  Then: Redeploy ops-hub-app (or restart the container) so the new value is picked up.
+
+Note: Do not add ?sslmode=require — the pooler handles SSL by default.
+  The only change from the current value is adding .yocoljutbiizdbfraapx after the username.
+
+Impact if delayed: pollFreeScout fails on every 60s cron run; no tickets are ingested
+  from FreeScout; T-22 triage pipeline cannot be validated end-to-end.
+Linked: T-21 (PR #140), FQ-32 (superseded), DECISIONS.md 2026-06-23
 ```
 
 ---

@@ -502,3 +502,20 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Events: step.sendEvent dispatches ops-hub/ticket.triage per inserted row; never dispatches on conflict.
   Founder actions required: FQ-31 (apply migration), FQ-32 (add OPS_HUB_APP_LOGIN_URL to Coolify).
 ```
+
+### 2026-06-23 — T-21 runtime failure: ENOIDENTIFIER — Supabase pooler username format
+
+```
+2026-06-23 [Tech Lead] pollFreeScout cron firing every 60s but failing at DB connect:
+  "(ENOIDENTIFIER) no tenant identifier provided (external_id or sni_host)"
+  Root cause: Supabase session pooler (aws-1-ca-central-1.pooler.supabase.com:5432)
+  routes by tenant using the username suffix — the username MUST include the project ref
+  as a dot-suffix: ops_hub_app_login.yocoljutbiizdbfraapx.
+  FQ-32 was completed with username ops_hub_app_login (no suffix) — pooler cannot identify
+  the Supabase project and rejects the connection.
+  Fix: update OPS_HUB_APP_LOGIN_URL in Coolify ops-hub-app env vars; username must be
+  ops_hub_app_login.yocoljutbiizdbfraapx. No code change required.
+  This same format requirement applies to all Supabase session/transaction pooler connections —
+  freescout_user also uses this pattern (freescout_user.yocoljutbiizdbfraapx) as confirmed
+  in freescout-redeploy-v3.yml. FQ-33 filed (BLOCKING).
+```
