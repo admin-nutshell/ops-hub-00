@@ -4,11 +4,12 @@ import http from "http";
 import { serve } from "inngest/node";
 import { inngest } from "./inngest/client";
 import { helloWorld } from "./inngest/functions";
+import { pollFreeScout } from "./inngest/freescout-poller";
 import { emitTrace } from "./langfuse";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
-const inngestHandler = serve({ client: inngest, functions: [helloWorld] });
+const inngestHandler = serve({ client: inngest, functions: [helloWorld, pollFreeScout] });
 
 export const server = http.createServer((req, res) => {
   if (req.url?.startsWith("/api/inngest")) {

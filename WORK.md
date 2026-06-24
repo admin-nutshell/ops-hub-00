@@ -118,7 +118,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-21: Implement Supabase polling Inngest cron + dispatch | Tech Lead | T-15 ✅, T-07 ✅ | Inngest cron runs every 60 s; queries FreeScout's `conversations` table in Supabase directly (same Supabase instance — `freescout_user` schema, `public.conversations`); new conversations inserted into Supabase `tickets` (dedup on `freescout_conversation_id` unique constraint); dispatches `ops-hub/ticket.triage` event per new ticket; unit test green; Inngest dashboard shows scheduled function. Exact DB read path (PostgREST vs direct psql via `ops_hub_app_login`) confirmed in T-21 implementation. | Jul 11 |
+| T-21: Implement Supabase polling Inngest cron + dispatch | Tech Lead | T-15 ✅, T-07 ✅ | ⏳ **PR open — pending migration apply + env var.** Inngest cron (`freescout-poll`) runs every 60 s; queries FreeScout's `conversations` table in Supabase directly (same Supabase instance, `ops_hub_app_login` via `pg`); new conversations inserted into `tickets` (dedup on `freescout_conversation_id` UNIQUE); dispatches `ops-hub/ticket.triage` per new ticket; 4 unit tests green; FQ-31 (migration) + FQ-32 (`OPS_HUB_APP_LOGIN_URL` env var) filed. | Jul 11 |
 
 ### Track B — AI Agents
 
@@ -178,6 +178,9 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 - Production Manager: T-08 (LiteLLM) + T-10 (FreeScout) in parallel
 
 ### Tech Lead
+**⏳ T-21 IN PROGRESS (2026-06-23) — PR #TBD open on `feat/t21-supabase-polling`.**
+Implementation: `pollFreeScout` Inngest cron (`* * * * *`); connects as `ops_hub_app_login` via `pg` + `OPS_HUB_APP_LOGIN_URL` env var; reads `conversations` (status=1 active, state=2 published) + first customer thread body; inserts to `tickets` with `ON CONFLICT (freescout_conversation_id) DO NOTHING RETURNING *`; dispatches `ops-hub/ticket.triage` per inserted row only (dedup guard). Migration `20260623180000_t21_freescout_intake.sql` adds `freescout_conversation_id bigint UNIQUE` to `tickets`, seeds staging tenant `00000000-0000-0000-0000-000000000010`, GRANTs SELECT on FreeScout tables to `ops_hub_app`. `pg` moved from devDependencies → dependencies. 4 unit tests green. Two founder actions needed before T-21 can go live: FQ-31 (apply migration), FQ-32 (add `OPS_HUB_APP_LOGIN_URL` to Coolify ops-hub-app).
+
 **🟢 T-11 RUNBOOK READY (2026-06-20) — founder-run path chosen; agents never hold service_role key.**
 Decision: rather than provide agents a `DATABASE_URL`, the founder applies the two migrations themselves using a copy-paste runbook → `docs/engineering/t11-migration-runbook.md`. Runbook gates migration 2 (`20260618120100_enable_rls_policies.sql`) behind Security Lead sign-off, uses per-file `psql -f` (NOT `supabase db push`, which would apply both migrations at once and bypass the gate), and includes PowerShell-native commands for the founder's Windows environment. **Security Lead sign-off recorded (2026-06-21, APPROVED WITH CONDITIONS, C1 applied — `authenticated` removed from `audit_log_insert`).** **Awaiting: founder execution — see FQ-15 in FOUNDER_QUEUE.md.** `ops_hub_app` login-role wiring follows in T-12.
 

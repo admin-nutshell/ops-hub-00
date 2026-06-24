@@ -477,3 +477,28 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   M1 COMPLETE. All 10 foundation criteria green. Criteria #11 and #12 are Sprint 2
   deliverables (T-21 incident drill, T-22 DNC flow) — not blocked, properly scoped.
 ```
+
+### 2026-06-23 — T-21 implementation: Supabase direct polling via ops_hub_app_login
+
+```
+2026-06-23 [Tech Lead] T-21 Inngest cron implemented (PR feat/t21-supabase-polling):
+  Function id: freescout-poll, schedule: "* * * * *" (every 60s), retries: 2.
+  DB connection: pg Pool as ops_hub_app_login via OPS_HUB_APP_LOGIN_URL env var.
+    Rationale: ops_hub_app_login enforces RLS (nobypassrls), same path as T-18 integration
+    test. service_role is reserved for migrations/platform ops per the T-11/T-18 security model.
+    pg moved from devDependency → dependency (runtime Pool creation on first invocation).
+  Read path: SELECT from conversations (status=1 active, state=2 published) + correlated
+    subquery for first customer thread body. All filtered by FreeScout v1.x status/state constants.
+  Dedup guard: INSERT INTO tickets ON CONFLICT (freescout_conversation_id) DO NOTHING RETURNING *.
+    Only rows returned by RETURNING * trigger ops-hub/ticket.triage dispatch.
+    freescout_conversation_id bigint UNIQUE added to tickets via migration 20260623180000.
+  Staging tenant seeded: 00000000-0000-0000-0000-000000000010 (staging-support, ops-hub project).
+    All FreeScout conversations mapped to this tenant for Sprint 2 staging.
+    Production per-conversation→tenant routing deferred to a future sprint.
+  GUC pattern: set_config('app.current_tenant', ..., true) + set_config('app.current_project', ..., true)
+    transaction-local (is_local=true) — pooler-safe, consistent with T-18 isolation test pattern.
+  FreeScout schema: conversations + threads tables in public schema (nfrastack/freescout:latest).
+    GRANTs added in migration (ops_hub_app has no automatic privileges on freescout_user tables).
+  Events: step.sendEvent dispatches ops-hub/ticket.triage per inserted row; never dispatches on conflict.
+  Founder actions required: FQ-31 (apply migration), FQ-32 (add OPS_HUB_APP_LOGIN_URL to Coolify).
+```
