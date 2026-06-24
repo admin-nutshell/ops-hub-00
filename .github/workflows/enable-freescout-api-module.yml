@@ -25,15 +25,17 @@ jobs:
       - name: Step 1 -- Verify current API status (expect 404 before fix)
         id: precheck
         run: |
+          # Note: GitHub Actions IPs may be blocked by the VPS firewall.
+          # Use || echo "000" so curl timeout (exit 28) does not abort the job.
           HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
-            "$FREESCOUT_URL/api/conversations")
+            "$FREESCOUT_URL/api/conversations" 2>/dev/null || echo "000")
           echo "Pre-fix: GET /api/conversations -> HTTP $HTTP"
           echo "pre_http=$HTTP" >> "$GITHUB_OUTPUT"
           if [ "$HTTP" = "200" ] || [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; then
             echo "API routes ARE already responding (HTTP $HTTP) -- module may already be enabled"
             echo "already_up=true" >> "$GITHUB_OUTPUT"
           else
-            echo "API routes returning $HTTP -- module needs enabling"
+            echo "API routes returning $HTTP (000 = timeout/unreachable from GHA network)"
             echo "already_up=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -143,16 +145,21 @@ jobs:
         id: postcheck
         run: |
           sleep 5
+          # Same network caveat as Step 1: || echo "000" prevents exit on timeout
           HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
-            "$FREESCOUT_URL/api/conversations")
+            "$FREESCOUT_URL/api/conversations" 2>/dev/null || echo "000")
           echo "Post-fix: GET /api/conversations -> HTTP $HTTP"
           echo "post_http=$HTTP" >> "$GITHUB_OUTPUT"
 
           # 401 = route exists, token required (expected if using query param auth)
           # 200 = authenticated and working
           # 404 = still not fixed
+          # 000 = GitHub Actions network can't reach the VPS (check manually)
           if [ "$HTTP" = "200" ] || [ "$HTTP" = "401" ] || [ "$HTTP" = "403" ]; then
             echo "OK: API routes are now live (HTTP $HTTP)"
+          elif [ "$HTTP" = "000" ]; then
+            echo "WARN: GHA network cannot reach VPS -- verify manually:"
+            echo "      curl -s -o /dev/null -w '%{http_code}' $FREESCOUT_URL/api/conversations"
           else
             echo "WARN: API still not responding (HTTP $HTTP)"
             echo "      Manual docker exec steps printed in Step 3b above"
