@@ -1,0 +1,73 @@
+name: Discover FreeScout schema (one-shot diagnostic)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  discover:
+    name: Dump FreeScout table schema from Supabase
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client
+
+      - name: List FreeScout tables in public schema
+        env:
+          PGPASSWORD: ${{ secrets.FREESCOUT_DB_PASS }}
+        run: |
+          echo "=== Tables in public schema ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name;" \
+            2>&1
+
+      - name: Dump conversations table columns
+        env:
+          PGPASSWORD: ${{ secrets.FREESCOUT_DB_PASS }}
+        run: |
+          echo "=== conversations columns ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema='public' AND table_name='conversations' ORDER BY ordinal_position;" \
+            2>&1
+
+      - name: Dump threads table columns
+        env:
+          PGPASSWORD: ${{ secrets.FREESCOUT_DB_PASS }}
+        run: |
+          echo "=== threads columns ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='threads' ORDER BY ordinal_position;" \
+            2>&1
+
+      - name: Sample conversation statuses
+        env:
+          PGPASSWORD: ${{ secrets.FREESCOUT_DB_PASS }}
+        run: |
+          echo "=== Distinct status values in conversations ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT status, count(*) FROM conversations GROUP BY status ORDER BY status;" \
+            2>&1
+
+          echo "=== Sample row (no PII) ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT id, number, mailbox_id, status, state, subject, created_at, updated_at FROM conversations ORDER BY id DESC LIMIT 3;" \
+            2>&1
