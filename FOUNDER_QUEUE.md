@@ -123,8 +123,8 @@ RESOLVED: [Founder] 2026-06-23 — T-21 migration applied (freescout_conversatio
   Linked: T-21 (PR #140)
 ```
 
-
 ---
+
 
 ### FQ-30 — [Tech Lead] Remove FREESCOUT_API_KEY from Coolify ops-hub-app env vars (cleanup)
 
