@@ -1,4 +1,4 @@
-name: Build FreeScout custom image — Webhooks module + deploy
+name: Build FreeScout custom image (Webhooks module + deploy)
 
 # Builds a custom FreeScout image that includes the Webhooks module
 # (https://github.com/freescout-help-desk/freescout-webhooks), pushes to GHCR,
