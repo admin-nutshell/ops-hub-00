@@ -1,7 +1,7 @@
 # Ops Hub Staging — Founder's User Manual
 
 > **Who this is for:** Haytham (founder). This guide covers everything you need to use, test, and monitor the Ops Hub staging environment.
-> **Current state:** Sprint 1 complete (20/20 tasks). Staging is live and fully instrumented. Sprint 2 goal: flow your first real ticket end-to-end.
+> **Current state:** M1 complete. Sprint 1: 20/20 tasks done. Criterion #10 achieved 2026-06-23 — first ticket confirmed end-to-end through FreeScout. Sprint 2 goal: wire AI triage pipeline, run incident drill, and begin DNC flow.
 
 ---
 
@@ -58,12 +58,14 @@ You own **business and UX decisions** only. Technical decisions are agent-owned.
 
 ### Staging: email method (primary)
 
-Send an email to the FreeScout inbox. The system picks it up automatically.
+Send an email to the client-facing support address. FreeScout picks it up automatically via Google Workspace OAuth.
 
 1. Open your email client
-2. Send to the configured FreeScout mailbox address (check FreeScout Settings > Mailboxes for the exact address)
+2. Send to: **support@inatechshell.ca**
 3. Subject = your issue title; body = description
-4. FreeScout creates a ticket within minutes
+4. Google forwards it to `info@inatechshell.ca` → FreeScout fetches via IMAP OAuth → ticket appears within minutes
+
+> **How the routing works:** `support@inatechshell.ca` is the public client address. Google Workspace forwards it to `info@inatechshell.ca`, which is the FreeScout mailbox (ITS Support). FreeScout connects to Google via OAuth — no app passwords involved.
 
 ### Direct via FreeScout UI
 
@@ -92,8 +94,10 @@ Send an email to the FreeScout inbox. The system picks it up automatically.
 
 FreeScout is your helpdesk. It runs on Coolify staging.
 
-- **URL:** Find it in Coolify dashboard under `ops-hub-staging` project (the FreeScout app URL)
-- **Login:** Admin credentials you set during provisioning
+- **URL:** `https://freescout-staging.inatechshell.ca`
+- **Login:** `haytham@inatechshell.ca` (admin account)
+- **Mailbox:** ITS Support — receives at `info@inatechshell.ca` via Google Workspace OAuth
+- **Client support email:** `support@inatechshell.ca` (Google-forwards to `info@`)
 - **What you see:** All incoming tickets, conversations, and statuses
 
 ### Key screens
@@ -131,50 +135,51 @@ Settings > Mailboxes shows your configured email inboxes. Each mailbox maps to a
 
 ---
 
-## 4. Sprint 2 End-to-End Test Guide
+## 4. Sprint 2 AI Pipeline Verification Guide
 
-This is your acceptance test for Sprint 2. When you can walk through these steps successfully, Sprint 2 is complete and M1 criteria #10–#12 are met.
+**Criterion #10 (email receipt end-to-end) is already ✅ achieved.** This guide is your acceptance test for the Sprint 2 AI pipeline deliverables: criteria #11 (AI triage response generated) and #12 (full end-to-end verified with AI in the loop).
 
 ### Prerequisites
 
-- [ ] You're logged into FreeScout at the staging URL
+- [ ] You're logged into FreeScout at `https://freescout-staging.inatechshell.ca`
 - [ ] You can reach `https://ops-hub-staging.inatechshell.ca/health` (returns `{"status":"ok"}`)
 - [ ] You're logged into LangFuse at `https://us.cloud.langfuse.com`
 - [ ] You're logged into Sentry at `https://sentry.io`
 
 ### Step 1 — Send a test ticket
 
-Send an email to your FreeScout staging mailbox:
+Send an email to the client-facing support address:
 
 ```
-Subject: Test ticket — Sprint 2 E2E
-Body: This is a test ticket to verify the end-to-end flow.
-Please provide a summary of the Ops Hub staging environment.
+To: support@inatechshell.ca
+Subject: Test ticket — Sprint 2 AI pipeline
+Body: This is a test ticket to verify the AI triage pipeline.
+Issue: I cannot log in to the client portal.
 ```
 
 ### Step 2 — Verify ticket appears in FreeScout
 
-1. Open FreeScout
-2. Check the inbox — your ticket should appear within 1–2 minutes
+1. Open FreeScout at `https://freescout-staging.inatechshell.ca`
+2. Check the ITS Support inbox — your ticket should appear within 1–2 minutes
 3. Click to open it and confirm the subject and body are correct
 
 **Expected:** Ticket visible in FreeScout inbox. Status: Open.
 
-### Step 3 — Verify AI processing in LangFuse
+### Step 3 — Verify AI triage trace in LangFuse (criterion #11)
 
 1. Open LangFuse → `https://us.cloud.langfuse.com`
 2. Select the ops-hub project
 3. Go to Traces
 4. Look for a trace named `ticket-triage` or similar with a timestamp matching your email send time
 
-**Expected:** A trace showing the ticket was received, processed through the AI pipeline, and a response was drafted.
+**Expected:** A trace showing the ticket was received, classified, and a response was drafted by the AI agent.
 
-### Step 4 — Verify response drafted or sent
+### Step 4 — Verify AI-drafted response in FreeScout (criterion #11)
 
 Back in FreeScout:
 1. Open your test ticket
 2. Look for an internal note or draft response from the AI
-3. The response should be relevant to your test message
+3. The response should be relevant to your test message (login issue context)
 
 **Expected:** AI-drafted response visible as a note or sent reply.
 
@@ -186,12 +191,12 @@ Back in FreeScout:
 
 **Expected:** Zero new errors from processing your test ticket.
 
-### Step 6 — Mark complete
+### Step 6 — Mark Sprint 2 complete (criterion #12)
 
 If all 5 steps pass:
-- Sprint 2 milestone achieved
-- M1 criteria #10 (ticket received and processed), #11 (AI response generated), #12 (end-to-end verified) are all green
-- Report to agents in your next message: "Sprint 2 E2E test passed."
+- Criteria #11 and #12 are green
+- M1 is fully complete
+- Report to agents: "Sprint 2 AI pipeline E2E test passed."
 
 ---
 
@@ -337,6 +342,7 @@ All agents check this flag before acting. Setting it to `true` stops everything 
 |---|---|---|
 | ops-hub app (staging) | `https://ops-hub-staging.inatechshell.ca` | Main app |
 | ops-hub health check | `https://ops-hub-staging.inatechshell.ca/health` | App health |
+| FreeScout (staging) | `https://freescout-staging.inatechshell.ca` | Helpdesk — admin: `haytham@inatechshell.ca` |
 | LiteLLM (staging) | `https://litellm-staging.inatechshell.ca` | AI model router |
 | Coolify | `https://coolify.inatechshell.ca` | Deploy dashboard |
 | GitHub repo | `https://github.com/admin-nutshell/ops-hub-00` | Code + CI |
@@ -401,4 +407,4 @@ Agents poll this file and act on your response. You don't need to message agents
 
 ---
 
-*Last updated: 2026-06-22. Maintained by Knowledge Lead agent. For questions or corrections, post to `FOUNDER_QUEUE.md`.*
+*Last updated: 2026-06-23 (M1 complete — criterion #10 achieved). Maintained by Knowledge Lead agent. For questions or corrections, post to `FOUNDER_QUEUE.md`.*

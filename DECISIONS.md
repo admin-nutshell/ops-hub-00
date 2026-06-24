@@ -432,3 +432,27 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Sprint 1: 20/20 tasks done (100%). M1 criteria #1–#9 all green.
   M1 criteria #10–#12 unblocked for Sprint 2 (require first ticket flow end-to-end).
 ```
+
+### 2026-06-23 — FreeScout Google Workspace OAuth configuration + M1 criterion #10 achieved
+
+```
+2026-06-23 [Founder] FreeScout mailbox configured with Google Workspace OAuth (IMAP + SMTP).
+  Configuration locked:
+    FreeScout URL:     https://freescout-staging.inatechshell.ca
+    Admin account:     haytham@inatechshell.ca
+    Mailbox name:      ITS Support
+    Mailbox address:   info@inatechshell.ca (Google Workspace)
+    Incoming:          IMAP via Google Workspace OAuth
+    Outgoing:          SMTP via Google Workspace OAuth
+    Client-facing:     support@inatechshell.ca → forwards to info@inatechshell.ca
+  Rationale: Google Workspace OAuth eliminates app-password management and plain-IMAP
+  credential rotation risk. support@ is the public-facing address; info@ is the
+  Google Workspace account that holds the mailbox. Forwarding is Google-side.
+  No credentials stored in FreeScout or Coolify env vars — OAuth token managed by Google.
+
+2026-06-23 [Founder] M1 criterion #10 ACHIEVED. First ticket end-to-end flow confirmed:
+  Email → support@inatechshell.ca → Google forwarding → info@inatechshell.ca →
+  FreeScout IMAP OAuth fetch → ticket appeared in FreeScout inbox ✅
+  M1 COMPLETE. All 10 foundation criteria green. Criteria #11 and #12 are Sprint 2
+  deliverables (T-21 incident drill, T-22 DNC flow) — not blocked, properly scoped.
+```
