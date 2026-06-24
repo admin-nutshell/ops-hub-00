@@ -118,7 +118,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-21: Implement Supabase polling Inngest cron + dispatch | Tech Lead | T-15 ✅, T-07 ✅ | ⚠️ **Cron running but failing — FQ-33 filed.** `pollFreeScout` firing every 60 s; failing with `ENOIDENTIFIER` — Supabase session pooler rejects username without project ref suffix (`ops_hub_app_login` must be `ops_hub_app_login.yocoljutbiizdbfraapx`). FQ-33 BLOCKING: founder to update `OPS_HUB_APP_LOGIN_URL` in Coolify ops-hub-app. PR #140 CI all green. | Jul 11 |
+| T-21: Implement Supabase polling Inngest cron + dispatch | Tech Lead | T-15 ✅, T-07 ✅ | ⚠️ **Two blockers — FQ-33 + FQ-34 filed.** `pollFreeScout` firing every 60 s. (1) ENOIDENTIFIER: `OPS_HUB_APP_LOGIN_URL` username missing `.yocoljutbiizdbfraapx` suffix — FQ-33 BLOCKING. (2) Missing SELECT GRANT: `ops_hub_app` cannot SELECT on `conversations`/`threads` (owned by `freescout_user`; postgres cannot GRANT on them) — FQ-34 BLOCKING (founder: `docker exec <freescout-container> php /www/html/artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app')"`). Migration updated: `IF NOT EXISTS` added, GRANTs removed. PR #140 CI all green. | Jul 11 |
 
 ### Track B — AI Agents
 
@@ -178,8 +178,11 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 - Production Manager: T-08 (LiteLLM) + T-10 (FreeScout) in parallel
 
 ### Tech Lead
-**⚠️ T-21 BLOCKED on FQ-33 (2026-06-23) — PR #140 open, CI all green.**
-Cron is firing every 60 s but failing with `ENOIDENTIFIER: no tenant identifier provided`. Root cause: Supabase session pooler requires the project ref as a dot-suffix on the username (`ops_hub_app_login.yocoljutbiizdbfraapx`); the current `OPS_HUB_APP_LOGIN_URL` in Coolify uses bare `ops_hub_app_login`. No code change needed — founder must update the env var value (FQ-33 BLOCKING). Once corrected and redeployed, the cron will connect and begin ingesting FreeScout conversations.
+**⚠️ T-21 BLOCKED on FQ-33 + FQ-34 (2026-06-23) — PR #140 open, CI all green.**
+Two open blockers (both founder actions):
+(1) FQ-33 BLOCKING — `OPS_HUB_APP_LOGIN_URL` username must be `ops_hub_app_login.yocoljutbiizdbfraapx` (not bare `ops_hub_app_login`); pooler rejects with `ENOIDENTIFIER`.
+(2) FQ-34 BLOCKING — `ops_hub_app` has no SELECT on `conversations`/`threads` (owned by `freescout_user`; postgres cannot GRANT on them). Fix: `docker exec <freescout-container> php /www/html/artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app')"`.
+Migration updated (IF NOT EXISTS + GRANT removed) — FQ-31 action still needed to apply the GRANT-free migration. No code change needed in the app. Once both founder actions are done and container redeployed, the cron will connect and begin ingesting FreeScout conversations.
 
 **🟢 T-11 RUNBOOK READY (2026-06-20) — founder-run path chosen; agents never hold service_role key.**
 Decision: rather than provide agents a `DATABASE_URL`, the founder applies the two migrations themselves using a copy-paste runbook → `docs/engineering/t11-migration-runbook.md`. Runbook gates migration 2 (`20260618120100_enable_rls_policies.sql`) behind Security Lead sign-off, uses per-file `psql -f` (NOT `supabase db push`, which would apply both migrations at once and bypass the gate), and includes PowerShell-native commands for the founder's Windows environment. **Security Lead sign-off recorded (2026-06-21, APPROVED WITH CONDITIONS, C1 applied — `authenticated` removed from `audit_log_insert`).** **Awaiting: founder execution — see FQ-15 in FOUNDER_QUEUE.md.** `ops_hub_app` login-role wiring follows in T-12.

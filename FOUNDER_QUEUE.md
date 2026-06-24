@@ -88,16 +88,70 @@ Linked: T-21 (PR #140), FQ-32 (superseded), DECISIONS.md 2026-06-23
 
 ---
 
+### FQ-34 — BLOCKING: [Tech Lead] Run GRANT as freescout_user via docker exec
+
+```
+BLOCKING: [Tech Lead] ops_hub_app cannot SELECT on public.conversations or public.threads.
+  Root cause: freescout_user owns these tables (FreeScout created them via Laravel migrations).
+  postgres cannot GRANT on tables it does not own in this Supabase setup.
+  The GRANTs have been removed from the T-21 migration — they must be issued by the table owner.
+
+Action (2 steps, in order):
+
+  Step 1 — Find the FreeScout container name on the Coolify VPS:
+    docker ps --filter "name=freescout" --format "{{.Names}}"
+    (or: docker ps | grep freescout)
+
+  Step 2 — Run the GRANT as freescout_user (the table owner) via artisan tinker:
+    docker exec <container-name> php /www/html/artisan tinker \
+      --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app')"
+    Expected output: true
+
+  Verify in Supabase SQL Editor:
+    SELECT grantee, table_name, privilege_type
+    FROM information_schema.role_table_grants
+    WHERE table_name IN ('conversations', 'threads')
+      AND grantee = 'ops_hub_app';
+    -- should return 2 rows (SELECT on each table)
+
+Note: no DB restart or container restart needed after the GRANT — it takes effect immediately.
+
+Impact if delayed: pollFreeScout cron fails on every SELECT from conversations/threads;
+  no tickets ingested from FreeScout; T-22 triage pipeline cannot be validated.
+  (FQ-33 ENOIDENTIFIER also still blocking — both must be resolved.)
+Linked: T-21 (PR #140), FQ-31 (migration), FQ-33 (ENOIDENTIFIER), DECISIONS.md 2026-06-23
+```
+
+---
+
 ### FQ-31 — [Tech Lead] Apply T-21 migration in Supabase SQL Editor
 
 ```
 [Tech Lead] T-21 requires a new migration that: (1) adds freescout_conversation_id column
-  to tickets for dedup, (2) seeds a staging support tenant, (3) grants SELECT on FreeScout
-  tables to ops_hub_app.
+  to tickets for dedup (IF NOT EXISTS — idempotent), (2) seeds a staging support tenant.
+
+  NOTE: GRANT statements have been removed from this migration (freescout_user owns those
+  tables; postgres cannot grant on them). The GRANT step is handled separately in FQ-34.
 
 Action: In Supabase SQL Editor (as service_role / postgres user), run:
   supabase/migrations/20260623180000_t21_freescout_intake.sql
   (copy-paste the file contents, same pattern as the T-11 runbook)
+
+  IMPORTANT — verify first whether the migration already partially applied.
+  The previous version of this migration had GRANT statements that fail from postgres.
+  SQL Editor runs scripts in a transaction, so a GRANT failure rolls back EVERYTHING.
+  Run these checks before applying to see if re-run is needed:
+
+    SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'tickets' AND column_name = 'freescout_conversation_id';
+    -- if empty: migration was rolled back → apply the updated migration below
+    -- if returns 1 row: ALTER TABLE already applied; only the tenant INSERT is needed
+
+    SELECT id, name FROM tenants WHERE id = '00000000-0000-0000-0000-000000000010';
+    -- if empty: staging-support tenant not seeded → apply migration
+
+  The updated migration (GRANT-free) is safe to re-run: ALTER TABLE uses IF NOT EXISTS
+  and tenant INSERT uses ON CONFLICT DO NOTHING.
 
 Verify after running:
   SELECT column_name FROM information_schema.columns
@@ -107,13 +161,8 @@ Verify after running:
   SELECT id, name FROM tenants WHERE id = '00000000-0000-0000-0000-000000000010';
   -- should return staging-support tenant
 
-  SELECT grantee, privilege_type FROM information_schema.role_table_grants
-    WHERE table_name = 'conversations' AND grantee = 'ops_hub_app';
-  -- should return SELECT privilege
-
-Impact if delayed: T-21 poller will fail on startup (missing column, missing GRANT).
-  T-22 is unblocked (does not depend on this migration).
-Linked: T-21 (PR feat/t21-supabase-polling), DECISIONS.md 2026-06-23
+Impact if delayed: T-21 poller will fail on INSERT (missing column, missing tenant).
+Linked: T-21 (PR #140), FQ-34 (GRANT step), DECISIONS.md 2026-06-23
 ```
 
 ---

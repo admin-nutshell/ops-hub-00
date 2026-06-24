@@ -519,3 +519,29 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   freescout_user also uses this pattern (freescout_user.yocoljutbiizdbfraapx) as confirmed
   in freescout-redeploy-v3.yml. FQ-33 filed (BLOCKING).
 ```
+
+### 2026-06-23 — T-21 second blocker: GRANT must be issued by freescout_user (table owner)
+
+```
+2026-06-23 [Tech Lead] ops_hub_app cannot SELECT on conversations/threads. Root cause:
+  FreeScout creates all its tables via Laravel migrations running as freescout_user — these
+  tables are owned by freescout_user, not postgres. In Supabase, postgres cannot GRANT
+  privileges on tables it does not own (the ALTER DEFAULT PRIVILEGES in the T-11 migration
+  covers tables created by postgres, not by freescout_user).
+  Failed approaches:
+    SQL Editor GRANT as postgres: silently fails or errors (ownership wall).
+    SET ROLE freescout_user in SQL Editor: blocked (Supabase does not allow role switching
+    to non-superuser roles in the SQL Editor environment).
+    ALTER TABLE owner: blocked (Supabase SQL Editor cannot reassign table ownership).
+    Two-pool approach (rejected): giving ops-hub app freescout_user credentials would
+    provide full read/write access to all FreeScout PII tables — security regression;
+    violates least-privilege posture; adds a second env var without functional benefit.
+  Chosen fix: owner-GRANT via docker exec artisan tinker.
+    freescout_user is the table owner → can issue GRANT unconditionally.
+    The FreeScout container runs as freescout_user and can execute raw SQL via artisan tinker.
+    GRANT is targeted: only conversations and threads (the two tables T-21 actually reads).
+    customers and mailboxes excluded — ops-hub does not need PII access for polling.
+  Migration updated: GRANT statements removed (they failed from postgres); IF NOT EXISTS
+  added to ALTER TABLE (idempotent in case prior SQL Editor run partially applied).
+  FQ-34 filed (BLOCKING): founder runs docker exec on FreeScout container to issue GRANT.
+```
