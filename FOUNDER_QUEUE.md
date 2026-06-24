@@ -49,13 +49,21 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-35 — BLOCKING: [Tech Lead] Add LITELLM_URL + LITELLM_MASTER_KEY to Coolify ops-hub-app env vars
+### FQ-35 — BLOCKING: [Tech Lead] Run T-22 migration + add LITELLM env vars to Coolify ops-hub-app
 
 ```
-BLOCKING: [Tech Lead] T-22 ticket-triage function needs two env vars to call LiteLLM.
-  Without them, classifySeverity throws on every triage attempt and no tickets are triaged.
+BLOCKING: [Tech Lead] Two actions required before T-22 can be validated end-to-end.
 
-Action: In Coolify → ops-hub-app → Environment, add:
+--- Action 1: Run T-22 migration in Supabase SQL Editor (same pattern as FQ-31) ---
+File: supabase/migrations/20260624000000_t22_ticket_triage_columns.sql
+  Adds three columns to the tickets table:
+    - urgency text check (critical/high/normal/low)
+    - category text
+    - routing text
+  Idempotent (IF NOT EXISTS / IF NOT EXISTS guards) — safe to re-run.
+  Do this BEFORE deploying the app; the triage UPDATE will fail at runtime without these columns.
+
+--- Action 2: Add env vars in Coolify → ops-hub-app → Environment ---
 
   Key:   LITELLM_URL
   Value: https://litellm-staging.inatechshell.ca
@@ -70,14 +78,14 @@ Then: Redeploy ops-hub-app (or restart the container) so the new values are pick
 Note: LITELLM_MASTER_KEY is already set in the litellm-staging service in Coolify.
   Copy it from there — do not paste in this file; store it only in Coolify env vars.
 
-Verify by checking Inngest dashboard after redeploy: the next ops-hub/ticket.triage
-  event (or sweepNewTickets cron in 5 min) should produce a successful triage run
-  with state='triaged' and a severity (P1/P2/P3) written to the tickets table.
+Verify: check Inngest dashboard after redeploy. The next sweepNewTickets cron (fires every
+  5 min) will pick up the 2 existing tickets (freescout_conversation_id: 6 + 7, state='new')
+  and triage them. In the tickets table, confirm state='triaged' and urgency/category/routing
+  are populated (e.g. urgency='high', category='auth', routing='engineering').
 
 Impact if delayed: all ticket triage attempts fail; T-22 cannot be validated end-to-end.
-  The two existing tickets (freescout_conversation_id: 6 + 7) will remain at state='new'
-  until this is resolved and a sweepNewTickets cron fires.
-Linked: T-22 (branch feat/t22-ticket-triage), T-08 (LiteLLM done), DECISIONS.md 2026-06-23
+  The two existing tickets will remain at state='new' until both actions are complete.
+Linked: T-22 (PR #141), T-08 (LiteLLM done), DECISIONS.md 2026-06-23
 ```
 
 ---
