@@ -212,10 +212,14 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 **ADR-0001 sign-off — now eligible.** T-08 + T-10 both live. Will sign off when ADR-0001 §6 is reviewed against current VPS utilisation.
 
-**Sprint 2 pre-sprint ops assigned (2026-06-23):**
-- **PT-1:** Configure FreeScout webhook → `https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout` (FreeScout admin → Settings → Webhooks). Required before T-21 can be tested E2E.
-- **PT-2:** Generate FreeScout API key + add as `FREESCOUT_API_KEY` to Coolify staging env (FreeScout admin → Profile → API Access). Required before T-23 can POST auto-replies.
-- FQ-28 filed for founder confirmation on FreeScout admin access path.
+**Sprint 2 pre-sprint ops — in progress (2026-06-23):**
+
+**PT-1: FreeScout Webhooks module installation — ✅ automated solution built.**
+Root cause: FreeScout Settings → Webhooks does not exist because the Webhooks module is not installed (it's a free, separate module). Solution: custom Docker image `ghcr.io/admin-nutshell/ops-hub-00/freescout:latest` built from `docker/freescout/Dockerfile` — bakes in the Webhooks module files + init script that enables the module at container start. Workflow `build-freescout-custom-image.yml` builds, pushes to GHCR, updates Coolify, and does stop→start. Trigger: `gh workflow run build-freescout-custom-image.yml`.
+- Post-deployment founder action: Log into FreeScout → Manage → Settings → Webhooks → Add Webhook (URL: `https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout`, events: Conversation Created + Updated). FQ-30 filed.
+
+**PT-2: FreeScout API key — ⏳ pending founder retrieval.**
+FreeScout's REST API is built-in (no module needed). API key is at `https://freescout-staging.inatechshell.ca/settings/api`. Founder retrieves it → adds as `FREESCOUT_API_KEY` to Coolify staging env vars (on the **ops-hub-app**, not freescout-staging). FQ-30 includes this step. Docs: `docs/guides/freescout-modules.md §PT-2`.
 
 ---
 
