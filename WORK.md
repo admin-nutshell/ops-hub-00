@@ -24,13 +24,13 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
 | 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ✅ **Done (2026-06-23).** T-07 Inngest: synced at `https://ops-hub-staging.inatechshell.ca/api/inngest`; registered in Inngest Production. T-08 LiteLLM: `litellm-staging.inatechshell.ca` live; NVIDIA NIM `meta/llama-3.3-70b-instruct` registered in DB (run #28043673055). T-09 LangFuse: `health-check` trace verified in LangFuse Cloud US (2026-06-22). |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
-| 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **Done (2026-06-23).** FreeScout live at `https://freescout-staging.inatechshell.ca`. Admin: `support@inatechshell.ca`. DB connected (Supabase Supavisor, `freescout_user`), migrations ran, nfrastack/freescout v2.1.2. FQ-24 resolved by founder (domain set in Coolify UI). |
+| 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **Done (2026-06-23).** FreeScout live at `https://freescout-staging.inatechshell.ca`. Admin: `haytham@inatechshell.ca`. Mailbox: ITS Support (info@inatechshell.ca). Incoming IMAP + outgoing SMTP via Google Workspace OAuth. Client support email: `support@inatechshell.ca` (forwards to info@). DB: Supabase Supavisor (`freescout_user`), nfrastack/freescout v2.1.2. |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **Done (2026-06-22).** T-15 + T-17 complete. 4 required checks: Lint & Type Check, Unit Tests, Security Scan, Eval Gate. Staging auto-deploy on merge via `main-deploy.yml`. |
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | ✅ **Done (2026-06-22).** 11 eval cases (PR #65, T-16); `Eval Gate` CI job validates all 11 eval files on every PR (PR #75, T-17). |
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ✅ **Done (2026-06-23).** Sentry: error verified in Sentry dashboard; `SENTRY_DSN` in Coolify. UptimeRobot: 3 monitors active — ops-hub-staging health, litellm-staging health, TTS app health. FQ-17 resolved. |
-| 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | 🔒 Sprint 2 scope — infrastructure (#4 ✅ #6 ✅ #7 ✅) all done; first live ticket required |
-| 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🔒 Blocked on #10 |
-| 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Blocked on #10 |
+| 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | ✅ **Done (2026-06-23).** Email sent to `support@inatechshell.ca` → forwarded to `info@inatechshell.ca` (Google Workspace) → fetched by FreeScout via Google Workspace OAuth IMAP → ticket appeared in FreeScout inbox. Mailbox: ITS Support (info@inatechshell.ca). Admin: haytham@inatechshell.ca. **M1 COMPLETE — all 10 foundation criteria green.** |
+| 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🔒 Sprint 2 deliverable (T-21) — foundation complete; drill requires live ticket pipeline |
+| 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Sprint 2 deliverable (T-22) — requires AI triage + response pipeline (Sprint 2 scope) |
 | 13 | First monthly founder briefing produced | PM | 🔗 Scheduled: July 31 |
 
 ---
