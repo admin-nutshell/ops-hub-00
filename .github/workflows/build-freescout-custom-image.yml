@@ -1,15 +1,9 @@
-name: Build FreeScout custom image (Webhooks module + deploy)
+name: Build FreeScout custom image (Webhooks module)
 
-# Builds a custom FreeScout image that includes the Webhooks module
-# (https://github.com/freescout-help-desk/freescout-webhooks), pushes to GHCR,
-# updates the Coolify freescout-staging app to use it, and restarts the container.
-#
-# Required secrets: COOLIFY_API_TOKEN, GITHUB_TOKEN (auto)
-# FreeScout Coolify app UUID: resolved dynamically by name "freescout-staging"
+# Builds a custom FreeScout image with the Webhooks module pre-installed,
+# pushes to GHCR, updates Coolify freescout-staging, and restarts.
+# Source: https://github.com/freescout-help-desk/freescout-webhooks
 # GHCR image: ghcr.io/admin-nutshell/ops-hub-00/freescout:latest
-#
-# PT-2 (API key): checks whether FREESCOUT_API_KEY env var is already set in
-# Coolify. If not, outputs the manual retrieval steps.
 on:
   workflow_dispatch:
 
@@ -23,7 +17,7 @@ env:
 
 jobs:
   build-and-deploy:
-    name: Build FreeScout + Webhooks → GHCR → Coolify
+    name: Build FreeScout + Webhooks module -> GHCR -> Coolify
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
@@ -33,14 +27,14 @@ jobs:
         with:
           persist-credentials: false
 
-      # ── Step 1: Resolve FreeScout Coolify app UUID ────────────────────────────
+      # -- Step 1: Resolve FreeScout Coolify app UUID --
       - name: Resolve freescout-staging Coolify UUID
         id: freescout
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications")
-          echo "GET /applications → HTTP $HTTP"
+          echo "GET /applications -> HTTP $HTTP"
           if [ "$HTTP" != "200" ]; then
             echo "ERROR: cannot list applications (HTTP $HTTP)"; cat /tmp/apps.json; exit 1
           fi
@@ -54,7 +48,7 @@ jobs:
           echo "freescout-staging UUID: $FS_UUID"
           echo "uuid=$FS_UUID" >> "$GITHUB_OUTPUT"
 
-      # ── Step 2: Build custom Docker image ─────────────────────────────────────
+      # -- Step 2: Build custom Docker image --
       - name: Log in to GitHub Container Registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
@@ -65,16 +59,16 @@ jobs:
             --tag "$IMAGE:${{ github.sha }}" \
             --build-arg WEBHOOKS_REF=master \
             docker/freescout/
-          echo "✅ Image built: $IMAGE:latest"
+          echo "Image built: $IMAGE:latest"
 
       - name: Push image to GHCR
         run: |
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${{ github.sha }}"
-          echo "✅ Pushed $IMAGE:latest (${{ github.sha }})"
+          echo "Pushed $IMAGE:latest (${{ github.sha }})"
 
-      # ── Step 3: Update Coolify to use custom image ────────────────────────────
-      - name: PATCH Coolify: switch FreeScout to custom GHCR image
+      # -- Step 3: Update Coolify to use custom image --
+      - name: PATCH Coolify - switch FreeScout to custom GHCR image
         run: |
           FS_UUID="${{ steps.freescout.outputs.uuid }}"
           PAYLOAD=$(jq -n \
@@ -88,24 +82,24 @@ jobs:
             -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$FS_UUID" \
             -d "$PAYLOAD")
-          echo "PATCH /applications/$FS_UUID → HTTP $HTTP"
+          echo "PATCH /applications/$FS_UUID -> HTTP $HTTP"
           cat /tmp/patch.json | head -10 || true
 
           if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-            echo "✅ Coolify image updated to $IMAGE:latest"
+            echo "OK: Coolify image updated to $IMAGE:latest"
           else
-            echo "❌ PATCH failed (HTTP $HTTP)"
+            echo "FAIL: PATCH failed (HTTP $HTTP)"
             exit 1
           fi
 
-      # ── Step 4: Stop → Start (force container recreation with new image) ──────
+      # -- Step 4: Stop -> Start (force container recreation with new image) --
       - name: Stop FreeScout container
         run: |
           FS_UUID="${{ steps.freescout.outputs.uuid }}"
           HTTP=$(curl -s --max-time 30 -o /tmp/stop.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$FS_UUID/stop") || true
-          echo "POST /stop → HTTP $HTTP"
+          echo "POST /stop -> HTTP $HTTP"
           sleep 15
 
       - name: Start FreeScout container (new image with Webhooks module)
@@ -114,10 +108,10 @@ jobs:
           HTTP=$(curl -s --max-time 30 -o /tmp/start.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$FS_UUID/start") || true
-          echo "POST /start → HTTP $HTTP"
+          echo "POST /start -> HTTP $HTTP"
           jq '.message // empty' /tmp/start.json 2>/dev/null || true
 
-      # ── Step 5: Poll FreeScout health ─────────────────────────────────────────
+      # -- Step 5: Poll FreeScout health --
       - name: Wait for FreeScout to come up (up to 8 min)
         id: health
         run: |
@@ -128,67 +122,69 @@ jobs:
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null || echo 000)
             echo "$(date -u +%H:%M:%S)  HTTP $HTTP"
-            [ "$HTTP" = "200" ] || [ "$HTTP" = "302" ] || [ "$HTTP" = "301" ] && break
+            if [ "$HTTP" = "200" ] || [ "$HTTP" = "302" ] || [ "$HTTP" = "301" ]; then
+              break
+            fi
             sleep 20
           done
           echo "http_code=$HTTP" >> "$GITHUB_OUTPUT"
           if [ "$HTTP" = "200" ] || [ "$HTTP" = "302" ] || [ "$HTTP" = "301" ]; then
-            echo "✅ FreeScout is up (HTTP $HTTP)"
+            echo "OK: FreeScout is up (HTTP $HTTP)"
           else
-            echo "⚠️  FreeScout not responding after 8 min (HTTP $HTTP)"
-            echo "   Check Coolify logs for the freescout-staging container"
+            echo "WARN: FreeScout not responding after 8 min (HTTP $HTTP)"
+            echo "      Check Coolify logs for the freescout-staging container"
           fi
 
-      # ── Step 6: PT-2 — check FREESCOUT_API_KEY in Coolify env vars ───────────
-      - name: PT-2: Check FREESCOUT_API_KEY env var status
+      # -- Step 6: PT-2 - check FREESCOUT_API_KEY in Coolify env vars --
+      - name: "PT-2: Check FREESCOUT_API_KEY env var status"
         run: |
           FS_UUID="${{ steps.freescout.outputs.uuid }}"
           HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$FS_UUID/envs")
-          echo "GET /envs → HTTP $HTTP"
+          echo "GET /envs -> HTTP $HTTP"
 
           if [ "$HTTP" = "200" ]; then
             KEY_PRESENT=$(jq -r '.[].key' /tmp/envs.json 2>/dev/null | grep -c "FREESCOUT_API_KEY" || echo 0)
             if [ "$KEY_PRESENT" -gt 0 ]; then
-              echo "✅ FREESCOUT_API_KEY is already set in Coolify env vars"
+              echo "OK: FREESCOUT_API_KEY is already set in Coolify env vars"
             else
               echo ""
-              echo "⚠️  FREESCOUT_API_KEY is NOT set in Coolify. PT-2 manual step required:"
+              echo "WARN: FREESCOUT_API_KEY is NOT set in Coolify. PT-2 manual step:"
               echo ""
-              echo "   1. Log into FreeScout: https://freescout-staging.inatechshell.ca"
-              echo "   2. Click your profile (top-right) → Settings → API"
-              echo "      OR navigate to: https://freescout-staging.inatechshell.ca/settings/api"
-              echo "   3. Copy the API key shown (or click 'Generate' if empty)"
-              echo "   4. In Coolify UI → freescout-staging → Environment Variables:"
-              echo "      Add: FREESCOUT_API_KEY = <paste key>"
-              echo "   5. Re-run this workflow or manually add the key to Coolify"
+              echo "  1. Log into FreeScout: https://freescout-staging.inatechshell.ca"
+              echo "  2. Profile (top-right) -> Settings -> API"
+              echo "     OR: https://freescout-staging.inatechshell.ca/settings/api"
+              echo "  3. Copy the API key (or click Generate if empty)"
+              echo "  4. Coolify -> ops-hub-staging -> ops-hub-app -> Environment Variables"
+              echo "     Add: FREESCOUT_API_KEY = <paste key>"
               echo ""
-              echo "   The ops-hub app (T-23 ticket-respond) needs this key to POST"
-              echo "   auto-replies back to FreeScout conversations via the API."
+              echo "  The ops-hub app (T-23 ticket-respond) uses this key to POST"
+              echo "  auto-replies back to FreeScout via the API."
             fi
           else
-            echo "WARNING: Could not check env vars (HTTP $HTTP) — skip PT-2 check"
+            echo "WARN: Could not check env vars (HTTP $HTTP) - skip PT-2 check"
           fi
 
-      # ── Step 7: Summary ───────────────────────────────────────────────────────
+      # -- Step 7: Summary --
       - name: Summary
+        if: always()
         run: |
           FS_UUID="${{ steps.freescout.outputs.uuid }}"
           FS_HTTP="${{ steps.health.outputs.http_code }}"
           echo "============================================================"
-          echo "FreeScout Webhooks Module Installation Summary"
+          echo "FreeScout Webhooks Module Installation - Summary"
           echo "============================================================"
           echo "Custom image : $IMAGE:latest"
           echo "Coolify UUID : $FS_UUID"
           echo "FreeScout URL: https://freescout-staging.inatechshell.ca"
-          echo "Health       : HTTP $FS_HTTP"
+          echo "Health code  : HTTP $FS_HTTP"
           echo ""
-          echo "Verification steps:"
+          echo "After deploy - founder verification steps (FQ-30 Action 1):"
           echo "  1. Log into https://freescout-staging.inatechshell.ca"
-          echo "  2. Navigate to: Manage → Settings"
-          echo "  3. Expected: 'Webhooks' option now appears in the Settings sidebar"
-          echo "  4. Click Webhooks → Add Webhook:"
+          echo "  2. Manage -> Settings"
+          echo "  3. Verify: 'Webhooks' option appears in the Settings sidebar"
+          echo "  4. Webhooks -> Add Webhook:"
           echo "     URL: https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout"
           echo "     Events: Conversation Created, Conversation Updated"
           echo "============================================================"
