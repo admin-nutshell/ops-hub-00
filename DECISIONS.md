@@ -433,6 +433,27 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   M1 criteria #10–#12 unblocked for Sprint 2 (require first ticket flow end-to-end).
 ```
 
+### 2026-06-23 — T-21 intake pivot: FreeScout REST API abandoned, Supabase direct polling adopted
+
+```
+2026-06-23 [Tech Lead] T-21 intake pivot: FreeScout REST API polling abandoned.
+  Attempt chain:
+    PT-1 Webhooks module (free, GitHub) failed to activate — nfrastack/freescout uses s6-overlay
+    v3 (/etc/s6-overlay/s6-rc.d/ init path); our COPY to /etc/cont-init.d/ was silently ignored.
+    PT-2 FreeScout Api module disabled by default — GET /api/conversations returns HTTP 404;
+    enabling via artisan requires docker exec inside the container; Coolify has no exec API
+    endpoint (POST /execute -> HTTP 404, confirmed run #28072003626); no agent SSH access.
+    Paid Api module: $19.99 — out of scope.
+  New approach: Supabase direct polling.
+    FreeScout's database is the same Supabase instance already connected to ops-hub
+    (freescout_user.yocoljutbiizdbfraapx on aws-1-ca-central-1.pooler.supabase.com:5432;
+    VPS outbound TCP:5432 confirmed open since FQ-10). T-21 Inngest cron queries FreeScout's
+    conversations table in Supabase directly every 60s — no HTTP API dependency, no module
+    required. Exact read path (PostgREST vs direct psql via ops_hub_app_login) determined
+    in T-21 implementation. Removes FREESCOUT_API_KEY requirement, custom Docker image, and
+    all FreeScout module installation workflows. Custom image reverted to nfrastack/freescout:latest.
+```
+
 ### 2026-06-23 — FreeScout Google Workspace OAuth configuration + M1 criterion #10 achieved
 
 ```

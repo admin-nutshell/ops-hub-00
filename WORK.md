@@ -7,11 +7,11 @@
 ## Current sprint
 
 **Sprint:** Sprint 2 — AI Triage Pipeline
-**Sprint goal:** Wire and validate the full AI ticket pipeline: FreeScout API polling → Inngest → LiteLLM triage → auto-response → FreeScout reply → Supabase state = resolved. Close M1 criteria #11 (incident drill + post-mortem) and #12 (DNC tickets flowing). Fully complete M1.
+**Sprint goal:** Wire and validate the full AI ticket pipeline: Supabase direct polling → Inngest → LiteLLM triage → auto-response → Supabase state = resolved. Close M1 criteria #11 (incident drill + post-mortem) and #12 (DNC tickets flowing). Fully complete M1.
 **Sprint window:** July 7 – July 18, 2026 (2 weeks)
 **Target milestone:** M1 complete (criteria #11 + #12 + #13)
 
-**Critical path:** T-21 API polling cron → T-22 ticket-triage function → T-23 ticket-respond function → T-26 incident drill (#11) → T-27 DNC flow (#12)
+**Critical path:** T-21 Supabase polling cron → T-22 ticket-triage function → T-23 ticket-respond function → T-26 incident drill (#11) → T-27 DNC flow (#12)
 
 ---
 
@@ -112,13 +112,13 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria |
 |---|---|---|---|
 | ~~PT-1: Configure FreeScout webhook~~ | ~~Production Manager~~ | — | ❌ Abandoned — Webhooks module failed to activate; pivoting to API polling (see PM section) |
-| PT-2: Retrieve FreeScout API key + add to Coolify ops-hub-app env vars | **Founder** | FreeScout admin access | `FREESCOUT_API_KEY` in Coolify ops-hub-app env vars; `GET /api/conversations` returns 200 |
+| ~~PT-2: FreeScout API key + enable Api module~~ | ~~Production Manager~~ | — | ❌ **ABANDONED** — FreeScout Api module disabled by default; enabling requires docker exec on Coolify VPS (no agent SSH); Coolify exec endpoint returns 404. Paid module: $19.99 out of scope. Decision: Supabase direct polling (see DECISIONS.md 2026-06-23). Cleanup: FQ-30 (remove FREESCOUT_API_KEY from Coolify ops-hub-app env vars). |
 
 ### Track A — API Polling Intake
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-21: Implement FreeScout API polling Inngest cron + dispatch | Tech Lead | T-15 ✅, T-07 ✅, PT-2 | Inngest cron runs every 60 s; calls `GET /api/conversations?status=active`; new conversations inserted into Supabase `tickets` (dedup on `freescout_conversation_id` unique constraint); dispatches `ops-hub/ticket.triage` event per new ticket; unit test green; Inngest dashboard shows scheduled function | Jul 11 |
+| T-21: Implement Supabase polling Inngest cron + dispatch | Tech Lead | T-15 ✅, T-07 ✅ | Inngest cron runs every 60 s; queries FreeScout's `conversations` table in Supabase directly (same Supabase instance — `freescout_user` schema, `public.conversations`); new conversations inserted into Supabase `tickets` (dedup on `freescout_conversation_id` unique constraint); dispatches `ops-hub/ticket.triage` event per new ticket; unit test green; Inngest dashboard shows scheduled function. Exact DB read path (PostgREST vs direct psql via `ops_hub_app_login`) confirmed in T-21 implementation. | Jul 11 |
 
 ### Track B — AI Agents
 
@@ -218,8 +218,9 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 Root cause: the free GitHub module (`freescout-help-desk/freescout-webhooks`) did not activate in the `nfrastack/freescout` container. Module files are absent from `/www/html/Modules/` and "Webhooks" does not appear in the FreeScout sidebar. Most likely cause: the nfrastack image uses s6-overlay v3 (`/etc/s6-overlay/s6-rc.d/` init path), so our `COPY init-modules.sh /etc/cont-init.d/50-freescout-modules` script was silently ignored — it never ran. Verification requires `docker exec` into the Coolify VPS (no agent SSH access). Paid module ($19.99) is out of scope.
 **Decision (agent-owned):** Pivot to FreeScout API polling. The FreeScout REST API is built-in with no module required. An Inngest cron function polling `GET /api/conversations` every 60 s gives equivalent intake with zero infrastructure dependency, is fully testable in CI, and removes the custom Docker image as an ongoing concern. T-21 is redefined accordingly. The custom image and `build-freescout-custom-image.yml` workflow are superseded — no further action needed on them.
 
-**PT-2: FreeScout API + Api module — ⏳ BLOCKING on VPS exec.**
-`FREESCOUT_API_KEY` ✅ retrieved and added to Coolify ops-hub-app env vars (2026-06-23). BUT `GET /api/conversations` returns HTTP 404 — the FreeScout `Api` module is disabled (routes not registered in Laravel). Confirmed: the REST API is Laravel-level, PHP is healthy, web server routes correctly. Fix: enable the `Api` module in the running container via artisan (one-time; persists in Supabase DB). No automated path exists — Coolify exec endpoint returns 404 (confirmed workflow run #28072003626). Fix requires VPS docker exec (founder VPS access). FQ-30 updated with exact commands.
+**PT-2: FreeScout API + Api module — ❌ ABANDONED (2026-06-23).**
+Root cause: FreeScout `Api` module disabled by default → `GET /api/conversations` returns HTTP 404. Enabling requires `artisan module:enable Api` inside the running container. No automated path: Coolify exec endpoint returns 404 (run #28072003626); no agent SSH access. Paid module: $19.99 out of scope.
+Decision: pivot to Supabase direct polling. FreeScout's DB is already the same Supabase instance (`freescout_user.yocoljutbiizdbfraapx`; VPS outbound TCP:5432 open). T-21 polls FreeScout's `conversations` table directly. No API key needed. `FREESCOUT_API_KEY` cleanup queued in FQ-30 (non-blocking — founder removes from Coolify ops-hub-app env vars at next convenience). Custom FreeScout Docker image reverted to `nfrastack/freescout:latest` via `revert-freescout-image.yml`.
 
 ---
 
