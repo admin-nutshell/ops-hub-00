@@ -49,6 +49,52 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-28 — [Production Manager] FreeScout admin access for Sprint 2 pre-sprint ops
+
+```
+[Production Manager] Sprint 2 pre-sprint ops (PT-1 + PT-2) need FreeScout admin access.
+
+Context: Two configuration steps are needed before the AI pipeline can be wired up:
+  PT-1: Add a webhook in FreeScout admin (Settings → Webhooks) pointing to
+        https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout
+        (events: Conversation Created, Conversation Updated)
+  PT-2: Generate a FreeScout API key (Profile → API Access) and provide it so
+        Production Manager can store it in Coolify as FREESCOUT_API_KEY.
+
+Recommendation: Production Manager will attempt both via browser automation using the
+  FreeScout admin account (haytham@inatechshell.ca). If a saved browser session exists
+  this can proceed without founder involvement.
+
+Impact if delayed: T-21 (webhook receiver) cannot be tested E2E; T-23 (auto-response)
+  cannot POST replies to FreeScout. Both are on the Sprint 2 critical path.
+
+Linked: T-21, T-23, PT-1, PT-2, Sprint 2 plan
+```
+
+---
+
+### FQ-29 — [Solutions Architect] Confirm DNC project scope for T-27 (M1 criterion #12)
+
+```
+[Solutions Architect] T-27 scope requires clarification on what "DNC" refers to.
+
+Context: M1 criterion #12 is "DNC tickets flowing through Ops Hub." Before T-27 can be
+  scoped, the Solutions Architect needs to know:
+  (a) Is DNC a specific client project to onboard?
+  (b) Or is DNC a ticket type/compliance category (e.g. Do-Not-Contact)?
+  (c) What does a DNC ticket look like — example subject/body?
+
+Recommendation: Please confirm in one sentence. Once confirmed, Solutions Architect
+  will own the full T-27 implementation with no further input needed.
+
+Impact if delayed: T-27 cannot be scoped; M1 criterion #12 cannot close. Non-blocking
+  for T-21–T-26 (AI pipeline can be built and drilled before T-27 starts).
+
+Linked: T-27, M1 criterion #12
+```
+
+---
+
 ### ~~FQ-27 — BLOCKING: litellm-staging 502 — Traefik port mismatch~~ — RESOLVED
 
 ```

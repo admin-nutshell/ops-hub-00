@@ -6,10 +6,16 @@
 
 ## Current sprint
 
-**Sprint:** Sprint 1 — Workspace + Foundation
-**Sprint goal:** Stand up all foundational infrastructure (Coolify environments, Supabase, Inngest, LangFuse, LiteLLM, FreeScout, CI/CD with eval gate) so the agent team is fully operational and the first end-to-end ticket can flow through the Ops Hub. Closes milestone **M1**.
-**Sprint window:** June 23 – July 4, 2026 (2 weeks)
-**Target milestone:** M1 — "Workspace + Foundation" (chartered end-of-July 2026; targeting early delivery by July 4 to build buffer before M2)
+**Sprint:** Sprint 2 — AI Triage Pipeline
+**Sprint goal:** Wire and validate the full AI ticket pipeline: FreeScout webhook → Inngest → LiteLLM triage → auto-response → FreeScout reply → Supabase state = resolved. Close M1 criteria #11 (incident drill + post-mortem) and #12 (DNC tickets flowing). Fully complete M1.
+**Sprint window:** July 7 – July 18, 2026 (2 weeks)
+**Target milestone:** M1 complete (criteria #11 + #12 + #13)
+
+**Critical path:** T-21 webhook receiver → T-22 ticket-triage function → T-23 ticket-respond function → T-26 incident drill (#11) → T-27 DNC flow (#12)
+
+---
+
+*(Sprint 1 — Workspace + Foundation: June 23 – July 4, 2026 — ✅ COMPLETE. 20/20 tasks done. M1 criteria #1–#10 green. Sprint retro due: July 4, 2026 → `docs/retros/sprint-1.md`.)*
 
 ---
 
@@ -97,6 +103,53 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 ---
 
+## Sprint 2 tasks
+
+**Sprint 2: AI Triage Pipeline** — July 7 – July 18, 2026
+
+### Pre-Sprint ops (Production Manager — complete before July 7)
+
+| Task | Owner | Depends on | Exit criteria |
+|---|---|---|---|
+| PT-1: Configure FreeScout webhook → ops-hub staging | Production Manager | FreeScout admin access | FreeScout Settings → Webhooks → URL `https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout`; events: Conversation Created + Updated; test delivery returns 200 |
+| PT-2: Generate FreeScout API key + add to Coolify | Production Manager | FreeScout admin access | `FREESCOUT_API_KEY` present in Coolify staging env vars; test call `GET /api/conversations` returns 200 |
+
+### Track A — Webhook Intake
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-21: Implement FreeScout webhook receiver + Inngest dispatch | Tech Lead | T-15 ✅, T-07 ✅ | `POST /api/webhooks/freescout` validates HMAC, dispatches `ops-hub/ticket.created` Inngest event; unit test green; Inngest dashboard shows event on test delivery | Jul 11 |
+
+### Track B — AI Agents
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | Function classifies ticket via LiteLLM (category, urgency, routing intent); writes `triaged` state + fields to Supabase `tickets`; LangFuse trace `ticket-triage` visible; unit test green | Jul 14 |
+| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22, PT-2 | Function drafts response via LiteLLM; POSTs note to FreeScout conversation via API; Supabase state → `responded`; LangFuse trace `ticket-respond` visible | Jul 16 |
+
+### Track C — Testing + Evals
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-24: Extend integration tests for full pipeline state machine | QA Manager | T-22, T-23 | `ticket-state-machine.test.ts` covers `new → triaged → responded → resolved`; webhook handler unit tested; all green | Jul 16 |
+| T-25: Eval cases for triage + response agent behaviors | Evals Lead | T-22/T-23 spec finalized | `evals/ticket-triage.yaml` + `evals/ticket-respond.yaml` added; eval gate passes on PR; no regression in existing 11 evals | Jul 16 |
+
+### Track D — Delivery + Milestone Close
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-26: Synthetic incident drill + post-mortem (M1 criterion #11) | Prod Manager + Tech Lead | T-23 (full pipeline live) | Scripted ticket flows FreeScout → triaged → responded → resolved end-to-end; `docs/retros/sprint-2-incident-drill.md` authored (timeline, tool outputs, action items); **M1 #11 ✅** | Jul 17 |
+| T-27: DNC project onboarding + ticket flow (M1 criterion #12) | Solutions Architect | T-26 validated, T-04 ✅ | DNC Project Context schema instance committed; routing rules configured; real DNC ticket triaged + responded in FreeScout; **M1 #12 ✅** | Jul 18 |
+
+### Milestone tail (non-blocking)
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-28: Sprint 1 retrospective doc | PM | Sprint 1 ✅ | `docs/retros/sprint-1.md` committed — what worked, what didn't, process changes for Sprint 2 | Jul 4 |
+| T-29: First monthly founder briefing (M1 criterion #13) | PM | All M1 criteria green | Briefing doc delivered to founder via FOUNDER_QUEUE — Sprint 1+2 summary, M2 preview, open risks | Jul 31 |
+
+---
+
 ## Blocked items
 
 | Item | Blocked by | Impact if unresolved by Jun 27 | Owner |
@@ -109,9 +162,9 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 ## Per-agent status
 
 ### PM
-Sprint 1 planned (2026-06-18). Monitoring M1 checklist. Next: Friday July 4 sprint retro to `docs/retros/sprint-1.md`.
+**2026-06-23 — Sprint 2 planned.** Sprint 2 task list committed (T-21–T-29). Critical path: T-21 → T-22 → T-23 → T-26 (#11) → T-27 (#12). Pre-sprint ops (PT-1/PT-2) assigned to Production Manager. Two FOUNDER_QUEUE items filed: FQ-28 (FreeScout admin access confirmation for PT-1/PT-2) and FQ-29 (DNC project scope clarification for T-27). Sprint 1 retro (T-28) due July 4. Monitoring M1 checklist. M1 criteria #11–#12 are the Sprint 2 close gates.
 
-**2026-06-23 — Sprint 1: 20/20 tasks done (100%). 🎉** T-14 UptimeRobot ✅ Done — 3 monitors created manually in dashboard (FQ-17 resolved). All Sprint 1 foundation tasks complete. M1 criteria #1–#9 all green; #10–#12 now unblocked for Sprint 2.
+**2026-06-23 — Sprint 1: 20/20 tasks done (100%).** T-14 UptimeRobot ✅ Done — 3 monitors created manually in dashboard (FQ-17 resolved). All Sprint 1 foundation tasks complete. M1 criteria #1–#9 all green; #10 confirmed 2026-06-23.
 
 **2026-06-22 — Sprint 1 status: 19/20 tasks done (95%).** T-09 LangFuse ✅ Done (health-check trace verified in LangFuse Cloud US). T-13 Sentry ✅ Done (error verified in Sentry dashboard; SENTRY_DSN in Coolify). Only T-14 (UptimeRobot — FQ-17) remains open.
 
@@ -158,6 +211,11 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 **T-10: FreeScout — ✅ DONE (2026-06-23).** `https://freescout-staging.inatechshell.ca` live. Admin: `support@inatechshell.ca`. DB connected (Supabase Supavisor `freescout_user.yocoljutbiizdbfraapx`), migrations ran, admin user created. FQ-24 resolved: founder set FQDN in Coolify UI — Caddy now routes the custom domain correctly.
 
 **ADR-0001 sign-off — now eligible.** T-08 + T-10 both live. Will sign off when ADR-0001 §6 is reviewed against current VPS utilisation.
+
+**Sprint 2 pre-sprint ops assigned (2026-06-23):**
+- **PT-1:** Configure FreeScout webhook → `https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout` (FreeScout admin → Settings → Webhooks). Required before T-21 can be tested E2E.
+- **PT-2:** Generate FreeScout API key + add as `FREESCOUT_API_KEY` to Coolify staging env (FreeScout admin → Profile → API Access). Required before T-23 can POST auto-replies.
+- FQ-28 filed for founder confirmation on FreeScout admin access path.
 
 ---
 
@@ -230,7 +288,9 @@ Monitor monthly event count against 50K free-tier ceiling (ADR-0002 §2 trigger 
 `scripts/provision-uptimerobot.sh` + `.github/workflows/provision-uptimerobot.yml` pushed and PR open. Monitors NOT yet created — dispatch requires PR #73 merged to main (workflow_dispatch not dispatchable from feature branches until the workflow exists on the default branch). Post-merge step: `gh workflow run provision-uptimerobot.yml --repo admin-nutshell/ops-hub-00`. Verify by confirming 3× `"stat":"ok"` in the run log. Three monitors: ops-hub-app (staging), LiteLLM (staging), FreeScout (staging); check interval: 5 min. Alert contacts intentionally empty — UptimeRobot requires a pre-created contact ID; email routing to mai@leelaecospa.com is a follow-up (create contact in UptimeRobot dashboard, update script or configure via UI). Prod monitors and TTS monitors deferred to post-M1.
 
 ### Solutions Architect
-**Active.** T-04 (Project Context schema for TTS) starts immediately. DNC onboarding checklist prep begins once T-04 approved by Tech Lead.
+**T-04 ✅ Done (2026-06-21, PR #64).** Project Context schema committed.
+
+**Sprint 2 — T-27: DNC project onboarding + ticket flow (M1 #12).** Assigned. Scope: instantiate DNC Project Context schema instance; configure routing rules in triage agent; verify a real DNC ticket flows from FreeScout → triage → respond → resolved. Depends on T-26 (pipeline validated). FQ-29 filed to confirm what "DNC" refers to (client project or ticket type) before T-27 scoping begins.
 
 ---
 
