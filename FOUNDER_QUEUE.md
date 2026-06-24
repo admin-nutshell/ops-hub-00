@@ -49,34 +49,27 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-30 — BLOCKING: [Production Manager] Two quick FreeScout admin actions to unblock Sprint 2
+### FQ-30 — BLOCKING: [Production Manager] FreeScout API key needed before Sprint 2
 
 ```
-BLOCKING: [Production Manager] Two 2-minute actions needed after FreeScout redeploys
-  with Webhooks module. Blocks T-21 (webhook receiver) and T-23 (auto-response).
+BLOCKING: [Production Manager] One action needed before Sprint 2 starts (July 7).
+  Blocks T-21 (API polling cron) and T-23 (auto-response).
 
-Action 1 — Configure FreeScout webhook (blocks T-21 E2E test):
-  After build-freescout-custom-image.yml completes and FreeScout is healthy:
-  1. Log into https://freescout-staging.inatechshell.ca
-  2. Navigate: Manage → Settings → Webhooks (new option, installed by this deploy)
-  3. Click "Add Webhook":
-     URL:    https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout
-     Events: ✅ Conversation Created  ✅ Conversation Updated
-  4. Save
-  Expected: test delivery shows HTTP 200 (or 404 until T-21 endpoint is built)
+  Note: Action 1 (webhook URL) was removed — PT-1 pivoted to API polling;
+  no webhook module or webhook URL configuration is needed.
 
-Action 2 — Retrieve FreeScout API key (blocks T-23 auto-reply):
+Action — Retrieve FreeScout API key (blocks T-21 polling + T-23 auto-reply):
   1. Log into https://freescout-staging.inatechshell.ca
   2. Navigate: Profile (top-right) → Settings → API
-     OR: https://freescout-staging.inatechshell.ca/settings/api
-  3. Copy the API key (or click Generate if empty)
-  4. In Coolify UI → ops-hub-staging → ops-hub-app → Environment Variables:
+     OR direct: https://freescout-staging.inatechshell.ca/settings/api
+  3. Copy the API key shown (or click "Generate API Key" if none exists)
+  4. In Coolify: ops-hub-staging project → ops-hub-app → Environment Variables
      Add:  FREESCOUT_API_KEY = <paste key>
-     (NOT on the freescout-staging app — on ops-hub-app)
-  5. Save
+     (Add to ops-hub-app, NOT to freescout-staging)
+  5. Save — no container restart needed
 
-Timing: Both actions needed before Sprint 2 starts (July 7). Can be done in < 5 min.
-Linked: T-21, T-23, PT-1, PT-2, build-freescout-custom-image.yml
+Timing: Before July 7. Takes < 2 min.
+Linked: T-21, T-23, PT-2
 ```
 
 ---

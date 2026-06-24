@@ -111,14 +111,14 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria |
 |---|---|---|---|
-| PT-1: Configure FreeScout webhook → ops-hub staging | Production Manager | FreeScout admin access | FreeScout Settings → Webhooks → URL `https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout`; events: Conversation Created + Updated; test delivery returns 200 |
-| PT-2: Generate FreeScout API key + add to Coolify | Production Manager | FreeScout admin access | `FREESCOUT_API_KEY` present in Coolify staging env vars; test call `GET /api/conversations` returns 200 |
+| ~~PT-1: Configure FreeScout webhook~~ | ~~Production Manager~~ | — | ❌ Abandoned — Webhooks module failed to activate; pivoting to API polling (see PM section) |
+| PT-2: Retrieve FreeScout API key + add to Coolify ops-hub-app env vars | **Founder** | FreeScout admin access | `FREESCOUT_API_KEY` in Coolify ops-hub-app env vars; `GET /api/conversations` returns 200 |
 
-### Track A — Webhook Intake
+### Track A — API Polling Intake
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-21: Implement FreeScout webhook receiver + Inngest dispatch | Tech Lead | T-15 ✅, T-07 ✅ | `POST /api/webhooks/freescout` validates HMAC, dispatches `ops-hub/ticket.created` Inngest event; unit test green; Inngest dashboard shows event on test delivery | Jul 11 |
+| T-21: Implement FreeScout API polling Inngest cron + dispatch | Tech Lead | T-15 ✅, T-07 ✅, PT-2 | Inngest cron runs every 60 s; calls `GET /api/conversations?status=active`; new conversations inserted into Supabase `tickets` (dedup on `freescout_conversation_id` unique constraint); dispatches `ops-hub/ticket.triage` event per new ticket; unit test green; Inngest dashboard shows scheduled function | Jul 11 |
 
 ### Track B — AI Agents
 
@@ -131,7 +131,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-24: Extend integration tests for full pipeline state machine | QA Manager | T-22, T-23 | `ticket-state-machine.test.ts` covers `new → triaged → responded → resolved`; webhook handler unit tested; all green | Jul 16 |
+| T-24: Extend integration tests for full pipeline state machine | QA Manager | T-22, T-23 | `ticket-state-machine.test.ts` covers `new → triaged → responded → resolved`; polling cron unit tested (dedup logic, dispatch); all green | Jul 16 |
 | T-25: Eval cases for triage + response agent behaviors | Evals Lead | T-22/T-23 spec finalized | `evals/ticket-triage.yaml` + `evals/ticket-respond.yaml` added; eval gate passes on PR; no regression in existing 11 evals | Jul 16 |
 
 ### Track D — Delivery + Milestone Close
@@ -214,12 +214,12 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 **Sprint 2 pre-sprint ops — in progress (2026-06-23):**
 
-**PT-1: FreeScout Webhooks module installation — ✅ DEPLOYED (2026-06-23).**
-Custom Docker image `ghcr.io/admin-nutshell/ops-hub-00/freescout:latest` built and pushed to GHCR. Coolify `freescout-staging` updated to use custom image. Container restarted — FreeScout health HTTP 302 confirmed (workflow run #28069593718). Module activation script runs at container start via cont-init.d: downloads Webhooks from GitHub on first start, then runs `module:enable` + `migrate` on every start.
-- **Founder action required (FQ-30 Action 1):** Log into FreeScout → Manage → Settings → verify "Webhooks" appears → Add Webhook: URL `https://ops-hub-staging.inatechshell.ca/api/webhooks/freescout`, events: Conversation Created + Updated.
+**PT-1: FreeScout Webhooks module — ❌ ABANDONED. Pivoting to FreeScout API polling (2026-06-23).**
+Root cause: the free GitHub module (`freescout-help-desk/freescout-webhooks`) did not activate in the `nfrastack/freescout` container. Module files are absent from `/www/html/Modules/` and "Webhooks" does not appear in the FreeScout sidebar. Most likely cause: the nfrastack image uses s6-overlay v3 (`/etc/s6-overlay/s6-rc.d/` init path), so our `COPY init-modules.sh /etc/cont-init.d/50-freescout-modules` script was silently ignored — it never ran. Verification requires `docker exec` into the Coolify VPS (no agent SSH access). Paid module ($19.99) is out of scope.
+**Decision (agent-owned):** Pivot to FreeScout API polling. The FreeScout REST API is built-in with no module required. An Inngest cron function polling `GET /api/conversations` every 60 s gives equivalent intake with zero infrastructure dependency, is fully testable in CI, and removes the custom Docker image as an ongoing concern. T-21 is redefined accordingly. The custom image and `build-freescout-custom-image.yml` workflow are superseded — no further action needed on them.
 
-**PT-2: FreeScout API key — ⏳ pending founder retrieval.**
-FreeScout's REST API is built-in (no module needed). API key is at `https://freescout-staging.inatechshell.ca/settings/api`. Founder retrieves it → adds as `FREESCOUT_API_KEY` to Coolify staging env vars (on the **ops-hub-app**, not freescout-staging). FQ-30 includes this step. Docs: `docs/guides/freescout-modules.md §PT-2`.
+**PT-2: FreeScout API key — ⏳ BLOCKING (now sole pre-sprint blocker).**
+FreeScout REST API is built-in; `FREESCOUT_API_KEY` unlocks both polling (T-21) and auto-reply (T-23). API key at `https://freescout-staging.inatechshell.ca/settings/api`. Founder retrieves → adds as `FREESCOUT_API_KEY` to Coolify **ops-hub-app** env vars (NOT freescout-staging). FQ-30 updated (Action 1 removed; Action 2 only). Docs: `docs/guides/freescout-modules.md §PT-2`.
 
 ---
 
