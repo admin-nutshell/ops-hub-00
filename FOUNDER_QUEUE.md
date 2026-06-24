@@ -49,27 +49,40 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-30 — BLOCKING: [Production Manager] FreeScout API key needed before Sprint 2
+### FQ-30 — BLOCKING: [Production Manager] Enable FreeScout Api module via docker exec
 
 ```
-BLOCKING: [Production Manager] One action needed before Sprint 2 starts (July 7).
-  Blocks T-21 (API polling cron) and T-23 (auto-response).
+BLOCKING: [Production Manager] One 3-minute VPS action needed before Sprint 2 (July 7).
+  FREESCOUT_API_KEY is already set in Coolify ops-hub-app. But GET /api/conversations
+  returns HTTP 404 — the FreeScout Api module is disabled (routes not registered).
+  Coolify has no exec API (POST /execute returns 404, confirmed workflow run #28072003626).
+  Fix requires docker exec on the Coolify VPS. One-time; persists in Supabase DB.
 
-  Note: Action 1 (webhook URL) was removed — PT-1 pivoted to API polling;
-  no webhook module or webhook URL configuration is needed.
+Action -- Enable FreeScout Api module on Coolify VPS:
+  SSH to VPS (or use Coolify server terminal), then:
 
-Action — Retrieve FreeScout API key (blocks T-21 polling + T-23 auto-reply):
-  1. Log into https://freescout-staging.inatechshell.ca
-  2. Navigate: Profile (top-right) → Settings → API
-     OR direct: https://freescout-staging.inatechshell.ca/settings/api
-  3. Copy the API key shown (or click "Generate API Key" if none exists)
-  4. In Coolify: ops-hub-staging project → ops-hub-app → Environment Variables
-     Add:  FREESCOUT_API_KEY = <paste key>
-     (Add to ops-hub-app, NOT to freescout-staging)
-  5. Save — no container restart needed
+  Step 1: Find the FreeScout container
+    docker ps --filter name=freescout --format "{{.ID}} {{.Names}}"
 
-Timing: Before July 7. Takes < 2 min.
+  Step 2: Enable Api module (use container ID from step 1)
+    CONTAINER=<container-id-from-step-1>
+    docker exec $CONTAINER php /www/html/artisan module:list
+    docker exec $CONTAINER php /www/html/artisan module:enable Api
+    docker exec $CONTAINER php /www/html/artisan migrate --force
+    docker exec $CONTAINER php /www/html/artisan cache:clear
+    docker exec $CONTAINER php /www/html/artisan route:clear
+
+  Step 3: Verify (run from your local machine or VPS)
+    curl -s -o /dev/null -w "%{http_code}" \
+      https://freescout-staging.inatechshell.ca/api/conversations
+    Expected: 401 (route exists, auth required) -- NOT 404
+
+  Why artisan module:list first? Confirms the module exists in the image before
+  enabling it. If Api is not listed, run module:list output and report to PM agent.
+
+Timing: Before July 7. Takes ~3 min.
 Linked: T-21, T-23, PT-2
+Diagnosis: confirmed by workflow run #28072003626 (Pre-fix: HTTP 404, exec: HTTP 404)
 ```
 
 ---
