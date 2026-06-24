@@ -3,7 +3,7 @@ import { inngest } from "./client";
 import { STAGING_PROJECT_ID, STAGING_TENANT_ID } from "./freescout-poller";
 import { langfuse } from "../langfuse";
 
-type Severity = "P1" | "P2" | "P3";
+type Urgency = "critical" | "high" | "normal" | "low";
 
 type TriageEventData = {
   ticket_id: string;
@@ -19,17 +19,19 @@ type TicketRow = {
 };
 
 type ClassifyResult = {
-  severity: Severity;
+  urgency: Urgency;
+  category: string;
+  routing: string;
   reasoning: string;
 };
 
 export type TriageResult =
-  | { severity: Severity; reasoning: string }
+  | { urgency: Urgency; category: string; routing: string; reasoning: string }
   | { skipped: true; reason: string };
 
 type InngestCtx = Parameters<Parameters<typeof inngest.createFunction>[1]>[0];
 
-const SEVERITIES = new Set<string>(["P1", "P2", "P3"]);
+const URGENCIES = new Set<string>(["critical", "high", "normal", "low"]);
 
 let _pool: Pool | null = null;
 export function getPool(): Pool {
@@ -51,10 +53,7 @@ function escapeXml(s: string): string {
 
 // Instructions go in the system message; untrusted ticket content goes in the user message.
 // This separation prevents ticket bodies from overriding classification instructions.
-export async function classifySeverity(
-  title: string,
-  body: string | null
-): Promise<ClassifyResult> {
+export async function classifyTicket(title: string, body: string | null): Promise<ClassifyResult> {
   const litellmUrl = process.env.LITELLM_URL;
   const litellmKey = process.env.LITELLM_MASTER_KEY;
   if (!litellmUrl || !litellmKey) {
@@ -70,17 +69,19 @@ export async function classifySeverity(
     body: JSON.stringify({
       model: "meta/llama-3.3-70b-instruct",
       temperature: 0,
-      max_tokens: 150,
+      max_tokens: 200,
       messages: [
         {
           role: "system",
           content: [
-            "Classify support ticket severity. Respond ONLY with valid JSON — no markdown:",
-            '{"severity":"P1"|"P2"|"P3","reasoning":"<one sentence>"}',
+            "Classify this support ticket. Respond ONLY with valid JSON — no markdown:",
+            '{"urgency":"critical"|"high"|"normal"|"low","category":"<topic>","routing":"<team>","reasoning":"<one sentence>"}',
             "",
-            "P1: system down, data loss, security incident",
-            "P2: major degradation, multiple users affected, no workaround",
-            "P3: minor issue, single user, workaround exists",
+            "urgency critical: system down, data loss, security breach",
+            "urgency high: major degradation, multiple users blocked, no workaround",
+            "urgency normal: limited impact, workaround available",
+            "urgency low: minor or cosmetic, single user",
+            "If uncertain: urgency=normal, category=support, routing=support",
           ].join("\n"),
         },
         {
@@ -104,11 +105,26 @@ export async function classifySeverity(
   try {
     // Strip optional markdown code fence that some models add despite instructions.
     const cleaned = raw.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");
-    const parsed = JSON.parse(cleaned) as { severity?: unknown; reasoning?: unknown };
-    const severity = SEVERITIES.has(String(parsed.severity)) ? (parsed.severity as Severity) : "P3";
-    return { severity, reasoning: String(parsed.reasoning ?? "") };
+    const parsed = JSON.parse(cleaned) as {
+      urgency?: unknown;
+      category?: unknown;
+      routing?: unknown;
+      reasoning?: unknown;
+    };
+    const urgency = URGENCIES.has(String(parsed.urgency)) ? (parsed.urgency as Urgency) : "normal";
+    return {
+      urgency,
+      category: String(parsed.category ?? "support"),
+      routing: String(parsed.routing ?? "support"),
+      reasoning: String(parsed.reasoning ?? ""),
+    };
   } catch {
-    return { severity: "P3", reasoning: `parse-failure: ${raw.slice(0, 80)}` };
+    return {
+      urgency: "normal",
+      category: "support",
+      routing: "support",
+      reasoning: `parse-failure: ${raw.slice(0, 80)}`,
+    };
   }
 }
 
@@ -145,20 +161,20 @@ export async function triageOneTicket(
     return { skipped: true, reason: ticket ? ticket.state : "not_found" };
   }
 
-  // 2. Classify severity via LiteLLM; record a LangFuse generation.
+  // 2. Classify via LiteLLM; record a LangFuse generation.
   const trace = langfuse?.trace({
     name: "ticket-triage",
     metadata: { ticket_id: ticketId, project_id: projectId, tenant_id: tenantId },
   });
   const generation = trace?.generation({
-    name: "classify-severity",
+    name: "classify-ticket",
     model: "meta/llama-3.3-70b-instruct",
     input: [{ role: "user", content: ticket.title }],
   });
 
   let classification: ClassifyResult;
   try {
-    classification = await classifySeverity(ticket.title, ticket.body);
+    classification = await classifyTicket(ticket.title, ticket.body);
   } catch (err) {
     generation?.end({ output: String(err) });
     await langfuse?.flushAsync();
@@ -175,8 +191,8 @@ export async function triageOneTicket(
     await updateClient.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
     await updateClient.query("SELECT set_config('app.current_project', $1, true)", [projectId]);
     await updateClient.query(
-      "UPDATE tickets SET state = 'triaged', severity = $1, owner_agent = 'ticket-triage' WHERE id = $2",
-      [classification.severity, ticketId]
+      "UPDATE tickets SET state = 'triaged', urgency = $1, category = $2, routing = $3, owner_agent = 'ticket-triage' WHERE id = $4",
+      [classification.urgency, classification.category, classification.routing, ticketId]
     );
     await updateClient.query("COMMIT");
   } catch (err) {
@@ -186,7 +202,12 @@ export async function triageOneTicket(
     updateClient.release();
   }
 
-  return { severity: classification.severity, reasoning: classification.reasoning };
+  return {
+    urgency: classification.urgency,
+    category: classification.category,
+    routing: classification.routing,
+    reasoning: classification.reasoning,
+  };
 }
 
 // Event-driven: real-time triage when the poller dispatches ops-hub/ticket.triage.

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { classifySeverity, triageOneTicket } from "../ticket-triage";
+import { classifyTicket, triageOneTicket } from "../ticket-triage";
 
 /**
  * T-22 — ticket-triage unit tests.
  *
- * Tests: severity classification (happy path, parse-fallback, HTTP error),
+ * Tests: ticket classification (happy path, parse-fallback, HTTP error),
  * triageOneTicket idempotency guard, full happy-path DB sequence,
  * and LiteLLM error propagation with no UPDATE.
  *
@@ -49,10 +49,10 @@ function mockFetchOk(content: string) {
 }
 
 // ---------------------------------------------------------------------------
-// classifySeverity
+// classifyTicket
 // ---------------------------------------------------------------------------
 
-describe("classifySeverity", () => {
+describe("classifyTicket", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
     vi.stubEnv("LITELLM_URL", "https://litellm.test");
@@ -64,30 +64,40 @@ describe("classifySeverity", () => {
     vi.unstubAllEnvs();
   });
 
-  it("parses a clean JSON response and returns the severity", async () => {
-    mockFetchOk('{"severity":"P2","reasoning":"Login service degraded"}');
-    const result = await classifySeverity("Login broken", "Cannot login at all");
-    expect(result.severity).toBe("P2");
+  it("parses a clean JSON response and returns urgency/category/routing", async () => {
+    mockFetchOk(
+      '{"urgency":"high","category":"auth","routing":"engineering","reasoning":"Login service degraded"}'
+    );
+    const result = await classifyTicket("Login broken", "Cannot login at all");
+    expect(result.urgency).toBe("high");
+    expect(result.category).toBe("auth");
+    expect(result.routing).toBe("engineering");
     expect(result.reasoning).toBe("Login service degraded");
   });
 
   it("parses markdown-fenced JSON (model ignores format instructions)", async () => {
-    mockFetchOk('```json\n{"severity":"P1","reasoning":"Full outage"}\n```');
-    const result = await classifySeverity("Site down", null);
-    expect(result.severity).toBe("P1");
+    mockFetchOk(
+      '```json\n{"urgency":"critical","category":"infrastructure","routing":"engineering","reasoning":"Full outage"}\n```'
+    );
+    const result = await classifyTicket("Site down", null);
+    expect(result.urgency).toBe("critical");
   });
 
-  it("falls back to P3 when the model returns non-JSON", async () => {
+  it("falls back to urgency=normal, category=support, routing=support on non-JSON", async () => {
     mockFetchOk("I cannot classify this ticket.");
-    const result = await classifySeverity("Weird ticket", null);
-    expect(result.severity).toBe("P3");
+    const result = await classifyTicket("Weird ticket", null);
+    expect(result.urgency).toBe("normal");
+    expect(result.category).toBe("support");
+    expect(result.routing).toBe("support");
     expect(result.reasoning).toContain("parse-failure");
   });
 
-  it("falls back to P3 when severity field is an unknown value", async () => {
-    mockFetchOk('{"severity":"P4","reasoning":"Unknown severity"}');
-    const result = await classifySeverity("Odd ticket", null);
-    expect(result.severity).toBe("P3");
+  it("falls back to urgency=normal when urgency field is an unknown value", async () => {
+    mockFetchOk(
+      '{"urgency":"critical-plus","category":"ui","routing":"support","reasoning":"Unknown"}'
+    );
+    const result = await classifyTicket("Odd ticket", null);
+    expect(result.urgency).toBe("normal");
   });
 
   it("throws on a non-OK HTTP response", async () => {
@@ -99,13 +109,13 @@ describe("classifySeverity", () => {
         text: async () => "Internal Server Error",
       })
     );
-    await expect(classifySeverity("Test", null)).rejects.toThrow("LiteLLM 500");
+    await expect(classifyTicket("Test", null)).rejects.toThrow("LiteLLM 500");
   });
 
   it("throws when LITELLM_URL is not set", async () => {
     vi.unstubAllEnvs();
     vi.stubEnv("LITELLM_MASTER_KEY", "test-key");
-    await expect(classifySeverity("Test", null)).rejects.toThrow("not configured");
+    await expect(classifyTicket("Test", null)).rejects.toThrow("not configured");
   });
 });
 
@@ -142,23 +152,27 @@ describe("triageOneTicket", () => {
       { rows: [] }, // COMMIT
     ]);
     const pool = makePool(client);
-    mockFetchOk('{"severity":"P2","reasoning":"Login service degraded for multiple users"}');
+    mockFetchOk(
+      '{"urgency":"high","category":"auth","routing":"engineering","reasoning":"Login service degraded for multiple users"}'
+    );
 
     const result = await triageOneTicket(pool, "t1", "proj-1", "tenant-1");
 
     expect(result).toEqual({
-      severity: "P2",
+      urgency: "high",
+      category: "auth",
+      routing: "engineering",
       reasoning: "Login service degraded for multiple users",
     });
 
-    // Verify UPDATE was called with the correct severity and ticket ID.
+    // Verify UPDATE was called with the correct urgency/category/routing/id.
     const queryCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [
       string,
       string[]?,
     ][];
     const updateCall = queryCalls.find(([q]) => q.includes("UPDATE tickets"));
     expect(updateCall).toBeTruthy();
-    expect(updateCall![1]).toEqual(["P2", "t1"]);
+    expect(updateCall![1]).toEqual(["high", "auth", "engineering", "t1"]);
   });
 
   it("skips a ticket that is already triaged (idempotency guard)", async () => {
@@ -197,7 +211,7 @@ describe("triageOneTicket", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("falls back to P3 on malformed LLM response but still updates state", async () => {
+  it("falls back to urgency=normal on malformed LLM response but still updates state", async () => {
     const client = makeClient([
       { rows: [] },
       { rows: [] },
@@ -215,7 +229,9 @@ describe("triageOneTicket", () => {
 
     const result = await triageOneTicket(pool, "t3", "proj-1", "tenant-1");
 
-    expect((result as { severity: string }).severity).toBe("P3");
+    expect((result as { urgency: string }).urgency).toBe("normal");
+    expect((result as { category: string }).category).toBe("support");
+    expect((result as { routing: string }).routing).toBe("support");
     expect((result as { reasoning: string }).reasoning).toContain("parse-failure");
 
     const queryCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [
@@ -224,7 +240,7 @@ describe("triageOneTicket", () => {
     ][];
     const updateCall = queryCalls.find(([q]) => q.includes("UPDATE tickets"));
     expect(updateCall).toBeTruthy();
-    expect(updateCall![1]![0]).toBe("P3");
+    expect(updateCall![1]).toEqual(["normal", "support", "support", "t3"]);
   });
 
   it("propagates LiteLLM HTTP errors and does not UPDATE the ticket", async () => {
