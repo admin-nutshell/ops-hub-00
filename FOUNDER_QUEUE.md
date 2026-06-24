@@ -49,59 +49,90 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-32 — [Tech Lead] Add OPS_HUB_APP_LOGIN_URL env var to Coolify ops-hub-app
+### FQ-35 — BLOCKING: [Tech Lead] Run T-22 migration + add LITELLM env vars to Coolify ops-hub-app
 
 ```
-[Tech Lead] T-21 FreeScout poller needs a PostgreSQL connection string to connect as
-  ops_hub_app_login. This is the non-superuser connectable login role created in T-12
-  (PR #69) that enforces RLS without bypassing it.
+BLOCKING: [Tech Lead] Two actions required before T-22 can be validated end-to-end.
 
-Action:
-  1. Get the ops_hub_app_login password from Supabase Vault (you stored it in T-12):
-       SELECT internal.get_secret('ops_hub_app_password');
-     (run in Supabase SQL Editor as the postgres role)
-  2. In Coolify: ops-hub-app → Environment → add env var:
-       Key:   OPS_HUB_APP_LOGIN_URL
-       Value: postgresql://ops_hub_app_login.<SUPABASE_PROJECT_REF>:<PASSWORD>@aws-1-ca-central-1.pooler.supabase.com:5432/postgres?sslmode=require
-       (replace <SUPABASE_PROJECT_REF> with yocoljutbiizdbfraapx and <PASSWORD> from step 1)
-  3. Redeploy ops-hub-app after adding the env var.
+--- Action 1: Run T-22 migration in Supabase SQL Editor (same pattern as FQ-31) ---
+File: supabase/migrations/20260624000000_t22_ticket_triage_columns.sql
+  Adds three columns to the tickets table:
+    - urgency text check (critical/high/normal/low)
+    - category text
+    - routing text
+  Idempotent (IF NOT EXISTS / IF NOT EXISTS guards) — safe to re-run.
+  Do this BEFORE deploying the app; the triage UPDATE will fail at runtime without these columns.
 
-Impact if delayed: T-21 Inngest cron cannot connect to Supabase; FreeScout polling won't start.
-  T-22 is unblocked (it uses LiteLLM, not this DB path).
-Linked: T-21 (PR feat/t21-supabase-polling), T-12, DECISIONS.md 2026-06-23
+--- Action 2: Add env vars in Coolify → ops-hub-app → Environment ---
+
+  Key:   LITELLM_URL
+  Value: https://litellm-staging.inatechshell.ca
+  (the LiteLLM base URL — no trailing slash; the app appends /chat/completions)
+
+  Key:   LITELLM_MASTER_KEY
+  Value: <the LITELLM_MASTER_KEY value already stored in Coolify litellm-staging env vars>
+  (same key used by litellm-staging — do not generate a new one)
+
+Then: Redeploy ops-hub-app (or restart the container) so the new values are picked up.
+
+Note: LITELLM_MASTER_KEY is already set in the litellm-staging service in Coolify.
+  Copy it from there — do not paste in this file; store it only in Coolify env vars.
+
+Verify: check Inngest dashboard after redeploy. The next sweepNewTickets cron (fires every
+  5 min) will pick up the 2 existing tickets (freescout_conversation_id: 6 + 7, state='new')
+  and triage them. In the tickets table, confirm state='triaged' and urgency/category/routing
+  are populated (e.g. urgency='high', category='auth', routing='engineering').
+
+Impact if delayed: all ticket triage attempts fail; T-22 cannot be validated end-to-end.
+  The two existing tickets will remain at state='new' until both actions are complete.
+Linked: T-22 (PR #141), T-08 (LiteLLM done), DECISIONS.md 2026-06-23
+```
+
+---
+
+### ~~FQ-32 — [Tech Lead] Add OPS_HUB_APP_LOGIN_URL env var to Coolify ops-hub-app~~ — SUPERSEDED by FQ-33
+
+```
+RESOLVED (env var added) but with incorrect username format — missing project ref suffix.
+Supabase session pooler requires ops_hub_app_login.yocoljutbiizdbfraapx as the username,
+not ops_hub_app_login. pollFreeScout is failing with ENOIDENTIFIER.
+See FQ-33 for the corrected value.
 ```
 
 ---
 
-### FQ-31 — [Tech Lead] Apply T-21 migration in Supabase SQL Editor
+### ~~FQ-33 — BLOCKING: [Tech Lead] Fix OPS_HUB_APP_LOGIN_URL — username missing project ref suffix~~ — RESOLVED
 
 ```
-[Tech Lead] T-21 requires a new migration that: (1) adds freescout_conversation_id column
-  to tickets for dedup, (2) seeds a staging support tenant, (3) grants SELECT on FreeScout
-  tables to ops_hub_app.
-
-Action: In Supabase SQL Editor (as service_role / postgres user), run:
-  supabase/migrations/20260623180000_t21_freescout_intake.sql
-  (copy-paste the file contents, same pattern as the T-11 runbook)
-
-Verify after running:
-  SELECT column_name FROM information_schema.columns
-    WHERE table_name = 'tickets' AND column_name = 'freescout_conversation_id';
-  -- should return 1 row
-
-  SELECT id, name FROM tenants WHERE id = '00000000-0000-0000-0000-000000000010';
-  -- should return staging-support tenant
-
-  SELECT grantee, privilege_type FROM information_schema.role_table_grants
-    WHERE table_name = 'conversations' AND grantee = 'ops_hub_app';
-  -- should return SELECT privilege
-
-Impact if delayed: T-21 poller will fail on startup (missing column, missing GRANT).
-  T-22 is unblocked (does not depend on this migration).
-Linked: T-21 (PR feat/t21-supabase-polling), DECISIONS.md 2026-06-23
+RESOLVED: [Founder] 2026-06-23 — OPS_HUB_APP_LOGIN_URL updated with correct
+  .yocoljutbiizdbfraapx suffix. pollFreeScout now connects successfully.
+  T-21 verified end-to-end: two tickets ingested (freescout_conversation_id: 6 + 7).
+  Linked: T-21 (PR #140), FQ-32 (superseded)
 ```
 
 ---
+
+### ~~FQ-34 — BLOCKING: [Tech Lead] Run GRANT as freescout_user via docker exec~~ — RESOLVED
+
+```
+RESOLVED: [Founder] 2026-06-23 — GRANT SELECT ON conversations, threads TO ops_hub_app
+  executed via docker exec artisan tinker. pollFreeScout can now SELECT from both tables.
+  T-21 verified end-to-end.
+  Linked: T-21 (PR #140), FQ-31, DECISIONS.md 2026-06-23
+```
+
+---
+
+### ~~FQ-31 — [Tech Lead] Apply T-21 migration in Supabase SQL Editor~~ — RESOLVED
+
+```
+RESOLVED: [Founder] 2026-06-23 — T-21 migration applied (freescout_conversation_id column
+  added to tickets; staging-support tenant seeded). T-21 verified end-to-end.
+  Linked: T-21 (PR #140)
+```
+
+---
+
 
 ### FQ-30 — [Tech Lead] Remove FREESCOUT_API_KEY from Coolify ops-hub-app env vars (cleanup)
 

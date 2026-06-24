@@ -502,3 +502,95 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Events: step.sendEvent dispatches ops-hub/ticket.triage per inserted row; never dispatches on conflict.
   Founder actions required: FQ-31 (apply migration), FQ-32 (add OPS_HUB_APP_LOGIN_URL to Coolify).
 ```
+
+### 2026-06-23 — T-21 runtime failure: ENOIDENTIFIER — Supabase pooler username format
+
+```
+2026-06-23 [Tech Lead] pollFreeScout cron firing every 60s but failing at DB connect:
+  "(ENOIDENTIFIER) no tenant identifier provided (external_id or sni_host)"
+  Root cause: Supabase session pooler (aws-1-ca-central-1.pooler.supabase.com:5432)
+  routes by tenant using the username suffix — the username MUST include the project ref
+  as a dot-suffix: ops_hub_app_login.yocoljutbiizdbfraapx.
+  FQ-32 was completed with username ops_hub_app_login (no suffix) — pooler cannot identify
+  the Supabase project and rejects the connection.
+  Fix: update OPS_HUB_APP_LOGIN_URL in Coolify ops-hub-app env vars; username must be
+  ops_hub_app_login.yocoljutbiizdbfraapx. No code change required.
+  This same format requirement applies to all Supabase session/transaction pooler connections —
+  freescout_user also uses this pattern (freescout_user.yocoljutbiizdbfraapx) as confirmed
+  in freescout-redeploy-v3.yml. FQ-33 filed (BLOCKING).
+```
+
+### 2026-06-23 — T-21 second blocker: GRANT must be issued by freescout_user (table owner)
+
+```
+2026-06-23 [Tech Lead] ops_hub_app cannot SELECT on conversations/threads. Root cause:
+  FreeScout creates all its tables via Laravel migrations running as freescout_user — these
+  tables are owned by freescout_user, not postgres. In Supabase, postgres cannot GRANT
+  privileges on tables it does not own (the ALTER DEFAULT PRIVILEGES in the T-11 migration
+  covers tables created by postgres, not by freescout_user).
+  Failed approaches:
+    SQL Editor GRANT as postgres: silently fails or errors (ownership wall).
+    SET ROLE freescout_user in SQL Editor: blocked (Supabase does not allow role switching
+    to non-superuser roles in the SQL Editor environment).
+    ALTER TABLE owner: blocked (Supabase SQL Editor cannot reassign table ownership).
+    Two-pool approach (rejected): giving ops-hub app freescout_user credentials would
+    provide full read/write access to all FreeScout PII tables — security regression;
+    violates least-privilege posture; adds a second env var without functional benefit.
+  Chosen fix: owner-GRANT via docker exec artisan tinker.
+    freescout_user is the table owner → can issue GRANT unconditionally.
+    The FreeScout container runs as freescout_user and can execute raw SQL via artisan tinker.
+    GRANT is targeted: only conversations and threads (the two tables T-21 actually reads).
+    customers and mailboxes excluded — ops-hub does not need PII access for polling.
+  Migration updated: GRANT statements removed (they failed from postgres); IF NOT EXISTS
+  added to ALTER TABLE (idempotent in case prior SQL Editor run partially applied).
+  FQ-34 filed (BLOCKING): founder runs docker exec on FreeScout container to issue GRANT.
+```
+
+### 2026-06-23 — T-21 verified; T-22 design: dual-trigger triage + cron sweep
+
+```
+2026-06-23 [Tech Lead] T-21 DONE. pollFreeScout end-to-end verified by founder:
+  FQ-31/33/34 all resolved. Two tickets confirmed in Supabase:
+    freescout_conversation_id: 6 — "FreeScout Test Email"
+    freescout_conversation_id: 7 — "TTS app redirecting HTTP"
+  Dedup (ON CONFLICT DO NOTHING) confirmed working.
+
+2026-06-23 [Tech Lead] T-22 ticket-triage design decisions:
+
+  Two Inngest functions in src/inngest/ticket-triage.ts:
+    triageTicket (id: "ticket-triage"): event-driven on ops-hub/ticket.triage.
+      Handles real-time triage for tickets dispatched by the poller.
+    sweepNewTickets (id: "sweep-new-tickets"): cron */5 * * * *.
+      Finds all tickets WHERE state='new' LIMIT 20, dispatches ticket.triage events.
+      Rationale: the two tickets verified above pre-date T-22 deploy; their events
+      already fired with no listener and are gone. The sweep picks them up within 5 min.
+      Also covers any future events missed during T-22 downtime.
+
+  Prompt injection defense: system message carries classification instructions;
+    user message carries the delimited ticket content. XML-escapes < and & in
+    ticket body/title before wrapping in <ticket_title>/<ticket_body> delimiters.
+    Separation at the API boundary is stronger than delimiters-only-in-user-message.
+
+  Severity scope: T-22 writes severity (P1/P2/P3) to tickets.severity column.
+    WORK.md exit criteria mention "category, urgency, routing intent" but the tickets
+    schema has no such columns — severity is the only structured triage field.
+    Scope narrowed to match schema. Future sprint adds routing fields if required.
+
+  LangFuse tracing: trace("ticket-triage") + generation("classify-severity") per ticket.
+    generation.end() captures the ClassifyResult object as output.
+    Null-guarded: langfuse is null in CI (no keys) → all trace calls are no-ops.
+
+  Idempotency: triageOneTicket skips tickets where state != 'new'.
+    Inngest retries on transient failures (LiteLLM 429, DB blip) safely re-enter
+    after the ticket updates to 'triaged' — second attempt sees state='triaged' and exits.
+
+  Parse-fail fallback: if LLM returns non-JSON, severity defaults to P3.
+    This prevents a classification failure from blocking ticket intake indefinitely.
+
+  Pool per-module: ticket-triage.ts exports its own getPool/_resetPool.
+    Separate pool instance from freescout-poller.ts — same credentials, separate lifecycle.
+    max:2 matches the poller; T-22 is called at most once per ticket.triage event.
+
+  env vars required: LITELLM_URL + LITELLM_MASTER_KEY in Coolify ops-hub-app.
+    FQ-35 filed (BLOCKING). End-to-end triage cannot be validated until these are added.
+```

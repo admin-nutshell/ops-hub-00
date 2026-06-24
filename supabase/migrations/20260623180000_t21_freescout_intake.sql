@@ -11,7 +11,8 @@
 -- Nullable: only set on FreeScout-sourced tickets.
 -- bigint: matches FreeScout's conversations.id (bigserial in PostgreSQL / bigint unsigned in Laravel).
 -- UNIQUE: INSERT ... ON CONFLICT (freescout_conversation_id) DO NOTHING is the dedup guard.
-alter table tickets add column freescout_conversation_id bigint unique;
+-- IF NOT EXISTS: idempotent in case a prior SQL Editor run partially applied this migration.
+alter table tickets add column if not exists freescout_conversation_id bigint unique;
 
 -- ---------------------------------------------------------------------------
 -- Staging support tenant (dev/staging only)
@@ -29,14 +30,8 @@ values (
 on conflict (id) do nothing;
 
 -- ---------------------------------------------------------------------------
--- Grant SELECT on FreeScout's tables to the app role
+-- GRANT SELECT on FreeScout tables
 -- ---------------------------------------------------------------------------
--- FreeScout creates its tables as freescout_user (not postgres), so the
--- ALTER DEFAULT PRIVILEGES in the initial RLS migration does not cover them.
--- These GRANTs must be explicit.
--- Table names confirmed against FreeScout v1.x Laravel migrations
--- (nfrastack/freescout:latest, public schema on the same Supabase instance).
-grant select on conversations to ops_hub_app;
-grant select on threads      to ops_hub_app;
-grant select on customers    to ops_hub_app;
-grant select on mailboxes    to ops_hub_app;
+-- NOT handled here. freescout_user owns conversations/threads (FreeScout created them);
+-- postgres cannot GRANT on tables it does not own in this Supabase setup.
+-- See FQ-34: founder runs the GRANT as freescout_user via docker exec artisan tinker.
