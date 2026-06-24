@@ -49,40 +49,18 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-30 — BLOCKING: [Production Manager] Enable FreeScout Api module via docker exec
+### FQ-30 — [Tech Lead] Remove FREESCOUT_API_KEY from Coolify ops-hub-app env vars (cleanup)
 
 ```
-BLOCKING: [Production Manager] One 3-minute VPS action needed before Sprint 2 (July 7).
-  FREESCOUT_API_KEY is already set in Coolify ops-hub-app. But GET /api/conversations
-  returns HTTP 404 — the FreeScout Api module is disabled (routes not registered).
-  Coolify has no exec API (POST /execute returns 404, confirmed workflow run #28072003626).
-  Fix requires docker exec on the Coolify VPS. One-time; persists in Supabase DB.
+[Tech Lead] Sprint 2 is now using Supabase direct polling (DECISIONS.md 2026-06-23) —
+  the FreeScout REST API is no longer part of the architecture. FREESCOUT_API_KEY was
+  added to Coolify ops-hub-app env vars for the now-abandoned PT-2 approach and should
+  be removed.
 
-Action -- Enable FreeScout Api module on Coolify VPS:
-  SSH to VPS (or use Coolify server terminal), then:
+Action: Coolify dashboard -> ops-hub-app -> Environment -> delete FREESCOUT_API_KEY.
 
-  Step 1: Find the FreeScout container
-    docker ps --filter name=freescout --format "{{.ID}} {{.Names}}"
-
-  Step 2: Enable Api module (use container ID from step 1)
-    CONTAINER=<container-id-from-step-1>
-    docker exec $CONTAINER php /www/html/artisan module:list
-    docker exec $CONTAINER php /www/html/artisan module:enable Api
-    docker exec $CONTAINER php /www/html/artisan migrate --force
-    docker exec $CONTAINER php /www/html/artisan cache:clear
-    docker exec $CONTAINER php /www/html/artisan route:clear
-
-  Step 3: Verify (run from your local machine or VPS)
-    curl -s -o /dev/null -w "%{http_code}" \
-      https://freescout-staging.inatechshell.ca/api/conversations
-    Expected: 401 (route exists, auth required) -- NOT 404
-
-  Why artisan module:list first? Confirms the module exists in the image before
-  enabling it. If Api is not listed, run module:list output and report to PM agent.
-
-Timing: Before July 7. Takes ~3 min.
-Linked: T-21, T-23, PT-2
-Diagnosis: confirmed by workflow run #28072003626 (Pre-fix: HTTP 404, exec: HTTP 404)
+Non-blocking. No urgency — can be done at next convenience before Sprint 2 closes.
+Linked: DECISIONS.md 2026-06-23 (T-21 Supabase direct polling pivot)
 ```
 
 ---

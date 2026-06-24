@@ -1,0 +1,90 @@
+name: Revert FreeScout image to nfrastack/freescout:latest
+
+# One-time cleanup after chore/supabase-polling-pivot.
+# The custom GHCR image (ghcr.io/admin-nutshell/ops-hub-00/freescout:latest) was built
+# only for the now-abandoned webhook/API module approach. This workflow reverts
+# freescout-staging back to the standard nfrastack/freescout:latest image.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+
+jobs:
+  revert-image:
+    name: Revert freescout-staging to nfrastack/freescout:latest
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    steps:
+      - name: Get freescout-staging UUID
+        id: app
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          echo "List applications -> HTTP $HTTP"
+          [ "$HTTP" != "200" ] && { echo "ERROR: /applications returned HTTP $HTTP"; cat /tmp/apps.json; exit 1; }
+
+          UUID=$(jq -r '.[] | select(.name == "freescout-staging") | .uuid' /tmp/apps.json 2>/dev/null)
+          [ -z "$UUID" ] || [ "$UUID" = "null" ] && { echo "ERROR: freescout-staging not found"; exit 1; }
+          echo "freescout-staging UUID: $UUID"
+
+          CURRENT=$(jq -r '.[] | select(.name == "freescout-staging") | .docker_registry_image_name // "(not set)"' /tmp/apps.json 2>/dev/null)
+          echo "Current image: $CURRENT"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      - name: PATCH image back to nfrastack/freescout:latest
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch_resp.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID" \
+            -d '{"docker_registry_image_name":"nfrastack/freescout","docker_registry_image_tag":"latest"}')
+          echo "PATCH -> HTTP $HTTP"
+          jq . /tmp/patch_resp.json 2>/dev/null || cat /tmp/patch_resp.json
+          [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ] && { echo "ERROR: PATCH failed (HTTP $HTTP)"; exit 1; }
+          echo "Image set to nfrastack/freescout:latest"
+
+      - name: Stop freescout-staging
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/stop_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/stop")
+          echo "Stop -> HTTP $HTTP"
+          sleep 5
+
+      - name: Start freescout-staging (pulls nfrastack/freescout:latest)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/start_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/start")
+          echo "Start -> HTTP $HTTP"
+          jq . /tmp/start_resp.json 2>/dev/null || cat /tmp/start_resp.json
+
+      - name: Wait for container to start (60s)
+        run: |
+          echo "Waiting 60s for FreeScout to initialize..."
+          sleep 60
+
+      - name: Verify FreeScout health
+        run: |
+          set +e
+          HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 \
+            "https://freescout-staging.inatechshell.ca")
+          set -e
+          echo "FreeScout health -> HTTP $HTTP"
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "302" ] || [ "$HTTP" = "301" ]; then
+            echo "FreeScout responding (HTTP $HTTP) -- revert complete"
+          else
+            echo "HTTP $HTTP -- container may still be initializing; check Coolify logs"
+          fi
