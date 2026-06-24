@@ -22,7 +22,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 1 | GitHub repo with full plan + workspace files | Founder | ✅ Done (2026-06-18) |
 | 2 | Coolify projects provisioned: `ops-hub-staging` and `ops-hub-prod` | **Founder** | ✅ Done (2026-06-20) — 34 env vars configured in staging; 6 GitHub secrets set |
 | 3 | Supabase project for Ops Hub (pgvector enabled) | **Founder** | ✅ Done (2026-06-18) |
-| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ✅ **Done (2026-06-22).** T-07 Inngest: synced at `https://ops-hub-staging.inatechshell.ca/api/inngest`; registered in Inngest Production. T-08 LiteLLM: deployed (run #27887445367). T-09 LangFuse: `health-check` trace verified in LangFuse Cloud US (2026-06-22). EU endpoint bug fixed (PR #86). |
+| 4 | Inngest + LangFuse + LiteLLM running in staging + prod | Prod Manager + Data Eng | ✅ **Done (2026-06-23).** T-07 Inngest: synced at `https://ops-hub-staging.inatechshell.ca/api/inngest`; registered in Inngest Production. T-08 LiteLLM: `litellm-staging.inatechshell.ca` live; NVIDIA NIM `meta/llama-3.3-70b-instruct` registered in DB (run #28043673055). T-09 LangFuse: `health-check` trace verified in LangFuse Cloud US (2026-06-22). |
 | 5 | All 11 agent specs loaded; agents respond when invoked | PM | ✅ Done (`.claude/agents/` committed 2026-06-18) |
 | 6 | FreeScout deployed and connected as ticket intake | Production Manager | ✅ **Done (2026-06-23).** FreeScout live at `https://freescout-staging.inatechshell.ca`. Admin: `support@inatechshell.ca`. DB connected (Supabase Supavisor, `freescout_user`), migrations ran, nfrastack/freescout v2.1.2. FQ-24 resolved by founder (domain set in Coolify UI). |
 | 7 | CI/CD pipeline active: lint + tests + eval gate + staging auto-deploy | Tech Lead | ✅ **Done (2026-06-22).** T-15 + T-17 complete. 4 required checks: Lint & Type Check, Unit Tests, Security Scan, Eval Gate. Staging auto-deploy on merge via `main-deploy.yml`. |
@@ -153,11 +153,9 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 ### Production Manager
 **🟢 ACTIVE (2026-06-21)**
 
-**T-08: LiteLLM — ✅ DEPLOYED** (run #27887445367 + re-confirmed healthy). `litellm-staging` running at `http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io`.
+**T-08: LiteLLM — ✅ DONE (2026-06-23).** `litellm-staging` live at `https://litellm-staging.inatechshell.ca`. NVIDIA NIM model `meta/llama-3.3-70b-instruct` registered in LiteLLM DB (run #28043673055: POST /model/new HTTP 200, verified in /model/info: 1 entry). Root cause of 7+ hr 502: Traefik `loadbalancer.server.port=80` while LiteLLM listens on 4000. Fix: decoded base64 custom_labels, sed-replaced port refs, re-encoded, PATCHed + stop/start container recreation (PRs #119–#125). M1 criterion #4 complete. FQ-27 resolved.
 
 **T-10: FreeScout — ✅ DONE (2026-06-23).** `https://freescout-staging.inatechshell.ca` live. Admin: `support@inatechshell.ca`. DB connected (Supabase Supavisor `freescout_user.yocoljutbiizdbfraapx`), migrations ran, admin user created. FQ-24 resolved: founder set FQDN in Coolify UI — Caddy now routes the custom domain correctly.
-
-**T-08 LiteLLM: Traefik label override in flight (2026-06-23, PR #122).** Root cause confirmed: Traefik `loadbalancer.server.port=80` on running container (LiteLLM listens on 4000). `fix-litellm-port.yml` PATCH + API restart preserved old container labels — container must be *recreated*. `fix-litellm-traefik-label.yml` (PR #122 ✅ merged): sets `custom_labels` with explicit `traefik.*.loadbalancer.server.port=4000`, then stop → start cycle to force container recreation. Steps 1–6 ✅ (labels set, container stopped + started). Health poll running — NVIDIA NIM registration dispatched automatically on success.
 
 **ADR-0001 sign-off — now eligible.** T-08 + T-10 both live. Will sign off when ADR-0001 §6 is reviewed against current VPS utilisation.
 

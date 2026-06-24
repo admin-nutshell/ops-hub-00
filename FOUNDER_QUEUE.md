@@ -49,20 +49,23 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### ~~FQ-27 — BLOCKING: litellm-staging 502 — Traefik port mismatch~~ — IN FLIGHT (no founder action needed)
+### ~~FQ-27 — BLOCKING: litellm-staging 502 — Traefik port mismatch~~ — RESOLVED
 
 ```
-UPDATE 2026-06-23: [Production Manager] No founder action required.
-  Automated fix deployed (PR #122, fix-litellm-traefik-label.yml):
-  - custom_labels set with traefik.*.loadbalancer.server.port=4000
-  - Container stop → start cycle forced container recreation with new labels
-  - Steps 1–6 ✅ complete; health poll in progress
-  - configure-litellm-nvidia.yml auto-dispatches on successful health
-
-  If litellm-staging is still 502 after this workflow completes (~15 min from now),
-  Production Manager will file a new FQ. No manual Coolify UI action needed.
-
-  Linked: T-08, PRs #119–#122, configure-litellm-nvidia.yml
+RESOLVED: [Production Manager] 2026-06-23 — Fully automated fix. No founder action taken.
+  Root cause: Coolify deployed litellm-staging with Traefik loadbalancer.server.port=80;
+    LiteLLM listens on port 4000. Every request hit port 80 (nothing) → 502.
+  Fix path (PRs #119–#125):
+    1. Decoded base64 custom_labels from Coolify API
+    2. Replaced port=80 → port=4000 in Traefik + Caddy label refs (sed)
+    3. Re-encoded as base64 — PATCH /applications/{uuid} HTTP 200
+    4. POST /stop → POST /start: container recreated with correct Traefik labels
+    5. Health poll: HTTP 200 ✅ (litellm-staging.inatechshell.ca reachable)
+    6. configure-litellm-nvidia.yml auto-dispatched and succeeded:
+       POST /model/new HTTP 200 — meta/llama-3.3-70b-instruct registered in LiteLLM DB
+       GET /model/info — 1 entry confirmed ✅
+  T-08 ✅ DONE. M1 criterion #4 complete.
+  Linked: T-08, PRs #119–#125, runs #28043591139 + #28043673055
 ```
 
 ---
