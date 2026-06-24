@@ -7,11 +7,11 @@
 ## Current sprint
 
 **Sprint:** Sprint 2 — AI Triage Pipeline
-**Sprint goal:** Wire and validate the full AI ticket pipeline: FreeScout webhook → Inngest → LiteLLM triage → auto-response → FreeScout reply → Supabase state = resolved. Close M1 criteria #11 (incident drill + post-mortem) and #12 (DNC tickets flowing). Fully complete M1.
+**Sprint goal:** Wire and validate the full AI ticket pipeline: FreeScout API polling → Inngest → LiteLLM triage → auto-response → FreeScout reply → Supabase state = resolved. Close M1 criteria #11 (incident drill + post-mortem) and #12 (DNC tickets flowing). Fully complete M1.
 **Sprint window:** July 7 – July 18, 2026 (2 weeks)
 **Target milestone:** M1 complete (criteria #11 + #12 + #13)
 
-**Critical path:** T-21 webhook receiver → T-22 ticket-triage function → T-23 ticket-respond function → T-26 incident drill (#11) → T-27 DNC flow (#12)
+**Critical path:** T-21 API polling cron → T-22 ticket-triage function → T-23 ticket-respond function → T-26 incident drill (#11) → T-27 DNC flow (#12)
 
 ---
 
