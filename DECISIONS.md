@@ -545,3 +545,52 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   added to ALTER TABLE (idempotent in case prior SQL Editor run partially applied).
   FQ-34 filed (BLOCKING): founder runs docker exec on FreeScout container to issue GRANT.
 ```
+
+### 2026-06-23 — T-21 verified; T-22 design: dual-trigger triage + cron sweep
+
+```
+2026-06-23 [Tech Lead] T-21 DONE. pollFreeScout end-to-end verified by founder:
+  FQ-31/33/34 all resolved. Two tickets confirmed in Supabase:
+    freescout_conversation_id: 6 — "FreeScout Test Email"
+    freescout_conversation_id: 7 — "TTS app redirecting HTTP"
+  Dedup (ON CONFLICT DO NOTHING) confirmed working.
+
+2026-06-23 [Tech Lead] T-22 ticket-triage design decisions:
+
+  Two Inngest functions in src/inngest/ticket-triage.ts:
+    triageTicket (id: "ticket-triage"): event-driven on ops-hub/ticket.triage.
+      Handles real-time triage for tickets dispatched by the poller.
+    sweepNewTickets (id: "sweep-new-tickets"): cron */5 * * * *.
+      Finds all tickets WHERE state='new' LIMIT 20, dispatches ticket.triage events.
+      Rationale: the two tickets verified above pre-date T-22 deploy; their events
+      already fired with no listener and are gone. The sweep picks them up within 5 min.
+      Also covers any future events missed during T-22 downtime.
+
+  Prompt injection defense: system message carries classification instructions;
+    user message carries the delimited ticket content. XML-escapes < and & in
+    ticket body/title before wrapping in <ticket_title>/<ticket_body> delimiters.
+    Separation at the API boundary is stronger than delimiters-only-in-user-message.
+
+  Severity scope: T-22 writes severity (P1/P2/P3) to tickets.severity column.
+    WORK.md exit criteria mention "category, urgency, routing intent" but the tickets
+    schema has no such columns — severity is the only structured triage field.
+    Scope narrowed to match schema. Future sprint adds routing fields if required.
+
+  LangFuse tracing: trace("ticket-triage") + generation("classify-severity") per ticket.
+    generation.end() captures the ClassifyResult object as output.
+    Null-guarded: langfuse is null in CI (no keys) → all trace calls are no-ops.
+
+  Idempotency: triageOneTicket skips tickets where state != 'new'.
+    Inngest retries on transient failures (LiteLLM 429, DB blip) safely re-enter
+    after the ticket updates to 'triaged' — second attempt sees state='triaged' and exits.
+
+  Parse-fail fallback: if LLM returns non-JSON, severity defaults to P3.
+    This prevents a classification failure from blocking ticket intake indefinitely.
+
+  Pool per-module: ticket-triage.ts exports its own getPool/_resetPool.
+    Separate pool instance from freescout-poller.ts — same credentials, separate lifecycle.
+    max:2 matches the poller; T-22 is called at most once per ticket.triage event.
+
+  env vars required: LITELLM_URL + LITELLM_MASTER_KEY in Coolify ops-hub-app.
+    FQ-35 filed (BLOCKING). End-to-end triage cannot be validated until these are added.
+```

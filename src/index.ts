@@ -5,11 +5,15 @@ import { serve } from "inngest/node";
 import { inngest } from "./inngest/client";
 import { helloWorld } from "./inngest/functions";
 import { pollFreeScout } from "./inngest/freescout-poller";
+import { triageTicket, sweepNewTickets } from "./inngest/ticket-triage";
 import { emitTrace } from "./langfuse";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
-const inngestHandler = serve({ client: inngest, functions: [helloWorld, pollFreeScout] });
+const inngestHandler = serve({
+  client: inngest,
+  functions: [helloWorld, pollFreeScout, triageTicket, sweepNewTickets],
+});
 
 export const server = http.createServer((req, res) => {
   if (req.url?.startsWith("/api/inngest")) {
