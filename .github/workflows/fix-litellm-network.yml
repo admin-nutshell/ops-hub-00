@@ -175,50 +175,60 @@ jobs:
               || { echo "Attempt $i: HTTP $HTTP — waiting"; sleep 10; }
           done
 
-      # ── 4. Clean up duplicate LITELLM_URL env vars on ops-hub-app ────────────
-      - name: List and delete all existing LITELLM_URL env vars
-        id: envs
-        run: |
-          APP_UUID="${{ steps.app.outputs.uuid }}"
-          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$APP_UUID/envs")
-          echo "=== Current LITELLM_URL env var(s) (HTTP $HTTP) ==="
-          jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' \
-            /tmp/envs.json 2>/dev/null
-
-          # Delete ALL existing LITELLM_URL entries
-          UUIDS=$(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null || true)
-          for eu in $UUIDS; do
-            echo "Deleting env var $eu ..."
-            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
-              -H "Authorization: Bearer $TOKEN" \
-              "$COOLIFY_BASE/applications/$APP_UUID/envs/$eu")
-            echo "  DELETE → HTTP $DEL"
-          done
-
-      # ── 5. Set LITELLM_URL to most likely internal container name ─────────────
-      # Coolify v4 generateApplicationContainerName() returns the app UUID as the
-      # container name. After network connect, Docker DNS resolves it on "coolify".
-      - name: Set LITELLM_URL = http://h12xz8887fxvbvjts2hac8if:4000
+      # ── 4+5. Upsert LITELLM_URL (PATCH in-place + delete extras, never append) ──
+      - name: Upsert LITELLM_URL on ops-hub-app
         run: |
           APP_UUID="${{ steps.app.outputs.uuid }}"
           TARGET="http://h12xz8887fxvbvjts2hac8if:4000"
-          echo "Setting LITELLM_URL=$TARGET ..."
-          HTTP=$(curl -s --max-time 30 -o /tmp/set_env.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$APP_UUID/envs" \
-            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET" '{key:$k,value:$v}')")
-          echo "POST /envs → HTTP $HTTP"
-          if [ "$HTTP" = "201" ] || [ "$HTTP" = "200" ]; then
-            echo "✅ LITELLM_URL set to $TARGET"
+
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs"
+          echo "=== Current LITELLM_URL entries ==="
+          jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid)  value=\(.value)"' \
+            /tmp/envs.json 2>/dev/null
+
+          UUIDS=$(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null || true)
+          FIRST=$(echo "$UUIDS" | head -1)
+
+          if [ -n "$FIRST" ] && [ "$FIRST" != "null" ]; then
+            PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/patch_env.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+              -d "$(jq -n --arg u "$FIRST" --arg k "LITELLM_URL" --arg v "$TARGET" \
+                '{uuid:$u,key:$k,value:$v}')")
+            echo "PATCH $FIRST → HTTP $PATCH_HTTP"
+            if [ "$PATCH_HTTP" != "200" ] && [ "$PATCH_HTTP" != "201" ]; then
+              echo "PATCH failed — DELETE+POST fallback"
+              curl -s --max-time 30 -X DELETE -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs/$FIRST" -o /dev/null
+              POST_HTTP=$(curl -s --max-time 30 -o /tmp/post_env.json -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" -H "Accept: application/json" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+                -d "$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET" '{key:$k,value:$v}')")
+              [ "$POST_HTTP" = "200" ] || [ "$POST_HTTP" = "201" ] || \
+                { echo "ERROR POST $POST_HTTP"; exit 1; }
+            fi
+            echo "$UUIDS" | tail -n +2 | while read -r EU; do
+              [ -z "$EU" ] && continue
+              DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs/$EU")
+              echo "DELETE extra $EU → HTTP $DEL"
+            done
           else
-            echo "ERROR: failed to set env var (HTTP $HTTP)"
-            cat /tmp/set_env.json
-            exit 1
+            POST_HTTP=$(curl -s --max-time 30 -o /tmp/post_env.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+              -d "$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET" '{key:$k,value:$v}')")
+            echo "POST /envs → HTTP $POST_HTTP"
+            [ "$POST_HTTP" = "200" ] || [ "$POST_HTTP" = "201" ] || \
+              { echo "ERROR POST $POST_HTTP"; exit 1; }
           fi
+          echo "✅ LITELLM_URL = $TARGET (single value guaranteed)"
 
       # ── 6. Restart ops-hub-app (applies network change + new LITELLM_URL) ────
       - name: Restart ops-hub-app
@@ -316,25 +326,37 @@ jobs:
           fi
 
           echo "Winner URL $WINNER_URL differs from current $CURRENT_TARGET — correcting..."
-          # Delete the env var we just set
-          ENV_UUID=$(curl -s --max-time 30 \
+          # Upsert: PATCH first existing var in-place, delete extras
+          curl -s --max-time 30 -o /tmp/envs_c.json \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$APP_UUID/envs" \
-            | jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' 2>/dev/null || true)
-          [ -n "$ENV_UUID" ] && curl -s --max-time 30 -X DELETE \
-            -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications/$APP_UUID/envs/$ENV_UUID" && echo "Deleted old env var"
-
-          # Set the correct URL
-          HTTP=$(curl -s --max-time 30 -o /tmp/fix_env.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$APP_UUID/envs" \
-            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$WINNER_URL" '{key:$k,value:$v}')")
-          echo "POST /envs → HTTP $HTTP"
-          [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] \
-            && echo "✅ LITELLM_URL corrected to $WINNER_URL" \
-            || { echo "ERROR: correction failed"; cat /tmp/fix_env.json; exit 1; }
+            "$COOLIFY_BASE/applications/$APP_UUID/envs"
+          UUIDS_C=$(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs_c.json 2>/dev/null || true)
+          FIRST_C=$(echo "$UUIDS_C" | head -1)
+          if [ -n "$FIRST_C" ] && [ "$FIRST_C" != "null" ]; then
+            PATCH_HTTP=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+              -d "$(jq -n --arg u "$FIRST_C" --arg k "LITELLM_URL" --arg v "$WINNER_URL" \
+                '{uuid:$u,key:$k,value:$v}')")
+            echo "PATCH $FIRST_C → HTTP $PATCH_HTTP"
+            if [ "$PATCH_HTTP" != "200" ] && [ "$PATCH_HTTP" != "201" ]; then
+              curl -s --max-time 30 -X DELETE -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs/$FIRST_C" -o /dev/null
+              curl -s --max-time 30 -X POST -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" -H "Accept: application/json" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+                -d "$(jq -n --arg k "LITELLM_URL" --arg v "$WINNER_URL" '{key:$k,value:$v}')" \
+                -o /dev/null
+            fi
+            echo "$UUIDS_C" | tail -n +2 | while read -r EU; do
+              [ -z "$EU" ] && continue
+              curl -s --max-time 30 -X DELETE -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs/$EU" -o /dev/null
+              echo "DELETE extra $EU"
+            done
+          fi
+          echo "✅ LITELLM_URL corrected to $WINNER_URL"
           echo "needs_restart=true" >> "$GITHUB_OUTPUT"
 
       - name: Restart ops-hub-app with corrected URL (if needed)

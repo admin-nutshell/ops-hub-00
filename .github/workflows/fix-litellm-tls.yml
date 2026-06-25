@@ -68,50 +68,65 @@ jobs:
           echo "ops-hub-app UUID: $UUID"
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
 
-      # ── Step A: Update ops-hub-app LITELLM_URL to internal service URL ───────
-      - name: List ops-hub-app env vars and delete ALL LITELLM_URL duplicates
-        run: |
-          UUID="${{ steps.app.outputs.uuid }}"
-          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$UUID/envs")
-          echo "=== ops-hub-app env vars (HTTP $HTTP) ==="
-          jq -r '.[] | "\(.key)=\(if (.is_shown_once // false) then "***" else .value end) [uuid=\(.uuid)]"' \
-            /tmp/envs.json 2>/dev/null || cat /tmp/envs.json | head -20
-
-          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
-          echo ""
-          echo "Found $COUNT LITELLM_URL var(s) — deleting all before re-creating"
-          jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null \
-            | while read -r ENV_UUID; do
-                [ -z "$ENV_UUID" ] || [ "$ENV_UUID" = "null" ] && continue
-                DEL_HTTP=$(curl -s --max-time 30 -o /tmp/del_env.json -w "%{http_code}" -X DELETE \
-                  -H "Authorization: Bearer $TOKEN" \
-                  "$COOLIFY_BASE/applications/$UUID/envs/$ENV_UUID")
-                echo "DELETE $ENV_UUID → HTTP $DEL_HTTP"
-              done
-
-      - name: Create LITELLM_URL pointing to verified URL
+      # ── Step A: Upsert LITELLM_URL (PATCH in-place + delete extras, never append) ─
+      - name: Upsert LITELLM_URL on ops-hub-app
         run: |
           APP_UUID="${{ steps.app.outputs.uuid }}"
           TARGET_URL="${{ github.event.inputs.litellm_url }}"
-          echo "Setting LITELLM_URL=$TARGET_URL on ops-hub-app..."
-          PAYLOAD=$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET_URL" \
-            '{key: $k, value: $v}')
-          HTTP=$(curl -s --max-time 30 -o /tmp/create_env.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$APP_UUID/envs" \
-            -d "$PAYLOAD")
-          echo "POST /envs → HTTP $HTTP"
-          jq . /tmp/create_env.json 2>/dev/null || cat /tmp/create_env.json
-          if [ "$HTTP" = "201" ] || [ "$HTTP" = "200" ]; then
-            echo "✅ LITELLM_URL set to $TARGET_URL"
+
+          # Fetch current env vars
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs"
+          echo "=== Current LITELLM_URL entries ==="
+          jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid)  value=\(.value)"' \
+            /tmp/envs.json 2>/dev/null
+
+          UUIDS=$(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null || true)
+          FIRST=$(echo "$UUIDS" | head -1)
+
+          if [ -n "$FIRST" ] && [ "$FIRST" != "null" ]; then
+            # PATCH first var in-place (stays in its Coolify environment — no new duplicate created)
+            PATCH_HTTP=$(curl -s --max-time 30 -o /tmp/patch_env.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+              -d "$(jq -n --arg u "$FIRST" --arg k "LITELLM_URL" --arg v "$TARGET_URL" \
+                '{uuid:$u,key:$k,value:$v}')")
+            echo "PATCH $FIRST → HTTP $PATCH_HTTP"
+            if [ "$PATCH_HTTP" != "200" ] && [ "$PATCH_HTTP" != "201" ]; then
+              echo "PATCH failed — falling back to DELETE+POST for $FIRST"
+              curl -s --max-time 30 -X DELETE -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs/$FIRST" -o /dev/null
+              POST_HTTP=$(curl -s --max-time 30 -o /tmp/post_env.json -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/json" -H "Accept: application/json" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+                -d "$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET_URL" '{key:$k,value:$v}')")
+              echo "POST /envs → HTTP $POST_HTTP"
+              [ "$POST_HTTP" = "200" ] || [ "$POST_HTTP" = "201" ] || \
+                { echo "ERROR: POST failed (HTTP $POST_HTTP)"; cat /tmp/post_env.json; exit 1; }
+            fi
+            # Delete any remaining duplicates (all UUIDs after the first)
+            echo "$UUIDS" | tail -n +2 | while read -r EU; do
+              [ -z "$EU" ] && continue
+              DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$APP_UUID/envs/$EU")
+              echo "DELETE extra $EU → HTTP $DEL"
+            done
           else
-            echo "ERROR: failed to set LITELLM_URL (HTTP $HTTP)"
-            exit 1
+            # No existing var — POST to create
+            POST_HTTP=$(curl -s --max-time 30 -o /tmp/post_env.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+              -d "$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET_URL" '{key:$k,value:$v}')")
+            echo "POST /envs → HTTP $POST_HTTP"
+            [ "$POST_HTTP" = "200" ] || [ "$POST_HTTP" = "201" ] || \
+              { echo "ERROR: POST failed (HTTP $POST_HTTP)"; cat /tmp/post_env.json; exit 1; }
           fi
+          echo "✅ LITELLM_URL = $TARGET_URL (single value guaranteed)"
 
       # ── Step A.2: Restart ops-hub-app to pick up new env var ─────────────────
       - name: Restart ops-hub-app to apply new LITELLM_URL
