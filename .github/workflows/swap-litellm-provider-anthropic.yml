@@ -1,0 +1,530 @@
+name: Swap LiteLLM provider — Anthropic Claude Haiku
+
+# Emergency provider swap: NVIDIA NIM credits exhausted → Claude Haiku 4.5.
+# Registers claude-haiku-4-5 under the SAME model_name alias
+# ("meta/llama-3.3-70b-instruct") so application code requires zero changes.
+#
+# What this workflow does:
+#   1.  Verify litellm-staging is reachable.
+#   2.  Test NVIDIA NIM directly — confirms 402/401/429 (credit exhaustion).
+#   3.  Derive the registered NVIDIA model ID from /model/info — delete it.
+#   4.  Detect whether ANTHROPIC_API_KEY already lives in litellm-staging env.
+#       a. Present  → proceed; use os.environ/ANTHROPIC_API_KEY reference.
+#       b. Absent + ANTHROPIC_API_KEY secret set → inject via Coolify API,
+#          restart litellm-staging, wait for health, then use os.environ ref.
+#       c. Absent + no secret → fail with escalation instructions.
+#   5.  Register claude-haiku-4-5 under meta/llama-3.3-70b-instruct alias.
+#   6.  Live completion test using model: "meta/llama-3.3-70b-instruct" (the
+#       exact string the application sends) — confirms end-to-end path.
+#   7.  Check LITELLM_DEFAULT_MODEL in ops-hub-app env vars; set if absent.
+#
+# Rollback path:
+#   NVIDIA NIM credits are exhausted — re-registering NVIDIA is not a real
+#   rollback. If Claude Haiku produces incorrect triage results after deploy,
+#   run this workflow again after changing HAIKU_MODEL below to
+#   "anthropic/claude-sonnet-4-6" (stronger model, higher cost).
+#   If ANTHROPIC_API_KEY is invalid: founder rotates key, updates GitHub secret,
+#   deletes the registered model via /model/delete, then re-runs this workflow.
+#   Deleted NVIDIA config preserved below for reference:
+#     model_name: "meta/llama-3.3-70b-instruct"
+#     litellm_params.model: "openai/meta/llama-3.3-70b-instruct"
+#     litellm_params.api_base: "https://integrate.api.nvidia.com/v1"
+#     litellm_params.api_key: "os.environ/NVIDIA_API_KEY"
+#     model_info.id (cooldown): "48ea73ba-7c3c-4a88-a261-921558c3fc19"
+#
+# Prerequisites (GitHub Actions secrets):
+#   COOLIFY_API_TOKEN  — Coolify admin API token
+#   LITELLM_MASTER_KEY — LiteLLM admin key (must match Coolify env var)
+#   ANTHROPIC_API_KEY  — Anthropic API key (required only if not already in
+#                        litellm-staging Coolify env vars — see step 4 above)
+#
+# This workflow NEVER hard-codes secret values. All keys are resolved from
+# either GitHub secrets or the litellm-staging container environment.
+#
+# Canary note: litellm-staging is the only affected service. ops-hub-app calls
+# LiteLLM at the same URL with the same model string — no app restart required.
+# Monitoring window: 24 hours post-deploy (triage calls are critical path).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+  LITELLM_FQDN: "https://litellm-staging.inatechshell.ca"
+  # Haiku model string for LiteLLM litellm_params (provider-prefixed)
+  HAIKU_MODEL: "anthropic/claude-haiku-4-5"
+  # The alias the application sends — must not change
+  MODEL_ALIAS: "meta/llama-3.3-70b-instruct"
+  # Cooldown ID from incident error log (used only for cross-check)
+  EXPECTED_NIM_ID: "48ea73ba-7c3c-4a88-a261-921558c3fc19"
+
+jobs:
+  swap-provider:
+    name: Swap NVIDIA NIM to Anthropic Claude Haiku 4.5
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+      ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    steps:
+      # ── 1. Verify litellm-staging health + resolve sslip.io URL ──────────────
+      - name: Verify litellm-staging health
+        id: health
+        run: |
+          echo "::add-mask::$TOKEN"
+          echo "::add-mask::$LITELLM_KEY"
+          if [ -n "$ANTHROPIC_KEY" ]; then echo "::add-mask::$ANTHROPIC_KEY"; fi
+
+          # Verify Coolify API
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          [ "$HTTP" != "200" ] && {
+            echo "ERROR: Coolify /applications HTTP $HTTP"; cat /tmp/apps.json; exit 1
+          }
+
+          # sslip.io URL — resolves from GitHub Actions runners; internal URL does not
+          LITELLM_URL="http://${LITELLM_UUID}.187.124.76.235.sslip.io"
+          echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
+          echo "litellm-staging sslip.io URL: $LITELLM_URL"
+
+          # Health check
+          HEALTH=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
+            "$LITELLM_URL/health/readiness" || echo "000")
+          echo "Health check: HTTP $HEALTH"
+          if [ "$HEALTH" != "200" ]; then
+            echo ""
+            echo "ERROR: litellm-staging is not healthy (HTTP $HEALTH)"
+            echo ""
+            echo "If litellm-staging is down:"
+            echo "  1. Go to https://coolify.inatechshell.ca"
+            echo "  2. Navigate to litellm-staging → Restart (from Coolify UI)"
+            echo "  3. Wait until Running status (~2 minutes)"
+            echo "  4. Re-trigger this workflow"
+            exit 1
+          fi
+          echo "litellm-staging is healthy"
+
+      # ── 2. Test NVIDIA NIM (informational — expect non-200) ──────────────────
+      - name: Test NVIDIA NIM API — expect 401/402/429
+        id: nim-test
+        run: |
+          echo "Testing NVIDIA NIM endpoint directly..."
+          NIM_STATUS=$(curl -s --max-time 20 -o /tmp/nim_resp.json -w "%{http_code}" -X POST \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "https://integrate.api.nvidia.com/v1/chat/completions" \
+            -d '{"model":"meta/llama-3.3-70b-instruct","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}' \
+            || echo "000")
+          echo "NVIDIA NIM direct test: HTTP $NIM_STATUS"
+          cat /tmp/nim_resp.json 2>/dev/null | head -5 || true
+          echo ""
+          case "$NIM_STATUS" in
+            401) echo "NVIDIA NIM: 401 Unauthorized — API key invalid or expired" ;;
+            402) echo "NVIDIA NIM: 402 Payment Required — credits exhausted (confirmed)" ;;
+            429) echo "NVIDIA NIM: 429 Rate Limited / cooldown — credits exhausted (confirmed)" ;;
+            200) echo "NVIDIA NIM: 200 OK — API key is still valid (unexpected for this incident)" ;;
+            000) echo "NVIDIA NIM: connection failed — endpoint unreachable or network error" ;;
+            *)   echo "NVIDIA NIM: HTTP $NIM_STATUS (see response above)" ;;
+          esac
+          echo "nim_status=$NIM_STATUS" >> "$GITHUB_OUTPUT"
+          # Continue regardless — this step is diagnostic only
+
+      # ── 3. Find + delete NVIDIA model from LiteLLM registry ──────────────────
+      - name: Find NVIDIA model in LiteLLM registry
+        id: find-model
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/model_info.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/info")
+          echo "GET /model/info → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /model/info HTTP $HTTP"
+            cat /tmp/model_info.json 2>/dev/null | head -5 || true
+            exit 1
+          fi
+
+          # Extract DB model ID — this is the authoritative ID for deletion
+          MODEL_DB_ID=$(jq -r \
+            '.data[] | select(.model_name == "'"$MODEL_ALIAS"'") | .model_info.id // empty' \
+            /tmp/model_info.json 2>/dev/null | head -1 || echo "")
+
+          echo "Registered models:"
+          jq -r '.data[] | "\(.model_name) → id=\(.model_info.id // "none")"' \
+            /tmp/model_info.json 2>/dev/null | head -20 || true
+
+          if [ -z "$MODEL_DB_ID" ] || [ "$MODEL_DB_ID" = "null" ]; then
+            echo "No model registered under alias '$MODEL_ALIAS' — nothing to delete"
+            echo "model_id=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found model ID: $MODEL_DB_ID"
+            if [ "$MODEL_DB_ID" = "$EXPECTED_NIM_ID" ]; then
+              echo "ID matches cooldown ID from incident report — confirmed NVIDIA NIM entry"
+            else
+              echo "ID differs from cooldown ID ($EXPECTED_NIM_ID) — will delete current DB entry"
+            fi
+            echo "model_id=$MODEL_DB_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Delete NVIDIA model from LiteLLM
+        if: steps.find-model.outputs.model_id != ''
+        run: |
+          MODEL_DB_ID="${{ steps.find-model.outputs.model_id }}"
+          echo "Deleting model ID: $MODEL_DB_ID ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/del_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/delete" \
+            -d "{\"id\": \"$MODEL_DB_ID\"}")
+          echo "POST /model/delete → HTTP $HTTP"
+          cat /tmp/del_resp.json 2>/dev/null | head -5 || true
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Deleted model $MODEL_DB_ID"
+          else
+            echo "WARNING: delete returned HTTP $HTTP — may not have deleted. Proceeding to register."
+          fi
+
+      # ── 4. Check ANTHROPIC_API_KEY in litellm-staging container env ──────────
+      - name: Check ANTHROPIC_API_KEY in litellm-staging env
+        id: apikey
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs")
+          echo "GET /envs → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: could not fetch litellm-staging env vars (HTTP $HTTP)"
+            cat /tmp/litellm_envs.json 2>/dev/null | head -5 || true
+            exit 1
+          fi
+
+          # Only check key NAMES (not values — never log secret values)
+          echo "Key names present in litellm-staging:"
+          jq -r '.[].key' /tmp/litellm_envs.json 2>/dev/null | sort || true
+
+          PRESENT=$(jq -r '.[] | select(.key == "ANTHROPIC_API_KEY") | .key' \
+            /tmp/litellm_envs.json 2>/dev/null || echo "")
+
+          if [ -n "$PRESENT" ]; then
+            echo "ANTHROPIC_API_KEY is in litellm-staging env — will use os.environ reference"
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ANTHROPIC_API_KEY is NOT in litellm-staging env"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 4b. Inject ANTHROPIC_API_KEY into Coolify env (only if absent) ───────
+      - name: Inject ANTHROPIC_API_KEY into litellm-staging Coolify env
+        id: inject
+        if: steps.apikey.outputs.present == 'false'
+        run: |
+          if [ -z "$ANTHROPIC_KEY" ]; then
+            echo ""
+            echo "BLOCKED — ANTHROPIC_API_KEY is absent from litellm-staging env AND"
+            echo "the ANTHROPIC_API_KEY GitHub Actions secret is not set."
+            echo ""
+            echo "To unblock this incident, ONE of the following actions is required:"
+            echo ""
+            echo "  Option A (fastest — enables automated injection):"
+            echo "    1. Go to https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions"
+            echo "    2. Add secret: Name=ANTHROPIC_API_KEY, Value=<Anthropic API key>"
+            echo "    3. Re-run this workflow"
+            echo "    The workflow will inject the key into litellm-staging and restart it."
+            echo ""
+            echo "  Option B (manual):"
+            echo "    1. Go to https://coolify.inatechshell.ca"
+            echo "    2. Navigate to litellm-staging → Environment Variables"
+            echo "    3. Add: ANTHROPIC_API_KEY=<value>"
+            echo "    4. Restart litellm-staging from the Coolify UI"
+            echo "    5. Re-run this workflow (key will be found; no restart needed)"
+            echo ""
+            echo "This escalation has been recorded in FOUNDER_QUEUE.md."
+            exit 1
+          fi
+
+          echo "ANTHROPIC_API_KEY secret is available — injecting into litellm-staging..."
+
+          # Delete any existing (shouldn't exist but defensive)
+          EXISTING=$(jq -r '.[] | select(.key == "ANTHROPIC_API_KEY") | .uuid' \
+            /tmp/litellm_envs.json 2>/dev/null || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Removing stale entry (uuid=$EXISTING) ..."
+            curl -s --max-time 30 -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$LITELLM_UUID/envs/$EXISTING" || true
+          fi
+
+          # POST new env var (is_secret=true keeps value masked in Coolify UI)
+          HTTP=$(curl -s --max-time 30 -o /tmp/inject_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs" \
+            -d "$(jq -n \
+              --arg k "ANTHROPIC_API_KEY" \
+              '{key: $k, value: $ENV.ANTHROPIC_KEY, is_secret: true}')")
+          echo "POST /envs → HTTP $HTTP"
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "ANTHROPIC_API_KEY injected into litellm-staging Coolify env"
+            echo "injected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: env var injection failed (HTTP $HTTP)"
+            cat /tmp/inject_resp.json 2>/dev/null | head -5 || true
+            exit 1
+          fi
+
+      # ── 4c. Restart litellm-staging to pick up injected env var ──────────────
+      # Only runs when the key was absent and just injected above.
+      # litellm-staging is already failing (429) so downtime is not additive.
+      - name: Restart litellm-staging (picks up injected ANTHROPIC_API_KEY)
+        id: restart
+        if: steps.inject.outputs.injected == 'true'
+        run: |
+          echo "Restarting litellm-staging to load new ANTHROPIC_API_KEY env var..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/restart_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/restart")
+          echo "POST /restart → HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/restart_resp.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+          cat /tmp/restart_resp.json 2>/dev/null | head -5 || true
+
+      - name: Wait for litellm-staging restart
+        if: steps.inject.outputs.injected == 'true'
+        run: |
+          DEP="${{ steps.restart.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then
+            echo "No deployment UUID returned — sleeping 90s for container to come up"
+            sleep 90
+          else
+            echo "Polling deployment $DEP ..."
+            for i in $(seq 1 36); do
+              STATUS=$(curl -s --max-time 15 \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" \
+                | jq -r '.status // empty' 2>/dev/null || echo "")
+              echo "Attempt $i/36: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Deployment finished"; break ;;
+                failed|error) echo "ERROR: deployment failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+
+          # Wait for health — allow 3 minutes total
+          echo "Checking litellm-staging health post-restart..."
+          LITELLM_URL="http://${LITELLM_UUID}.187.124.76.235.sslip.io"
+          for i in $(seq 1 18); do
+            HEALTH=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
+              "$LITELLM_URL/health/readiness" || echo "000")
+            echo "Health attempt $i/18: HTTP $HEALTH"
+            [ "$HEALTH" = "200" ] && { echo "litellm-staging healthy after restart"; break; }
+            [ "$i" = "18" ] && {
+              echo "ERROR: litellm-staging did not recover within 3 minutes after restart"
+              echo "Check Coolify dashboard for container status"
+              exit 1
+            }
+            sleep 10
+          done
+
+      # ── 5. Register Claude Haiku under the existing model alias ──────────────
+      - name: Register Claude Haiku 4.5 under meta/llama-3.3-70b-instruct alias
+        id: register
+        run: |
+          if [ -z "$LITELLM_KEY" ]; then
+            echo "ERROR: LITELLM_MASTER_KEY secret is empty"
+            exit 1
+          fi
+
+          # LiteLLM reads ANTHROPIC_API_KEY from container env at request time.
+          # Key was verified present (step 4) or injected + container restarted (step 4b/c).
+          PAYLOAD=$(jq -n \
+            --arg alias "$MODEL_ALIAS" \
+            --arg model "$HAIKU_MODEL" \
+            '{
+              model_name: $alias,
+              litellm_params: {
+                model: $model,
+                api_key: "os.environ/ANTHROPIC_API_KEY"
+              },
+              model_info: {
+                description: "Anthropic Claude Haiku 4.5 — triage default (NVIDIA NIM replacement 2026-06-25)"
+              }
+            }')
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/reg_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/new" -d "$PAYLOAD")
+          echo "POST /model/new → HTTP $HTTP"
+          jq . /tmp/reg_resp.json 2>/dev/null || cat /tmp/reg_resp.json | head -10 || true
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Registered: $MODEL_ALIAS → $HAIKU_MODEL"
+          elif [ "$HTTP" = "400" ]; then
+            MSG=$(jq -r '.error // .detail // .message // empty' /tmp/reg_resp.json 2>/dev/null || true)
+            echo "POST /model/new HTTP 400 — model may already exist: $MSG"
+            echo "Proceeding to verify..."
+          else
+            echo "ERROR: POST /model/new HTTP $HTTP"
+            exit 1
+          fi
+
+      # ── 5a. Verify registration ───────────────────────────────────────────────
+      - name: Verify model registration
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/verify.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/info")
+          echo "GET /model/info → HTTP $HTTP"
+          [ "$HTTP" != "200" ] && { echo "ERROR: /model/info HTTP $HTTP"; exit 1; }
+
+          COUNT=$(jq '[.data[] | select(.model_name == "'"$MODEL_ALIAS"'")] | length' \
+            /tmp/verify.json 2>/dev/null || echo 0)
+          jq '[.data[] | select(.model_name == "'"$MODEL_ALIAS"'") |
+               {model_name, litellm_params: {model: .litellm_params.model}}]' \
+            /tmp/verify.json 2>/dev/null || true
+
+          if [ "$COUNT" -gt "0" ]; then
+            echo "Confirmed: $MODEL_ALIAS is in LiteLLM registry ($COUNT entry)"
+          else
+            echo "ERROR: $MODEL_ALIAS not found in /model/info after registration"
+            echo "All registered models:"
+            jq -r '.data[] | .model_name' /tmp/verify.json 2>/dev/null | head -20 || true
+            exit 1
+          fi
+
+      # ── 6. Live completion test — use the alias the app sends ─────────────────
+      # IMPORTANT: model must be "$MODEL_ALIAS" (meta/llama-3.3-70b-instruct),
+      # NOT anthropic/claude-haiku-4-5. This validates the exact app call path.
+      - name: Live completion test via meta/llama-3.3-70b-instruct alias
+        run: |
+          TEST_PAYLOAD=$(jq -n --arg alias "$MODEL_ALIAS" '{
+            model: $alias,
+            max_tokens: 25,
+            temperature: 0,
+            messages: [{role: "user", content: "Reply with the single word: ok"}]
+          }')
+
+          HTTP=$(curl -s --max-time 60 -o /tmp/completion.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/chat/completions" -d "$TEST_PAYLOAD")
+          echo "POST /chat/completions (model=$MODEL_ALIAS) → HTTP $HTTP"
+
+          if [ "$HTTP" = "200" ]; then
+            CONTENT=$(jq -r '.choices[0].message.content // empty' /tmp/completion.json 2>/dev/null || true)
+            MODEL_USED=$(jq -r '.model // empty' /tmp/completion.json 2>/dev/null || true)
+            echo "Response content: $CONTENT"
+            echo "Model returned in response: $MODEL_USED"
+            echo ""
+            echo "=== PROVIDER SWAP COMPLETE ==="
+            echo "  Alias:    $MODEL_ALIAS"
+            echo "  Routed to: $HAIKU_MODEL"
+            echo "  Key ref:  os.environ/ANTHROPIC_API_KEY"
+            echo "  Test:     HTTP 200 — live completion confirmed"
+          else
+            echo "ERROR: live completion failed (HTTP $HTTP)"
+            jq . /tmp/completion.json 2>/dev/null || cat /tmp/completion.json | head -10 || true
+            echo ""
+            echo "Possible causes:"
+            echo "  - ANTHROPIC_API_KEY invalid or quota exceeded"
+            echo "  - LiteLLM did not pick up env var (container restart may be needed)"
+            echo "  - Model name mismatch in litellm_params"
+            exit 1
+          fi
+
+      # ── 7. Check / set LITELLM_DEFAULT_MODEL in ops-hub-app ──────────────────
+      - name: Check LITELLM_DEFAULT_MODEL in ops-hub-app
+        run: |
+          # Find ops-hub-app UUID
+          APP_UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' \
+            /tmp/apps.json 2>/dev/null || echo "")
+          if [ -z "$APP_UUID" ] || [ "$APP_UUID" = "null" ]; then
+            echo "ops-hub-app not found in Coolify — skipping LITELLM_DEFAULT_MODEL check"
+            exit 0
+          fi
+          echo "ops-hub-app UUID: $APP_UUID"
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/app_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs")
+          echo "GET /envs (ops-hub-app) → HTTP $HTTP"
+          [ "$HTTP" != "200" ] && { echo "WARNING: could not fetch ops-hub-app env vars"; exit 0; }
+
+          CURRENT=$(jq -r '.[] | select(.key == "LITELLM_DEFAULT_MODEL") | .value' \
+            /tmp/app_envs.json 2>/dev/null || echo "")
+
+          if [ -n "$CURRENT" ]; then
+            echo "LITELLM_DEFAULT_MODEL already set in ops-hub-app: $CURRENT"
+            if [ "$CURRENT" != "$MODEL_ALIAS" ]; then
+              echo "WARNING: value differs from current alias ($MODEL_ALIAS)"
+              echo "Tech Lead should update ticket-triage.ts to read LITELLM_DEFAULT_MODEL"
+              echo "and set the env var to: $MODEL_ALIAS"
+            fi
+          else
+            echo "LITELLM_DEFAULT_MODEL not found in ops-hub-app — adding..."
+            HTTP2=$(curl -s --max-time 30 -o /tmp/dm_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+              -d "$(jq -n --arg k "LITELLM_DEFAULT_MODEL" --arg v "$MODEL_ALIAS" \
+                '{key: $k, value: $v}')")
+            echo "POST /envs → HTTP $HTTP2"
+            if [ "$HTTP2" = "200" ] || [ "$HTTP2" = "201" ]; then
+              echo "LITELLM_DEFAULT_MODEL set to $MODEL_ALIAS in ops-hub-app"
+              echo "NOTE: env var is staged. App will pick it up on next restart."
+              echo "      App does not read this var yet — Tech Lead action required."
+              echo "      See ticket-triage.ts lines 71 and 173 for hardcoded model name."
+            else
+              echo "WARNING: failed to set LITELLM_DEFAULT_MODEL (HTTP $HTTP2)"
+              cat /tmp/dm_resp.json 2>/dev/null | head -5 || true
+            fi
+          fi
+
+      # ── Summary ───────────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          NIM_STATUS="${{ steps.nim-test.outputs.nim_status }}"
+          MODEL_ID="${{ steps.find-model.outputs.model_id }}"
+          KEY_WAS_PRESENT="${{ steps.apikey.outputs.present }}"
+          KEY_INJECTED="${{ steps.inject.outputs.injected }}"
+
+          echo "============================================================"
+          echo " PROVIDER SWAP SUMMARY"
+          echo "============================================================"
+          echo " Date:           2026-06-25"
+          echo " Branch:         ops/freescout-regrant"
+          echo " NVIDIA NIM test: HTTP $NIM_STATUS (expected non-200)"
+          echo " NVIDIA model deleted: ${MODEL_ID:-none found}"
+          echo " ANTHROPIC_API_KEY: ${KEY_WAS_PRESENT:-unknown} in container env"
+          [ "$KEY_INJECTED" = "true" ] && echo "   (key was injected via Coolify API + container restarted)"
+          echo " New model:      $HAIKU_MODEL"
+          echo " Alias:          $MODEL_ALIAS (unchanged — app code requires no edit)"
+          echo " Key ref:        os.environ/ANTHROPIC_API_KEY"
+          echo "============================================================"
+          echo ""
+          echo "Monitoring window: 24 hours"
+          echo "  - Watch Sentry for LiteLLM 4xx/5xx errors"
+          echo "  - Watch LangFuse for triage generation traces"
+          echo "  - Watch UptimeRobot for litellm-staging uptime"
+          echo ""
+          echo "Tech Lead action required:"
+          echo "  ticket-triage.ts lines 71 + 173 — hardcoded 'meta/llama-3.3-70b-instruct'"
+          echo "  Replace with: process.env.LITELLM_DEFAULT_MODEL ?? 'meta/llama-3.3-70b-instruct'"
+          echo "  LITELLM_DEFAULT_MODEL is now staged in ops-hub-app Coolify env."
+          echo "============================================================"

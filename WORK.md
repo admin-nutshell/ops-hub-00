@@ -124,15 +124,15 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **BLOCKED on FQ-39 (2026-06-25).** Code complete and merged to main. `triageTicket` + `sweepNewTickets` deployed. LITELLM_URL set to internal URL `http://h12xz8887fxvbvjts2hac8if-055055304869:4000` (HTTP 401 = alive). FreeScout tables recreated (DB reset recovery done). GRANT re-issued. **Blocker: Gmail mailbox not reconnected after DB reset — FreeScout has 0 conversations. pollFreeScout polls successfully but ingests nothing. Waiting on FQ-39 (founder reconnects mailbox in FreeScout UI).** | Jul 14 |
-| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22, PT-2 | ✅ **DONE (2026-06-25, PR #149).** `respondTicket` function + `draftResponse` + `postFreeScoutNote` in `src/inngest/ticket-respond.ts`. Registered in `src/index.ts`. 11 unit tests green. CI green. Migration `20260625000000_t23_responded_state.sql` in repo — awaiting founder apply (FQ-40). FreeScout write-back is config-gated (safe default: off until `FREESCOUT_DB_URL` provisioned by Production Manager). ADR-0003 filed. **Activation wire (triageTicket → ticket.respond event) pending — assigned back to Tech Lead.** | Jul 16 |
+| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ✅ **CODE DONE — E2E blocked on FQ-39 (2026-06-25).** `triageTicket` + `sweepNewTickets` merged to main. Activation wire added (PR #150, CI green): emits `ops-hub/ticket.respond` with `{ ticket_id, project_id, tenant_id }` on triage success. 14 unit tests. **Merge sequence for PR #150: PR #149 (T-23) must land on main first.** E2E validation blocked on FQ-39 (Gmail mailbox reconnect — FreeScout has 0 conversations). | Jul 14 |
+| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22, PT-2 | ✅ **DONE (2026-06-25, PR #149, CI green).** `respondTicket` + `draftResponse` + `postFreeScoutNote` complete. FreeScout write-back config-gated (off until `FREESCOUT_DB_URL` set). ADR-0003 filed. **Security Lead: CONDITIONAL SIGN-OFF** — must provision `freescout_writer` (least-priv, INSERT on threads only), NOT `freescout_user`. SQL runbook: `docs/engineering/t23-freescout-writeback-runbook.md`. Founder actions: FQ-40 (apply responded migration), FQ-41 (provision freescout_writer). **Merge sequence: #149 first, then PR #150 (T-22 wire).** | Jul 16 |
 
 ### Track C — Testing + Evals
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-24: Extend integration tests for full pipeline state machine | QA Manager | T-22, T-23 | ⏳ **review_ready (2026-06-25, PR #148). CI GREEN (2026-06-25).** `ticket-state-machine.test.ts` extended: new→triaged, dedup, triaged→responded (dormant until T-23 migration applied). All assertions on `ops_hub_app_login` path (RLS-genuine). Fixtures in `src/integration/fixtures/`. All 5 checks pass (CodeRabbit, Eval Gate, Lint, Security Scan, Unit Tests). Awaiting QA/Tech Lead merge gate. | Jul 16 |
-| T-25: Eval cases for triage + response agent behaviors | Evals Lead | T-22/T-23 spec finalized | `evals/ticket-triage.yaml` + `evals/ticket-respond.yaml` added; eval gate passes on PR; no regression in existing 11 evals | Jul 16 |
+| T-25: Eval cases for triage + response agent behaviors | Evals Lead | T-22/T-23 spec finalized | ✅ **DONE (2026-06-25, PR #154, CI green).** `evals/ticket-triage.yaml` (4 cases: critical/high/normal/low) + `evals/ticket-respond.yaml` (4 cases: no-ETA on critical / no-overcommit / empathy / missing-info). Rubrics match deployed enum `{critical,high,normal,low}` (not P-levels). All 13 evals pass `promptfoo validate`, Eval Gate CI green. | Jul 16 |
 
 ### Track D — Delivery + Milestone Close
 
@@ -145,7 +145,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-28: Sprint 1 retrospective doc | PM | Sprint 1 ✅ | `docs/retros/sprint-1.md` committed — what worked, what didn't, process changes for Sprint 2 | Jul 4 |
+| T-28: Sprint 1 retrospective doc | PM | Sprint 1 ✅ | ✅ **DONE (2026-06-25, PR #153, CI green).** `docs/retros/sprint-1.md` — 7 sections: summary, what worked, what didn't, blockers/resolutions (40+ FreeScout PRs), 6 Sprint 2 process changes, M1 criteria status, open risks. Surfaces DNC scope contradiction (FQ-04 parks DNC; M1 #12 expects DNC tickets — FQ-29 must resolve). | Jul 4 |
 | T-29: First monthly founder briefing (M1 criterion #13) | PM | All M1 criteria green | Briefing doc delivered to founder via FOUNDER_QUEUE — Sprint 1+2 summary, M2 preview, open risks | Jul 31 |
 
 ---
@@ -214,6 +214,30 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 ### Production Manager
 **🟢 ACTIVE (2026-06-25)**
 
+**2026-06-25 — P1 INCIDENT: LiteLLM provider swap (NVIDIA NIM → Anthropic Claude Haiku 4.5)**
+
+Status: WORKFLOW READY — blocked on ANTHROPIC_API_KEY availability (FQ-42).
+
+Root cause: NVIDIA NIM free-tier credits exhausted. Model `48ea73ba-7c3c-4a88-a261-921558c3fc19`
+in permanent cooldown. All ticket-triage calls returning 429.
+
+Resolution workflow: `.github/workflows/swap-litellm-provider-anthropic.yml` (on branch `ops/pm-status-20260625`).
+Registers `claude-haiku-4-5` under the same `meta/llama-3.3-70b-instruct` alias → zero code changes.
+
+To trigger once FQ-42 resolved:
+  `gh workflow run swap-litellm-provider-anthropic.yml --ref ops/pm-status-20260625`
+
+Monitoring window: 24 hours post-trigger.
+Deploy plan: `docs/deploys/2026-06-25-swap-litellm-provider-anthropic.md`
+Decisions log: DECISIONS.md 2026-06-25 section.
+
+Tech Lead follow-up required post-incident:
+- `src/inngest/ticket-triage.ts` lines 71 + 173: replace hardcoded `"meta/llama-3.3-70b-instruct"`
+  with `process.env.LITELLM_DEFAULT_MODEL ?? "meta/llama-3.3-70b-instruct"`.
+- `LITELLM_DEFAULT_MODEL` env var is now staged in ops-hub-app Coolify (set by the workflow).
+
+---
+
 **2026-06-25 — PR batch review + merge (P2 task).**
 
 - **PR #147 — chore/team-operating-system — ✅ MERGED** (squash commit `a26cb80f`, 2026-06-25T18:27:03Z). All 5 checks green (CodeRabbit pass, Eval Gate, Lint, Security Scan, Unit Tests). `CLAUDE.md` and all 8 `.claude/team/` files confirmed on `main` (`CONSTITUTION.md`, `PM.md`, `QA.md`, `PRODUCTION.md`, `CR.md`, `FOUNDER.md`, `README.md`, `COMMS.md`).
@@ -264,6 +288,8 @@ Remaining deploy order:
 5. **T-13: Sentry** — SDK init in app code (with T-07)
 
 ### Security Lead
+**✅ ADR-0003 review DONE (2026-06-25) — CONDITIONAL SIGN-OFF on FreeScout write-back.** Branch: `security/t23-freescout-writeback-review`. Key findings: (a) Must use `freescout_writer` (INSERT on threads only) — NOT `freescout_user` (owns all FreeScout tables, max blast radius). (b) Config-gate is sufficient safety default. (c) No SQL injection — INSERT fully parameterized. (d) At-least-once retry acceptable for v1. Tracked non-blocking items: T1 stored-XSS, T2 no customer email confirm, T3 dedup guard, T4 audit log. Runbook: `docs/engineering/t23-freescout-writeback-runbook.md`. Founder action: FQ-41. DECISIONS.md updated.
+
 **✅ T-18 DONE (2026-06-22, PR #72) — cross-tenant RLS isolation test written.** Both T-12 and T-18 complete.
 
 **T-18 — `src/integration/rls-isolation.test.ts`.** Rejected the task's literal spec: supabase-js + service_role + `rpc('set_config')` tests NOTHING (service_role bypasses RLS → returns all rows; and rpc/select are separate transactions so a transaction-local GUC evaporates). It would FAIL on real Supabase while sitting GREEN-SKIPPED in CI — a false "isolation verified" signal, the worst outcome for a security gate. Replaced with the Tech-Lead-ratified path (Option A): assertions run via the `pg` driver AS `ops_hub_app_login` (T-12's nobypassrls login role) so RLS genuinely engages — the runbook §8 "Real login-path RLS check." Three assertions (positive control + isolation + fail-closed); per-probe transaction with transaction-local GUC (pooler-safe). service_role used for setup/teardown only. Skips in CI without staging creds. See DECISIONS.md 2026-06-22.

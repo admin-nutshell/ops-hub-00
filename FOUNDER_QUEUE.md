@@ -49,37 +49,71 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### FQ-39 — BLOCKING: [PM] Reconnect Gmail mailbox in FreeScout — T-22 validation gate
+**URGENT: FQ-42** [Production Manager] ANTHROPIC_API_KEY required to unblock P1 triage incident
+        Context: NVIDIA NIM credits exhausted; all ticket-triage LiteLLM calls returning 429.
+          swap-litellm-provider-anthropic.yml is ready to run on branch ops/pm-status-20260625.
+          Workflow self-detects whether ANTHROPIC_API_KEY is already in litellm-staging Coolify
+          env. If present: runs fully automatically and clears the incident.
+          If absent: workflow fails at step 4 with instructions unless GitHub secret is set.
+          Action required (choose one):
+            Option A — Automated (recommended, 2 min):
+              Add ANTHROPIC_API_KEY to GitHub Actions secrets:
+              https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
+              Value: your Anthropic API key (same key used by ops-hub-app already).
+              Then trigger: gh workflow run swap-litellm-provider-anthropic.yml --ref ops/pm-status-20260625
+              Workflow will inject key into litellm-staging + restart + register Haiku model.
+            Option B — Manual Coolify (5 min):
+              Go to https://coolify.inatechshell.ca → litellm-staging → Environment Variables.
+              Add: ANTHROPIC_API_KEY = <your Anthropic API key>
+              Restart litellm-staging from Coolify UI.
+              Then trigger: gh workflow run swap-litellm-provider-anthropic.yml --ref ops/pm-status-20260625
+              (no secret needed; key will be found in container env).
+          If ANTHROPIC_API_KEY is already in litellm-staging env from prior setup:
+            workflow runs automatically with no action needed — trigger it and it will self-detect.
+        Impact if delayed: all ticket triage is failing; sweepNewTickets + triageTicket both 429.
+          T-22 E2E validation (blocked on FQ-39) will also fail when FQ-39 resolves.
+        Linked: ticket-triage.ts, litellm-staging UUID h12xz8887fxvbvjts2hac8if,
+          swap-litellm-provider-anthropic.yml, docs/deploys/2026-06-25-swap-litellm-provider-anthropic.md
+
+---
+
+### ~~FQ-41 — BLOCKING: [Production Manager] Provision freescout_writer DB role~~ — RESOLVED
 
 ```
-BLOCKING: [PM] The Supabase DB reset (2026-06-25) wiped all FreeScout tables including
-  the `mailboxes` table where Gmail OAuth config is stored. FreeScout was restarted
-  (workflow restart-freescout-regrant.yml, run #28186346899) and Laravel recreated the
-  table structure — but the mailbox configuration is empty.
+RESOLVED: [Founder] 2026-06-25 — freescout_writer role created in Supabase SQL Editor
+  (INSERT on threads + sequence grant). FREESCOUT_DB_URL and FREESCOUT_BOT_USER_ID (user ID 1,
+  haytham@inatechshell.ca) added to Coolify ops-hub-app env vars. ops-hub-app redeployed.
+  FreeScout write-back now active when FREESCOUT_DB_URL is set.
+  Linked: T-23 (PR #149), ADR-0003
+```
 
-  Result: FreeScout has zero conversations. pollFreeScout polls successfully but finds
-  nothing to ingest. T-22 triage cannot be validated without at least one live ticket.
+---
 
-  Action needed (founder, ~5 min in FreeScout UI):
-    1. Go to https://freescout-staging.inatechshell.ca
-    2. Log in as mai@leelaecospa.com
-    3. Admin → Mailboxes → Create Mailbox
-    4. Name: ITS Support  |  Email: info@inatechshell.ca
-    5. Incoming: IMAP → Google Workspace OAuth (same config as before)
-    6. Outgoing: SMTP → Google Workspace OAuth
-    7. Save and verify "Fetch emails" runs without error
 
-  Once the mailbox is connected FreeScout will re-fetch emails from Gmail.
-  Conversations 6 and 7 (or their equivalents) will re-appear with new IDs.
-  pollFreeScout will ingest them on its next 60-second tick.
-  sweepNewTickets will dispatch triage within 5 minutes.
+---
 
-  Expected outcome: tickets table shows 2 rows, state='triaged', urgency/category/routing
-  populated. That is T-22 done and T-23 unblocked.
+### ~~FQ-40 — BLOCKING: [PM] Apply T-23 migration in Supabase SQL Editor~~ — RESOLVED
 
-Impact if delayed: T-22 cannot close. T-23, T-24, T-25, T-26, T-27 all blocked downstream.
-  Sprint 2 critical path halted.
-Linked: T-22, FQ-38 (FreeScout recovery), DECISIONS.md 2026-06-25
+```
+RESOLVED: [Founder] 2026-06-25 — ALTER TABLE tickets executed successfully in Supabase
+  SQL Editor. 'responded' added to tickets.state CHECK constraint. T-24 Scenario 3
+  (triaged→responded integration test) now auto-activates on next test run.
+Linked: T-23 (PR #149), T-24 (PR #148)
+```
+
+---
+
+### ~~FQ-39 — BLOCKING: [PM] Reconnect Gmail mailbox in FreeScout~~ — RESOLVED
+
+```
+RESOLVED: [Founder] 2026-06-25 — Mailbox "ITS Support" recreated with email
+  support@inatechshell.ca. Incoming IMAP: imap.gmail.com port 993 SSL, Google OAuth
+  (info@inatechshell.ca). Outgoing SMTP: smtp.gmail.com port 587 TLS, Google OAuth.
+  "Connection established" + test email received. FreeScout will re-fetch emails on
+  next poll cycle. T-22 E2E validation now unblocked.
+  Note: FreeScout login = info@inatechshell.ca. Admin user = haytham@inatechshell.ca (ID 1).
+  Mailbox email = support@inatechshell.ca (forwarding alias; IMAP fetches from info@ inbox).
+Linked: T-22, FQ-38
 ```
 
 ---
