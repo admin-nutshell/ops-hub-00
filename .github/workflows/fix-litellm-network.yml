@@ -1,0 +1,407 @@
+name: Fix LiteLLM network — connect to shared coolify network
+
+# Attaches both litellm-staging and ops-hub-app to the shared "coolify" Docker network
+# so http://h12xz8887fxvbvjts2hac8if:4000 resolves from inside the ops-hub-app container.
+#
+# How Coolify implements this:
+#   After the container starts, Coolify runs:
+#     docker network connect coolify <container_name>
+#   This ADDS "coolify" as a secondary network without disrupting the primary network
+#   or Traefik routing. Both apps already route through Traefik/coolify for ingress;
+#   this just makes them directly reachable from each other.
+#
+# Requires: PR with updated index.ts probe (5 candidates) deployed on ops-hub-app.
+# Restarts: litellm-staging (1x), ops-hub-app (1x, possibly 2x if URL needs correction).
+# Does NOT change Traefik routing or external reachability.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+
+jobs:
+  fix-network:
+    name: Attach to shared network + fix LITELLM_URL
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    steps:
+      # ── 0. Discover both app configs ─────────────────────────────────────────
+      - name: Get litellm-staging config
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID")
+          echo "litellm-staging API: HTTP $HTTP"
+          jq '{name, status, fqdn, ports_exposes,
+               connect_to_docker_network,
+               docker_network,
+               additional_networks_count}' /tmp/litellm.json 2>/dev/null \
+            || cat /tmp/litellm.json | head -10
+
+      - name: Find ops-hub-app UUID
+        id: app
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /applications HTTP $HTTP"; cat /tmp/apps.json; exit 1
+          fi
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: ops-hub-app not found"; jq -r '.[].name' /tmp/apps.json; exit 1
+          fi
+          echo "ops-hub-app UUID: $UUID"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+          # Full config
+          curl -s --max-time 30 -o /tmp/opshub.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID"
+          jq '{name, status, connect_to_docker_network,
+               docker_network, additional_networks_count}' /tmp/opshub.json 2>/dev/null \
+            || cat /tmp/opshub.json | head -5
+
+      # ── 1. Patch litellm-staging → connect_to_docker_network: true ───────────
+      - name: Patch litellm-staging — add to coolify network
+        id: patch-litellm
+        run: |
+          echo "=== Patching litellm-staging connect_to_docker_network=true ==="
+          HTTP=$(curl -s --max-time 30 -o /tmp/p1.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID" \
+            -d '{"connect_to_docker_network": true}')
+          echo "PATCH → HTTP $HTTP"
+          cat /tmp/p1.json | python3 -m json.tool 2>/dev/null || cat /tmp/p1.json | head -5
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "✅ litellm-staging patched"
+          else
+            echo "⚠️  connect_to_docker_network PATCH failed (HTTP $HTTP) — trying docker_network field"
+            HTTP2=$(curl -s --max-time 30 -o /tmp/p1b.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$LITELLM_UUID" \
+              -d '{"docker_network": "coolify"}')
+            echo "PATCH docker_network → HTTP $HTTP2"
+            cat /tmp/p1b.json | python3 -m json.tool 2>/dev/null || cat /tmp/p1b.json | head -5
+            if [ "$HTTP2" != "200" ] && [ "$HTTP2" != "201" ]; then
+              echo "ERROR: both PATCH strategies failed for litellm-staging"
+              echo "Manual fix required: Coolify dashboard or SSH → docker network connect coolify h12xz8887fxvbvjts2hac8if"
+              exit 1
+            fi
+          fi
+
+      # ── 2. Patch ops-hub-app → connect_to_docker_network: true ──────────────
+      - name: Patch ops-hub-app — add to coolify network
+        id: patch-opshub
+        run: |
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+          echo "=== Patching ops-hub-app $APP_UUID connect_to_docker_network=true ==="
+          HTTP=$(curl -s --max-time 30 -o /tmp/p2.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID" \
+            -d '{"connect_to_docker_network": true}')
+          echo "PATCH → HTTP $HTTP"
+          cat /tmp/p2.json | python3 -m json.tool 2>/dev/null || cat /tmp/p2.json | head -5
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "✅ ops-hub-app patched"
+          else
+            echo "⚠️  connect_to_docker_network PATCH failed (HTTP $HTTP) — trying docker_network field"
+            HTTP2=$(curl -s --max-time 30 -o /tmp/p2b.json -w "%{http_code}" -X PATCH \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$APP_UUID" \
+              -d '{"docker_network": "coolify"}')
+            echo "PATCH docker_network → HTTP $HTTP2"
+            cat /tmp/p2b.json | python3 -m json.tool 2>/dev/null || cat /tmp/p2b.json | head -5
+            if [ "$HTTP2" != "200" ] && [ "$HTTP2" != "201" ]; then
+              echo "ERROR: both PATCH strategies failed for ops-hub-app"
+              echo "Manual fix required: SSH → docker network connect coolify <ops-hub-container>"
+              exit 1
+            fi
+          fi
+
+      # ── 3. Restart litellm-staging ────────────────────────────────────────────
+      - name: Restart litellm-staging
+        id: restart-litellm
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/rl.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/restart")
+          echo "POST /restart → HTTP $HTTP"
+          cat /tmp/rl.json | python3 -m json.tool 2>/dev/null || cat /tmp/rl.json | head -5
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/rl.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for litellm-staging restart
+        run: |
+          DEP="${{ steps.restart-litellm.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then
+            echo "No deployment UUID — sleeping 45s"
+            sleep 45
+          else
+            echo "Polling $DEP ..."
+            for i in $(seq 1 24); do
+              STATUS=$(curl -s --max-time 15 \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" \
+                | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "litellm-staging restarted OK"; break ;;
+                failed|error) echo "ERROR: litellm-staging restart failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+          # Confirm external reachability (litellm returns 401 on /health = alive)
+          for i in $(seq 1 6); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
+              "http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health" || echo "000")
+            [ "$HTTP" = "401" ] || [ "$HTTP" = "200" ] \
+              && { echo "✅ litellm-staging externally reachable (HTTP $HTTP)"; break; } \
+              || { echo "Attempt $i: HTTP $HTTP — waiting"; sleep 10; }
+          done
+
+      # ── 4. Clean up duplicate LITELLM_URL env vars on ops-hub-app ────────────
+      - name: List and delete all existing LITELLM_URL env vars
+        id: envs
+        run: |
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs")
+          echo "=== Current LITELLM_URL env var(s) (HTTP $HTTP) ==="
+          jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' \
+            /tmp/envs.json 2>/dev/null
+
+          # Delete ALL existing LITELLM_URL entries
+          UUIDS=$(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null || true)
+          for eu in $UUIDS; do
+            echo "Deleting env var $eu ..."
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$APP_UUID/envs/$eu")
+            echo "  DELETE → HTTP $DEL"
+          done
+
+      # ── 5. Set LITELLM_URL to most likely internal container name ─────────────
+      # Coolify v4 generateApplicationContainerName() returns the app UUID as the
+      # container name. After network connect, Docker DNS resolves it on "coolify".
+      - name: Set LITELLM_URL = http://h12xz8887fxvbvjts2hac8if:4000
+        run: |
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+          TARGET="http://h12xz8887fxvbvjts2hac8if:4000"
+          echo "Setting LITELLM_URL=$TARGET ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/set_env.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET" '{key:$k,value:$v}')")
+          echo "POST /envs → HTTP $HTTP"
+          if [ "$HTTP" = "201" ] || [ "$HTTP" = "200" ]; then
+            echo "✅ LITELLM_URL set to $TARGET"
+          else
+            echo "ERROR: failed to set env var (HTTP $HTTP)"
+            cat /tmp/set_env.json
+            exit 1
+          fi
+
+      # ── 6. Restart ops-hub-app (applies network change + new LITELLM_URL) ────
+      - name: Restart ops-hub-app
+        id: restart-opshub
+        run: |
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/ro.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$APP_UUID/restart")
+          echo "POST /restart → HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/ro.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for ops-hub-app restart + health check
+        run: |
+          DEP="${{ steps.restart-opshub.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then
+            echo "No deployment UUID — sleeping 45s"
+            sleep 45
+          else
+            echo "Polling $DEP ..."
+            for i in $(seq 1 24); do
+              STATUS=$(curl -s --max-time 15 \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" \
+                | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "ops-hub-app restarted OK"; break ;;
+                failed|error) echo "ERROR: ops-hub-app restart failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+          STAGING_URL="${{ secrets.COOLIFY_STAGING_APP_URL }}"
+          [ -z "$STAGING_URL" ] && STAGING_URL="https://ops-hub-staging.inatechshell.ca"
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$STAGING_URL/health" || true)
+            [ "$HTTP" = "200" ] && { echo "✅ ops-hub-app healthy"; break; }
+            echo "Attempt $i: HTTP $HTTP — waiting 10s"
+            sleep 10
+          done
+
+      # ── 7. Run probe from inside ops-hub-app + parse winner ──────────────────
+      - name: Run connectivity probe from inside ops-hub-app
+        id: probe
+        run: |
+          STAGING_URL="${{ secrets.COOLIFY_STAGING_APP_URL }}"
+          [ -z "$STAGING_URL" ] && STAGING_URL="https://ops-hub-staging.inatechshell.ca"
+          echo "=== Calling $STAGING_URL/debug/litellm-connectivity ==="
+          HTTP=$(curl -s --max-time 40 -o /tmp/probe.json -w "%{http_code}" \
+            "$STAGING_URL/debug/litellm-connectivity" || echo "000")
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: probe endpoint returned HTTP $HTTP"
+            cat /tmp/probe.json 2>/dev/null; exit 1
+          fi
+
+          echo "=== Five-candidate probe results FROM INSIDE ops-hub-app ==="
+          jq . /tmp/probe.json
+
+          echo ""
+          echo "=== Interpretation ==="
+          # Find which candidate returned HTTP 200 or HTTP 401 (LiteLLM up + auth)
+          WINNER=$(jq -r '.results[] | select(.result | test("HTTP (200|401)")) | .label' \
+            /tmp/probe.json 2>/dev/null | head -1 || true)
+          WINNER_URL=$(jq -r --arg w "$WINNER" '.results[] | select(.label==$w) | .url' \
+            /tmp/probe.json 2>/dev/null | sed 's|/health||' || true)
+
+          echo "winner_label=$WINNER" >> "$GITHUB_OUTPUT"
+          echo "winner_url=$WINNER_URL" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$WINNER" ]; then
+            echo "❌ NO internal candidate resolved — network PATCH did not take effect"
+            echo "   Both apps still on isolated networks. Manual action needed:"
+            echo "   SSH to server and run:"
+            echo "     docker network connect coolify h12xz8887fxvbvjts2hac8if"
+            echo "     docker network connect coolify <ops-hub-container-name>"
+            exit 1
+          fi
+          echo "✅ Winner: $WINNER → $WINNER_URL"
+
+      # ── 8. If winner URL ≠ current LITELLM_URL, correct it ──────────────────
+      - name: Correct LITELLM_URL if probe winner differs
+        id: correct-url
+        run: |
+          WINNER_LABEL="${{ steps.probe.outputs.winner_label }}"
+          WINNER_URL="${{ steps.probe.outputs.winner_url }}"
+          CURRENT_TARGET="http://h12xz8887fxvbvjts2hac8if:4000"
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+
+          if [ "$WINNER_URL" = "$CURRENT_TARGET" ] || [ "$WINNER_LABEL" = "configured" ]; then
+            echo "✅ LITELLM_URL is already set to the winning URL — no correction needed"
+            echo "needs_restart=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Winner URL $WINNER_URL differs from current $CURRENT_TARGET — correcting..."
+          # Delete the env var we just set
+          ENV_UUID=$(curl -s --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+            | jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' 2>/dev/null || true)
+          [ -n "$ENV_UUID" ] && curl -s --max-time 30 -X DELETE \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs/$ENV_UUID" && echo "Deleted old env var"
+
+          # Set the correct URL
+          HTTP=$(curl -s --max-time 30 -o /tmp/fix_env.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$WINNER_URL" '{key:$k,value:$v}')")
+          echo "POST /envs → HTTP $HTTP"
+          [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] \
+            && echo "✅ LITELLM_URL corrected to $WINNER_URL" \
+            || { echo "ERROR: correction failed"; cat /tmp/fix_env.json; exit 1; }
+          echo "needs_restart=true" >> "$GITHUB_OUTPUT"
+
+      - name: Restart ops-hub-app with corrected URL (if needed)
+        id: restart2
+        if: steps.correct-url.outputs.needs_restart == 'true'
+        run: |
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/ro2.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$APP_UUID/restart")
+          echo "POST /restart → HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/ro2.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for second ops-hub-app restart (if needed)
+        if: steps.correct-url.outputs.needs_restart == 'true'
+        run: |
+          DEP="${{ steps.restart2.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then sleep 45; else
+            for i in $(seq 1 24); do
+              STATUS=$(curl -s --max-time 15 \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" \
+                | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) break ;; failed|error) echo "restart failed"; exit 1 ;;
+              esac; sleep 10
+            done
+          fi
+          STAGING_URL="${{ secrets.COOLIFY_STAGING_APP_URL }}"
+          [ -z "$STAGING_URL" ] && STAGING_URL="https://ops-hub-staging.inatechshell.ca"
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$STAGING_URL/health" || true)
+            [ "$HTTP" = "200" ] && { echo "✅ ops-hub-app healthy after URL correction"; break; }
+            echo "Attempt $i: HTTP $HTTP — waiting 10s"; sleep 10
+          done
+
+      # ── 9. Re-sync Inngest ────────────────────────────────────────────────────
+      - name: Re-sync Inngest functions
+        run: |
+          STAGING_URL="${{ secrets.COOLIFY_STAGING_APP_URL }}"
+          [ -z "$STAGING_URL" ] && STAGING_URL="https://ops-hub-staging.inatechshell.ca"
+          echo "Re-syncing Inngest at $STAGING_URL/api/inngest ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/sync.json -w "%{http_code}" -X PUT \
+            -H "Content-Type: application/json" \
+            "$STAGING_URL/api/inngest")
+          echo "PUT /api/inngest → HTTP $HTTP"
+          cat /tmp/sync.json | python3 -m json.tool 2>/dev/null || cat /tmp/sync.json
+
+      # ── 10. Summary ───────────────────────────────────────────────────────────
+      - name: Summary
+        run: |
+          WINNER="${{ steps.probe.outputs.winner_label }}"
+          WINNER_URL="${{ steps.probe.outputs.winner_url }}"
+          CORRECTED="${{ steps.correct-url.outputs.needs_restart }}"
+          echo "========================================================"
+          echo " NETWORK FIX SUMMARY"
+          echo "========================================================"
+          echo " connect_to_docker_network patched on litellm-staging ✅"
+          echo " connect_to_docker_network patched on ops-hub-app ✅"
+          echo ""
+          echo " Probe winner: $WINNER"
+          echo " LITELLM_URL set to: $WINNER_URL"
+          [ "$CORRECTED" = "true" ] && echo " (URL corrected after probe)" || echo " (URL was already correct)"
+          echo ""
+          echo " Next: wait up to 5 min for sweepNewTickets cron to triage conv 6+7"
+          echo " Verify: SELECT id, state, urgency FROM tickets"
+          echo "         WHERE freescout_conversation_id IN (6,7);"
+          echo "========================================================"
