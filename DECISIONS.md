@@ -661,3 +661,31 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Handoff → Production Manager: UNBLOCKED to provision the moment FREESCOUT_DB_URL
   points at freescout_writer (C1), per the runbook. Do not provision freescout_user.
 ```
+
+### 2026-06-25 — LiteLLM model re-registration (FQ-38 recovery context)
+
+```
+2026-06-25 [Production Manager] triageTicket failing: LiteLLM 400 "Invalid model name
+  passed in model=meta/llama-3.3-70b-instruct". Root cause: this is a LiteLLM router-level
+  error (not an NVIDIA API error) — the model is absent from the LiteLLM deployment registry.
+  The original registration (configure-litellm-nvidia.yml run #28043673055) was wiped when
+  litellm-staging was fully redeployed during T-22 network fixes (PRs #143–#145).
+  STORE_MODEL_IN_DB registrations do not survive a DB-resetting full redeploy.
+
+  Fix: fix-litellm-model-registration.yml (PR to follow) — delete any stale registration,
+  re-register with the original params (model_name=meta/llama-3.3-70b-instruct,
+  litellm_params.model=openai/meta/llama-3.3-70b-instruct, api_base=integrate.api.nvidia.com/v1,
+  api_key=os.environ/NVIDIA_API_KEY), verify with a live completion call.
+  No container restart. No env var changes. DB-only mutation.
+
+  Decision: keep model_name as meta/llama-3.3-70b-instruct (caller-facing name unchanged —
+  triageTicket already uses this string). Renaming to nvidia/... would require ops-hub-app
+  env var update + redeploy — unnecessary blast radius. NVIDIA NIM catalog confirms
+  meta/llama-3.3-70b-instruct is the correct current model id at integrate.api.nvidia.com/v1.
+
+  Rollback: POST /model/delete with the new model DB id (printed in workflow run output).
+  Estimated rollback time: < 5 minutes.
+
+  Deploy plan: docs/deploys/2026-06-25-litellm-model-reregistration.md
+  Founder approval: YES (in session 2026-06-25).
+```

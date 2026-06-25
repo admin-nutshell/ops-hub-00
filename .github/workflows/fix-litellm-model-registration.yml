@@ -1,0 +1,324 @@
+name: Fix LiteLLM model registration — re-register meta/llama-3.3-70b-instruct
+
+# Root cause: litellm-staging was redeployed during T-22 network fixes (PRs #143–#145).
+# Each full redeploy resets the LiteLLM DB, wiping STORE_MODEL_IN_DB registrations.
+# The "Invalid model name passed in model=meta/llama-3.3-70b-instruct" error is a
+# LiteLLM router-level 400 — it means the model is not in the registered deployment
+# list. This workflow diagnoses the current state, cleans up stale registrations,
+# re-registers the model, and verifies with a live completion call.
+#
+# This workflow makes NO changes to any container or env var.
+# All mutations are LiteLLM DB-only (POST /model/new, POST /model/delete).
+#
+# Prerequisites:
+#   litellm-staging must be Running in Coolify.
+#   GitHub Actions secrets required:
+#     COOLIFY_API_TOKEN  — Coolify admin API token
+#     LITELLM_MASTER_KEY — must match the LITELLM_MASTER_KEY env var in Coolify
+#   Coolify env var required (already set):
+#     NVIDIA_API_KEY — NVIDIA NIM API key in litellm-staging container env
+#
+# Rollback: POST /model/delete with the model DB id printed in Step 5 output.
+#
+# Deploy plan: docs/deploys/2026-06-25-litellm-model-reregistration.md
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+  HOSTINGER_IP: "187.124.76.235"
+  # Caller-facing name — what triageTicket sends to LiteLLM
+  MODEL_NAME: "meta/llama-3.3-70b-instruct"
+
+jobs:
+  fix-model-registration:
+    name: Re-register NVIDIA NIM model in litellm-staging
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+
+    steps:
+      # ── Step 1: Resolve URL and verify litellm-staging is healthy ────────────
+      - name: Resolve LiteLLM URL and verify health
+        id: resolve
+        run: |
+          echo "::add-mask::$LITELLM_KEY"
+
+          # sslip.io HTTP URL — topology-independent, always resolvable from GH Actions
+          LITELLM_URL="http://${LITELLM_UUID}.${HOSTINGER_IP}.sslip.io"
+          echo "LITELLM_URL=$LITELLM_URL" >> "$GITHUB_ENV"
+
+          echo "=== Health check: $LITELLM_URL/health/readiness ==="
+          HEALTH=$(curl -s --max-time 15 -o /tmp/health.json -w "%{http_code}" \
+            "$LITELLM_URL/health/readiness" || echo "000")
+          echo "HTTP $HEALTH"
+          cat /tmp/health.json 2>/dev/null | head -5 || true
+
+          if [ "$HEALTH" != "200" ]; then
+            echo ""
+            echo "ERROR: litellm-staging is not healthy (HTTP $HEALTH)"
+            echo ""
+            echo "Action required:"
+            echo "  1. Go to https://coolify.inatechshell.ca"
+            echo "  2. Navigate to ops-hub-staging → litellm-staging"
+            echo "  3. Restart the container from the Coolify UI (NOT via API)"
+            echo "  4. Wait until Running (usually 1-2 min)"
+            echo "  5. Re-trigger this workflow"
+            exit 1
+          fi
+          echo "litellm-staging is healthy — proceeding"
+
+      # ── Step 2: Inspect currently registered models (read-only) ─────────────
+      - name: Inspect currently registered models
+        run: |
+          echo "::add-mask::$LITELLM_KEY"
+
+          # GET /model/info — full registry (authenticated)
+          HTTP=$(curl -s --max-time 30 -o /tmp/model_info.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_URL/model/info")
+          echo "GET /model/info → HTTP $HTTP"
+
+          if [ "$HTTP" = "200" ]; then
+            TOTAL=$(jq '.data | length' /tmp/model_info.json 2>/dev/null || echo "?")
+            echo "Total registered models: $TOTAL"
+            echo "=== All registered models ==="
+            jq -r '.data[] | "  \(.model_name)  (id=\(.model_info.id // "?"))"' \
+              /tmp/model_info.json 2>/dev/null || jq . /tmp/model_info.json | head -40
+            echo ""
+            echo "=== $MODEL_NAME registrations ==="
+            jq -r --arg m "$MODEL_NAME" \
+              '.data[] | select(.model_name == $m) | "  id=\(.model_info.id // "?")  litellm_model=\(.litellm_params.model // "?")"' \
+              /tmp/model_info.json 2>/dev/null || echo "  (none found)"
+          else
+            echo "WARNING: /model/info HTTP $HTTP — continuing anyway"
+            cat /tmp/model_info.json | head -10 || true
+            echo '{"data":[]}' > /tmp/model_info.json
+          fi
+
+          # GET /v1/models — public model list (authenticated)
+          HTTP2=$(curl -s --max-time 30 -o /tmp/v1_models.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_URL/v1/models")
+          echo ""
+          echo "GET /v1/models → HTTP $HTTP2"
+          if [ "$HTTP2" = "200" ]; then
+            echo "=== Exposed model IDs ==="
+            jq -r '.data[] | "  \(.id)"' /tmp/v1_models.json 2>/dev/null \
+              || cat /tmp/v1_models.json | head -20
+          else
+            echo "WARNING: /v1/models HTTP $HTTP2"
+            cat /tmp/v1_models.json | head -5 || true
+          fi
+
+      # ── Step 3: Delete any existing registrations to get a clean slate ───────
+      - name: Delete stale registrations of target model
+        run: |
+          echo "::add-mask::$LITELLM_KEY"
+
+          # Collect all IDs registered under this model_name
+          MODEL_IDS=$(jq -r --arg m "$MODEL_NAME" \
+            '.data[] | select(.model_name == $m) | .model_info.id // empty' \
+            /tmp/model_info.json 2>/dev/null | grep -v '^$' || true)
+
+          if [ -z "$MODEL_IDS" ]; then
+            echo "No existing registrations found for $MODEL_NAME — skip delete"
+          else
+            echo "Deleting existing registration(s) for $MODEL_NAME ..."
+            echo "$MODEL_IDS" | while read -r MODEL_ID; do
+              [ -z "$MODEL_ID" ] && continue
+              echo "  DELETE id=$MODEL_ID"
+              DEL_HTTP=$(curl -s --max-time 30 -o /tmp/del_resp.json -w "%{http_code}" -X POST \
+                -H "Authorization: Bearer $LITELLM_KEY" \
+                -H "Content-Type: application/json" \
+                "$LITELLM_URL/model/delete" \
+                -d "{\"id\": \"$MODEL_ID\"}")
+              echo "  POST /model/delete → HTTP $DEL_HTTP"
+              jq . /tmp/del_resp.json 2>/dev/null || cat /tmp/del_resp.json | head -5 || true
+            done
+            echo "Cleanup complete"
+          fi
+
+      # ── Step 4: Register meta/llama-3.3-70b-instruct → NVIDIA NIM ───────────
+      - name: Register model in LiteLLM database
+        id: register
+        run: |
+          echo "::add-mask::$LITELLM_KEY"
+
+          # litellm_params.model uses the 'openai/' provider prefix so LiteLLM routes
+          # to integrate.api.nvidia.com/v1 using the OpenAI-compatible interface.
+          # The string after 'openai/' ("meta/llama-3.3-70b-instruct") is the exact
+          # model name sent to NVIDIA NIM — this is the correct current catalog name.
+          PAYLOAD=$(jq -n \
+            --arg model_name "$MODEL_NAME" \
+            '{
+              model_name: $model_name,
+              litellm_params: {
+                model: "openai/meta/llama-3.3-70b-instruct",
+                api_base: "https://integrate.api.nvidia.com/v1",
+                api_key: "os.environ/NVIDIA_API_KEY"
+              },
+              model_info: {
+                description: "NVIDIA NIM — Llama 3.3 70B Instruct (staging default AI provider)"
+              }
+            }')
+
+          echo "Registering $MODEL_NAME ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/reg_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_URL/model/new" -d "$PAYLOAD")
+          echo "POST /model/new → HTTP $HTTP"
+          jq . /tmp/reg_resp.json 2>/dev/null || cat /tmp/reg_resp.json | head -10 || true
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            NEW_ID=$(jq -r '.model_id // .id // empty' /tmp/reg_resp.json 2>/dev/null || echo "")
+            echo "Registered $MODEL_NAME (id=$NEW_ID)"
+            echo "new_model_id=$NEW_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: POST /model/new returned HTTP $HTTP"
+            echo ""
+            echo "Troubleshooting:"
+            echo "  HTTP 401 → LITELLM_MASTER_KEY secret does not match Coolify env var"
+            echo "  HTTP 500 → LiteLLM DB connectivity issue — check DATABASE_URL in Coolify"
+            exit 1
+          fi
+
+      # ── Step 5: Verify registration ──────────────────────────────────────────
+      - name: Verify registration in /model/info
+        run: |
+          echo "::add-mask::$LITELLM_KEY"
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/verify_info.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_URL/model/info")
+
+          COUNT=$(jq --arg m "$MODEL_NAME" \
+            '[.data[] | select(.model_name == $m)] | length' \
+            /tmp/verify_info.json 2>/dev/null || echo 0)
+
+          echo "$MODEL_NAME in /model/info: $COUNT registration(s)"
+          jq --arg m "$MODEL_NAME" \
+            '[.data[] | select(.model_name == $m) | {model_name, litellm_params, model_info}]' \
+            /tmp/verify_info.json 2>/dev/null || true
+
+          if [ "$COUNT" -lt "1" ]; then
+            echo "ERROR: $MODEL_NAME NOT found in /model/info after registration"
+            echo "This is unexpected — check LiteLLM logs in Coolify for DB write errors"
+            exit 1
+          fi
+          echo "Registration confirmed"
+
+      # ── Step 6: Live completion test (minimal, max_tokens=5) ─────────────────
+      - name: Test completion call
+        id: test_completion
+        run: |
+          echo "::add-mask::$LITELLM_KEY"
+
+          PAYLOAD=$(jq -n \
+            --arg model "$MODEL_NAME" \
+            '{
+              model: $model,
+              messages: [{"role": "user", "content": "Reply with exactly: OK"}],
+              max_tokens: 5
+            }')
+
+          echo "POST /chat/completions (model=$MODEL_NAME, max_tokens=5) ..."
+          HTTP=$(curl -s --max-time 90 -o /tmp/completion_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_URL/chat/completions" -d "$PAYLOAD")
+          echo "POST /chat/completions → HTTP $HTTP"
+
+          if [ "$HTTP" = "200" ]; then
+            REPLY=$(jq -r '.choices[0].message.content // empty' /tmp/completion_resp.json 2>/dev/null || echo "")
+            MODEL_USED=$(jq -r '.model // empty' /tmp/completion_resp.json 2>/dev/null || echo "")
+            echo ""
+            echo "Completion succeeded"
+            echo "  Model used: $MODEL_USED"
+            echo "  Response:   $REPLY"
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+          else
+            ERROR_MSG=$(jq -r '.error.message // .detail // .message // empty' \
+              /tmp/completion_resp.json 2>/dev/null || true)
+            echo ""
+            echo "ERROR: completion call failed (HTTP $HTTP)"
+            echo "  Error: $ERROR_MSG"
+            echo ""
+            echo "Troubleshooting:"
+            echo "  'Invalid model name'  → registration did not take; re-check /model/info"
+            echo "  'Authentication'      → NVIDIA_API_KEY in Coolify staging is missing or expired"
+            echo "                          Escalate to FOUNDER_QUEUE (credential the agent cannot access)"
+            echo "  'Model not found'     → NVIDIA NIM catalog no longer lists this model"
+            echo "                          Try: model='nvidia/llama-3.3-70b-instruct' in litellm_params"
+            jq . /tmp/completion_resp.json 2>/dev/null | head -30 || true
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      # ── Step 7: Report LITELLM_DEFAULT_MODEL in ops-hub-app (if present) ─────
+      - name: Check LITELLM_DEFAULT_MODEL in ops-hub-app
+        run: |
+          # Find ops-hub-app UUID
+          APPS_HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+
+          OPS_UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' \
+            /tmp/apps.json 2>/dev/null || echo "")
+
+          if [ -z "$OPS_UUID" ] || [ "$OPS_UUID" = "null" ]; then
+            echo "ops-hub-app not found in Coolify — skipping LITELLM_DEFAULT_MODEL check"
+            exit 0
+          fi
+
+          ENVS_HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_UUID/envs")
+
+          DEFAULT_MODEL=$(jq -r '.[] | select(.key == "LITELLM_DEFAULT_MODEL") | .value' \
+            /tmp/envs.json 2>/dev/null || echo "")
+
+          echo "=== LITELLM_DEFAULT_MODEL in ops-hub-app ==="
+          if [ -z "$DEFAULT_MODEL" ]; then
+            echo "  Not set — triageTicket must be specifying the model name explicitly"
+          elif [ "$DEFAULT_MODEL" = "$MODEL_NAME" ]; then
+            echo "  Correct: $DEFAULT_MODEL"
+          else
+            echo "  Current value: $DEFAULT_MODEL"
+            echo "  Working model: $MODEL_NAME"
+            echo ""
+            echo "  ACTION: If triageTicket reads LITELLM_DEFAULT_MODEL to select the model,"
+            echo "  update this env var to: $MODEL_NAME"
+            echo "  Use fix-litellm-tls.yml pattern to update via Coolify API."
+          fi
+
+      # ── Step 8: Final summary ────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo "========================================================"
+          echo " FIX SUMMARY — LiteLLM model re-registration"
+          echo "========================================================"
+          echo " Target model:   $MODEL_NAME"
+          echo " litellm_params: openai/meta/llama-3.3-70b-instruct"
+          echo " Provider:       NVIDIA NIM (integrate.api.nvidia.com/v1)"
+          echo " Completion:     ${{ steps.test_completion.outputs.status }}"
+          echo " New model id:   ${{ steps.register.outputs.new_model_id }}"
+          echo ""
+          echo " Rollback (if needed):"
+          echo "   POST $LITELLM_URL/model/delete"
+          echo "   Body: {\"id\": \"${{ steps.register.outputs.new_model_id }}\"}"
+          echo "   Auth: Bearer \$LITELLM_MASTER_KEY"
+          echo ""
+          echo " Deploy plan: docs/deploys/2026-06-25-litellm-model-reregistration.md"
+          echo "========================================================"
