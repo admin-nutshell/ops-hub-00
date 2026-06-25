@@ -122,7 +122,7 @@ These satisfy the ADR's pre-enable verification **and** Security Lead tracked it
    ```
 2. **Schema/constants match live DB** — `\d threads`: confirm the NOT NULL column set matches the `INSERT` and that `type/status/state/source_via/source_type/action_type` constants (3/1/2/1/1/0) are correct for an internal note. The code marks these *unverified against live schema*; this is where they get verified.
 3. **Renders correctly + no email (T1/T2):** confirm the inserted note displays correctly in the FreeScout agent UI, that the body is output-sanitized (no stored-XSS — or sanitize the draft before INSERT), and that the raw INSERT triggered **no outgoing customer email** and acceptable conversation counters/last-activity.
-4. Delete the verification note when done.
+4. Delete the verification note when done. **Note:** `freescout_writer` is INSERT-only (it cannot DELETE — confirmed by the 4.1 negative tests), so run the cleanup AS `freescout_user` via `docker exec ... artisan tinker` (`DB::statement("DELETE FROM threads WHERE body = 'runbook verification note'")`) or as `postgres` in the SQL Editor.
 
 If all pass, the credential scope is approved (C1 satisfied). T3 (dedup guard) and T4 (audit-log entry) remain to be resolved before the dispatch is wired and the path runs unattended — see ADR-0003 §Security Lead Review.
 
