@@ -594,3 +594,39 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   env vars required: LITELLM_URL + LITELLM_MASTER_KEY in Coolify ops-hub-app.
     FQ-35 filed (BLOCKING). End-to-end triage cannot be validated until these are added.
 ```
+
+### 2026-06-25 — T-23 ticket-respond: write-back path + 'responded' state
+
+```
+2026-06-25 [Tech Lead] T-23 ticket-respond delivers the AI draft as an internal
+  FreeScout NOTE (type=3), never a customer-sent reply → ADR-0003.
+  Safety: an unreviewed AI draft must never auto-email a customer; a human
+  approves + sends from the FreeScout UI. Independent of transport choice.
+
+  Write path: separate getFreeScoutPool() built from a NEW FREESCOUT_DB_URL
+  (freescout_user, owner of threads). ops_hub_app stays read-only on FreeScout
+  tables (CLAUDE.md) — no write GRANT to our app credential (Option B rejected).
+  REST API (Option C) is the preferred long-term path but blocked (Api module
+  disabled/paid, per 2026-06-23); the delivery seam makes it a one-function swap.
+
+  Config-gated + fail-safe: FREESCOUT_DB_URL absent today → delivery throws
+  before any state change → ticket stays 'triaged', retried, no corruption.
+  State advances to 'responded' ONLY after a confirmed note write.
+
+  'responded' was NOT in the tickets.state CHECK (initial schema enum). Migration
+  20260625000000_t23_responded_state.sql adds it. Without it the live UPDATE
+  throws a check-violation that mocked unit tests cannot catch — caught in review.
+
+  FLAGGED to Production Manager (provision FREESCOUT_DB_URL + FREESCOUT_BOT_USER_ID,
+  verify threads schema/constants against live DB) + Security Lead (write-credential
+  scope, cross-app posture). Tech-Lead-owned call, NOT a FOUNDER_QUEUE item.
+
+  Activation: respondTicket listens on ops-hub/ticket.respond. Dispatch from
+  triageTicket NOT wired (T-23 must not modify ticket-triage.ts; T-22 blocked on
+  FQ-39). Add one-line step.sendEvent (or a sweepTriagedTickets cron) when T-22
+  validates.
+
+  At-least-once caveat: FreeScout write + tickets UPDATE span two privilege
+  contexts, not atomic. Crash between them → duplicate note on retry. Dedup is a
+  documented follow-up.
+```

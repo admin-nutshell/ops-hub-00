@@ -125,7 +125,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **BLOCKED on FQ-39 (2026-06-25).** Code complete and merged to main. `triageTicket` + `sweepNewTickets` deployed. LITELLM_URL set to internal URL `http://h12xz8887fxvbvjts2hac8if-055055304869:4000` (HTTP 401 = alive). FreeScout tables recreated (DB reset recovery done). GRANT re-issued. **Blocker: Gmail mailbox not reconnected after DB reset — FreeScout has 0 conversations. pollFreeScout polls successfully but ingests nothing. Waiting on FQ-39 (founder reconnects mailbox in FreeScout UI).** | Jul 14 |
-| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22, PT-2 | Function drafts response via LiteLLM; POSTs note to FreeScout conversation via API; Supabase state → `responded`; LangFuse trace `ticket-respond` visible | Jul 16 |
+| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22 | 🟢 **CODE COMPLETE (2026-06-25) — PR `feat/t23-ticket-respond`.** `src/inngest/ticket-respond.ts` (`respondTicket` on `ops-hub/ticket.respond`) registered in `src/index.ts`. Drafts reply via LiteLLM; delivers as internal FreeScout NOTE behind a mockable, config-gated seam; state → `responded`; LangFuse trace `ticket-respond`. 11 unit tests green; lint/typecheck/test pass. Migration `20260625000000_t23_responded_state.sql` adds `'responded'` to the state enum. ADR-0003 records the write-back decision. **Delivery dormant until `FREESCOUT_DB_URL` + `FREESCOUT_BOT_USER_ID` are provisioned (flagged below).** No REST API — direct DB write as `freescout_user`. | Jul 16 |
 
 ### Track C — Testing + Evals
 
@@ -181,6 +181,20 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 - Production Manager: T-08 (LiteLLM) + T-10 (FreeScout) in parallel
 
 ### Tech Lead
+**🟢 T-23 CODE COMPLETE (2026-06-25) — branch `feat/t23-ticket-respond`, PR open.**
+`src/inngest/ticket-respond.ts`: `respondTicket` (event-driven on `ops-hub/ticket.respond`) + exported `respondOneTicket`/`draftResponse`/`postFreeScoutNote`. Registered in `src/index.ts`. Drafts a reply via LiteLLM (system=instructions+urgency tone, user=XML-escaped untrusted ticket content — same injection split as triage), delivers it as an internal FreeScout **NOTE** (type=3, never auto-emailed) behind a mockable, config-gated delivery seam, then advances state `triaged → responded`. LangFuse trace `ticket-respond`. 11 unit tests green (draft prompt shape, injection escaping, idempotency skips, no-conversation skip, **error path: LiteLLM/delivery failure → no UPDATE, stays triaged**). `pnpm lint`/`typecheck`/`test` green.
+
+Migration `supabase/migrations/20260625000000_t23_responded_state.sql` adds `'responded'` to the `tickets.state` CHECK — it was missing, so the live UPDATE would have thrown a check-violation invisible to mocked tests (caught in review). Founder/Prod Mgr applies via the T-11 runbook pattern before T-23 runs live.
+
+**ADR-0003** (`docs/adr/0003-freescout-response-writeback.md`) records the write-back decision: NOTE not reply (safety); write as `freescout_user` on a separate pool, never `ops_hub_app` (read-only on FreeScout tables); REST API rejected (Api module disabled/paid) but is the preferred long-term swap; do-nothing rejected.
+
+**FLAGGED (not added — Tech-Lead call, not founder's):**
+- → **Production Manager:** provision `FREESCOUT_DB_URL` (least-priv `freescout_user` DSN, INSERT on `threads`) + `FREESCOUT_BOT_USER_ID` in Coolify; verify `threads` NOT NULL columns + note-type constants against the live FreeScout DB before enabling (the INSERT column set is marked unverified-against-live-schema in code). Until set, `ticket-respond` is registered but dormant — fail-safe (ticket stays `triaged`).
+- → **Security Lead:** review the `freescout_user` write-credential scope + cross-app write posture (ADR-0003 §Review).
+- **Activation wiring deferred:** `triageTicket` must emit `ops-hub/ticket.respond` on success — one-line `step.sendEvent`, NOT added (T-23 must not modify `ticket-triage.ts`; T-22 blocked on FQ-39). Add when T-22 validates, or add a `sweepTriagedTickets` cron mirroring `sweepNewTickets`.
+
+**Handoff → QA Manager (T-24):** PR open, CI target green. The QA contract stub (`it.todo` list) in `ticket-respond.test.ts` is now converted to real assertions per its own instructions. Extend `ticket-state-machine.test.ts` to cover `triaged → responded`; the respond path's FreeScout delivery is mocked, so integration coverage of the state machine does not need the credential.
+
 **✅ T-21 DONE (2026-06-23).** `pollFreeScout` cron verified end-to-end: two tickets confirmed in Supabase (`freescout_conversation_id: 6 + 7`), dedup working. FQ-31/33/34 resolved. PR #140 merged.
 
 **⏳ T-22 IN PROGRESS (2026-06-23) — branch `feat/t22-ticket-triage`.**

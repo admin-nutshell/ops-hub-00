@@ -6,13 +6,14 @@ import { inngest } from "./inngest/client";
 import { helloWorld } from "./inngest/functions";
 import { pollFreeScout } from "./inngest/freescout-poller";
 import { triageTicket, sweepNewTickets } from "./inngest/ticket-triage";
+import { respondTicket } from "./inngest/ticket-respond";
 import { emitTrace } from "./langfuse";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
 const inngestHandler = serve({
   client: inngest,
-  functions: [helloWorld, pollFreeScout, triageTicket, sweepNewTickets],
+  functions: [helloWorld, pollFreeScout, triageTicket, sweepNewTickets, respondTicket],
 });
 
 export const server = http.createServer((req, res) => {
