@@ -62,6 +62,7 @@ export async function classifyTicket(title: string, body: string | null): Promis
 
   const resp = await fetch(`${litellmUrl}/chat/completions`, {
     method: "POST",
+    signal: AbortSignal.timeout(30_000),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${litellmKey}`,
