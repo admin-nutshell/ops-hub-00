@@ -79,3 +79,38 @@ Per the standing rule, every option here is $0: Option A/B reuse the existing Su
 - **Security Lead:** sign-off required on the `freescout_user` write-credential scope (least-privilege: INSERT on `threads` only, no broader FreeScout access) and on the cross-app write posture before the gate is enabled.
 - **Production Manager:** owns provisioning `FREESCOUT_DB_URL` + `FREESCOUT_BOT_USER_ID` in Coolify and the pre-enable live-schema verification.
 - **Evals Lead:** the draft prompt is a new agent capability — covered by T-25 (`evals/ticket-respond.yaml`); the eval gate governs any prompt change.
+
+---
+
+## Security Lead Review
+
+- **Reviewer:** Security Lead (AppSec)
+- **Date:** 2026-06-25
+- **Verdict:** **CONDITIONAL SIGN-OFF.** The write-back design is sound and fail-safe. One condition is **blocking before Production Manager provisions the credential**; the rest are **track-before-activation** (before the dispatch is wired and the gate is opened in any live environment). This is an agent-owned security call (Security Lead authority per the decision matrix), **not** a FOUNDER_QUEUE item — nothing is live and nothing is escalated.
+
+### What is fine (and why)
+
+- **NOTE-not-reply is the correct load-bearing control.** Posting `type=3` (internal note) means an unreviewed AI draft is never emailed to a customer. Approved.
+- **No SQL injection in the INSERT path.** `postFreeScoutNote` uses a fully parameterized `INSERT` (`$1::bigint`, `$2::bigint`, `$3`). The LiteLLM-drafted `note` is bound as `$3`, never string-concatenated, so it cannot alter SQL structure. `conversationId`/`botUserId` are cast to `bigint`, which additionally rejects non-numeric input. The `escapeXml` step is prompt-delimiter hygiene (LLM defense), not the SQL control — the parameterization is. This is fine.
+- **Config-gate is a sound fail-closed default.** With `FREESCOUT_DB_URL` absent, `getFreeScoutPool()` throws **before** any state change; the ticket stays `triaged` and retries. No half-state, no corruption, no secret leaked in the error string. As a *safety* default it is sufficient. Note it is an availability gate, not an authorization boundary — it does not constrain *what* may be written once the credential exists, which is why the least-privilege condition below matters.
+- **Non-atomic at-least-once write is acceptable for v1.** The FreeScout `INSERT` and the `tickets` UPDATE span two privilege contexts and are not atomic; a crash between them re-posts a duplicate note on retry. For a dormant, human-reviewed, internal-note scaffold the blast radius is "a human sees two drafts and picks one" — no customer impact, no data corruption (the `triaged` guard keeps the state machine idempotent). Acceptable as-is.
+- **Secret hygiene verified.** Scanned the T-23 diff: no DSN/password committed (only `postgresql://mock` in tests). No new dependencies added. Zero secrets in git history holds.
+
+### Condition C1 — BLOCKING before provisioning (least-privilege role, not `freescout_user`)
+
+Question (a) from the review brief. **Do not use the `freescout_user` DSN for `FREESCOUT_DB_URL`.** `freescout_user` is FreeScout's own application login role and the **owner** of every FreeScout table — it can SELECT/INSERT/UPDATE/DELETE/TRUNCATE/DROP across `customers`, `emails`, `users` (bcrypt password hashes), `mailboxes`, `conversations`, `threads`, and FreeScout settings. Handing that DSN to Ops Hub gives our app the widest possible blast radius inside another app's data store, and reuses a credential the live FreeScout app also holds. That is precisely the "widens blast radius across app boundaries" reasoning this ADR used to reject Option B — it applies symmetrically here. The task needs exactly **one** privilege: `INSERT` on `threads`.
+
+**Condition:** provision `FREESCOUT_DB_URL` with a **dedicated least-privilege LOGIN role** (`freescout_writer`) holding `INSERT` on `threads` **only** (plus the sequence grant the serial `id` requires) and nothing else. SQL and the two-context execution procedure are in `docs/engineering/t23-freescout-writeback-runbook.md`. The `GRANT INSERT ON threads` **must** be issued AS `freescout_user` via `docker exec ... artisan tinker` (same owner-grant path as FQ-34 — `postgres`/`service_role` cannot grant on tables it does not own in this Supabase setup); putting it in the SQL Editor reproduces the FQ-34 failure exactly.
+
+This condition gates Production Manager's next step: provision `freescout_writer`, not `freescout_user`.
+
+### Track before ACTIVATION (non-blocking for provisioning)
+
+- **T1 — Stored-XSS / HTML-injection into the FreeScout staff UI.** The LLM-drafted body is written by **raw INSERT**, bypassing FreeScout's application-layer write-time sanitization. If FreeScout renders `threads.body` without output-encoding, ticket content engineered to make the model emit `<script>`/HTML could execute in a support agent's browser when they open the note. `escapeXml` does not cover this (it escapes for prompt delimiters, not HTML rendering). Mitigants already present: internal-note audience, human review before send, and FreeScout's normal HTMLPurifier-on-output. **Action:** during pre-enable verification confirm FreeScout output-sanitizes `thread.body`, or HTML-encode/strip the draft before INSERT. Non-blocking for provisioning; resolve before the gate opens in prod.
+- **T2 — Residual the table grant cannot enforce.** `INSERT` on `threads` cannot constrain the row to `type=3`; the "note only / never emailed" guarantee lives entirely in `postFreeScoutNote`'s application code. The reason no customer email fires is that a **raw DB INSERT bypasses FreeScout's mail pipeline** (an app-layer side effect, same reason it skips counters/timestamps). **Action:** the pre-enable live-schema verification the ADR already mandates must explicitly confirm a raw INSERT triggers **no outgoing email**.
+- **T3 — Dedup guard for the non-atomic write.** Already a documented ADR follow-up; add the "skip if a `ticket-respond` note already exists on the conversation" guard before the dispatch is wired and the path runs unattended.
+- **T4 — Audit trail.** For SOC 2 / PIPEDA readiness, emit an audit-log entry per FreeScout write (conversation id, run/event id, timestamp, attributing bot user). Today only the LangFuse draft trace and `owner_agent='ticket-respond'` on the ticket record the action; the cross-app write itself is not separately logged.
+
+### Sign-off statement
+
+Security Lead **approves the write-back design with conditions**. Provisioning is **unblocked the moment `FREESCOUT_DB_URL` points at a least-privilege `freescout_writer` role (C1)** built per the runbook. T1–T4 must be resolved before the delivery gate is opened in any live environment but do not block provisioning the (still-dormant) credential.

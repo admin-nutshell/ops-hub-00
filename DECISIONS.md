@@ -629,4 +629,35 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   At-least-once caveat: FreeScout write + tickets UPDATE span two privilege
   contexts, not atomic. Crash between them → duplicate note on retry. Dedup is a
   documented follow-up.
+
+2026-06-25 [Security Lead] T-23 write-back: CONDITIONAL SIGN-OFF → ADR-0003
+  §Security Lead Review. Design is sound + fail-safe. NOT a FOUNDER_QUEUE item
+  (agent-owned, nothing live).
+
+  BLOCKING condition C1 (gates provisioning): FREESCOUT_DB_URL must NOT use the
+  freescout_user DSN. freescout_user OWNS every FreeScout table (customers,
+  emails, users/password-hashes, mailboxes, conversations, threads) — handing
+  Ops Hub that credential is the max-blast-radius cross-app posture this ADR
+  rejected for Option B; it applies symmetrically. Provision a dedicated
+  least-privilege LOGIN role `freescout_writer`: INSERT on threads ONLY + the
+  threads sequence grant, nothing else. GRANT INSERT must be run AS freescout_user
+  via docker exec artisan tinker (FQ-34 owner-grant path; service_role cannot
+  grant on tables it doesn't own). SQL + 2-context procedure:
+  docs/engineering/t23-freescout-writeback-runbook.md.
+
+  Confirmed fine: NOTE-not-reply control; NO SQLi (INSERT fully parameterized,
+  note bound as $3, ids cast bigint); config-gate is a sound fail-closed default;
+  non-atomic at-least-once duplicate-note risk acceptable for dormant v1 (internal
+  notes, human-reviewed, no customer email); zero secrets in T-23 git history
+  (only postgresql://mock in tests); no new dependencies.
+
+  Track before ACTIVATION (non-blocking for provisioning): T1 stored-XSS — raw
+  INSERT bypasses FreeScout write-time sanitization, confirm thread.body is
+  output-sanitized or sanitize the draft pre-INSERT; T2 raw INSERT bypasses the
+  mail pipeline — pre-enable verification must confirm NO outgoing customer email;
+  T3 dedup guard for the non-atomic write; T4 audit-log entry per FreeScout write
+  (SOC 2 / PIPEDA).
+
+  Handoff → Production Manager: UNBLOCKED to provision the moment FREESCOUT_DB_URL
+  points at freescout_writer (C1), per the runbook. Do not provision freescout_user.
 ```
