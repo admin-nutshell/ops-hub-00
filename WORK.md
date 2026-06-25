@@ -124,7 +124,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **In progress (2026-06-23).** Branch `feat/t22-ticket-triage`. `triageTicket` (event-driven) + `sweepNewTickets` (cron */5) in `src/inngest/ticket-triage.ts`. 11 unit tests green. CI passes. Blocked on FQ-35 (LITELLM_URL + LITELLM_MASTER_KEY env vars in Coolify ops-hub-app). | Jul 14 |
+| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **BLOCKED on FQ-39 (2026-06-25).** Code complete and merged to main. `triageTicket` + `sweepNewTickets` deployed. LITELLM_URL set to internal URL `http://h12xz8887fxvbvjts2hac8if-055055304869:4000` (HTTP 401 = alive). FreeScout tables recreated (DB reset recovery done). GRANT re-issued. **Blocker: Gmail mailbox not reconnected after DB reset — FreeScout has 0 conversations. pollFreeScout polls successfully but ingests nothing. Waiting on FQ-39 (founder reconnects mailbox in FreeScout UI).** | Jul 14 |
 | T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22, PT-2 | Function drafts response via LiteLLM; POSTs note to FreeScout conversation via API; Supabase state → `responded`; LangFuse trace `ticket-respond` visible | Jul 16 |
 
 ### Track C — Testing + Evals
@@ -162,6 +162,9 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 ## Per-agent status
 
 ### PM
+**2026-06-25 — Sprint 2 session start. Team OS live.**
+CLAUDE.md + `.claude/team/` (CONSTITUTION, COMMS, PM, QA, PRODUCTION, CR, FOUNDER playbooks) committed on branch `chore/team-operating-system` (PR #147, open). Sprint 2 critical path blocked at T-22 on FQ-39 (Gmail mailbox reconnect — founder action). FQ-36 and FQ-37 closed (LITELLM_URL resolved via internal container URL). Issuing parallel tasks to Tech Lead (T-23 specwork) and QA (T-24 spec) while T-22 validation gate is open. FQ-29 (DNC scope) still open — blocking T-27 only; non-critical until T-26 complete.
+
 **2026-06-23 — Sprint 2 planned.** Sprint 2 task list committed (T-21–T-29). Critical path: T-21 → T-22 → T-23 → T-26 (#11) → T-27 (#12). Pre-sprint ops (PT-1/PT-2) assigned to Production Manager. Two FOUNDER_QUEUE items filed: FQ-28 (FreeScout admin access confirmation for PT-1/PT-2) and FQ-29 (DNC project scope clarification for T-27). Sprint 1 retro (T-28) due July 4. Monitoring M1 checklist. M1 criteria #11–#12 are the Sprint 2 close gates.
 
 **2026-06-23 — Sprint 1: 20/20 tasks done (100%).** T-14 UptimeRobot ✅ Done — 3 monitors created manually in dashboard (FQ-17 resolved). All Sprint 1 foundation tasks complete. M1 criteria #1–#9 all green; #10 confirmed 2026-06-23.
