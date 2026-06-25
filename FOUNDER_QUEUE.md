@@ -49,63 +49,64 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
-### ~~FQ-36 — URGENT: [Tech Lead] Fix LITELLM_URL in Coolify — wrong URL causes TLS failure, ticket triage broken~~ — PARTIAL: TLS fixed, now Docker networking
+### FQ-39 — BLOCKING: [PM] Reconnect Gmail mailbox in FreeScout — T-22 validation gate
 
 ```
-PARTIAL: Founder applied the manual fix (LITELLM_URL → http://litellm-staging:4000).
-  TLS error resolved ✅ but triage now fails with a ~3m TIMEOUT instead.
-  Diagnosis: ETIMEDOUT = SYN dropped = Docker network isolation.
-  'litellm-staging' hostname resolves but port 4000 is unreachable from ops-hub-app.
-  See FQ-37 for the active investigation and fix.
-Linked: FQ-37 (active)
+BLOCKING: [PM] The Supabase DB reset (2026-06-25) wiped all FreeScout tables including
+  the `mailboxes` table where Gmail OAuth config is stored. FreeScout was restarted
+  (workflow restart-freescout-regrant.yml, run #28186346899) and Laravel recreated the
+  table structure — but the mailbox configuration is empty.
+
+  Result: FreeScout has zero conversations. pollFreeScout polls successfully but finds
+  nothing to ingest. T-22 triage cannot be validated without at least one live ticket.
+
+  Action needed (founder, ~5 min in FreeScout UI):
+    1. Go to https://freescout-staging.inatechshell.ca
+    2. Log in as mai@leelaecospa.com
+    3. Admin → Mailboxes → Create Mailbox
+    4. Name: ITS Support  |  Email: info@inatechshell.ca
+    5. Incoming: IMAP → Google Workspace OAuth (same config as before)
+    6. Outgoing: SMTP → Google Workspace OAuth
+    7. Save and verify "Fetch emails" runs without error
+
+  Once the mailbox is connected FreeScout will re-fetch emails from Gmail.
+  Conversations 6 and 7 (or their equivalents) will re-appear with new IDs.
+  pollFreeScout will ingest them on its next 60-second tick.
+  sweepNewTickets will dispatch triage within 5 minutes.
+
+  Expected outcome: tickets table shows 2 rows, state='triaged', urgency/category/routing
+  populated. That is T-22 done and T-23 unblocked.
+
+Impact if delayed: T-22 cannot close. T-23, T-24, T-25, T-26, T-27 all blocked downstream.
+  Sprint 2 critical path halted.
+Linked: T-22, FQ-38 (FreeScout recovery), DECISIONS.md 2026-06-25
 ```
 
 ---
 
-### FQ-37 — URGENT: [Tech Lead] LiteLLM unreachable from ops-hub-app — Docker network isolation
+### ~~FQ-36 — URGENT: [Tech Lead] Fix LITELLM_URL in Coolify — wrong URL causes TLS failure, ticket triage broken~~ — RESOLVED
 
 ```
-URGENT: [Tech Lead] T-22 ticket triage is timing out after ~3 min on every run:
-  TypeError: fetch failed  (30s timeout added by PR #143 — surface time cut to 30s)
+RESOLVED: 2026-06-25 — Docker container name suffix (-055055304869) identified by founder
+  via VPS inspection. Internal URL confirmed reachable from inside ops-hub-app (HTTP 401
+  from LiteLLM = alive and auth-gated). LITELLM_URL set to:
+  http://h12xz8887fxvbvjts2hac8if-055055304869:4000
+  This is the standing config. sslip.io is a diagnostic fallback only (per CLAUDE.md).
+Linked: FQ-37 (resolved), DECISIONS.md 2026-06-25
+```
 
-Root cause (high confidence): ops-hub-app and litellm-staging are in DIFFERENT Coolify
-  projects. Coolify assigns each project its own Docker network. Service-to-service
-  hostnames like 'litellm-staging' only resolve within the same project/network.
-  Diagnosis: ETIMEDOUT (SYN dropped, ~3 min) = name resolves, but packets are dropped
-  between network segments. ENOTFOUND would indicate DNS failure; ECONNREFUSED would
-  indicate wrong port — neither applies here.
+---
 
-Awaiting: Run diagnose-litellm.yml after merging PR #143 to confirm the project mismatch
-  and identify which URL works from inside the ops-hub-app container.
+### ~~FQ-37 — URGENT: [Tech Lead] LiteLLM unreachable from ops-hub-app — Docker network isolation~~ — RESOLVED
 
---- Interim fix (1 minute, manual) ---
-
-  In Coolify → ops-hub-app → Environment Variables:
-  CHANGE  LITELLM_URL  from: http://litellm-staging:4000
-                         to: http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io
-
-  This hairpin-NAT URL exits the container to the VPS's own public IP on port 80 and
-  re-enters via Traefik → litellm-staging. It works regardless of Docker network topology.
-  CONFIRMED reachable from GitHub Actions runner (external). After Coolify change, restart
-  ops-hub-app to apply.
-
-  NOTE: Do NOT use port 80 if there's a redirect to HTTPS — check that the HTTP URL
-  returns 200, not 301. If it redirects, add the FQDN cert fix first (see PR #143 step B).
-
---- Permanent fix (recommended, after PR #143 merges) ---
-
-  Option A — Connect to same network (cleanest, one-time):
-    Coolify dashboard → litellm-staging → Settings → Connected Networks
-    Add the same network as ops-hub-app (likely 'coolify' or the ops-hub-staging network).
-    After this, 'http://litellm-staging:4000' will resolve correctly.
-    Set LITELLM_URL back to http://litellm-staging:4000 and restart ops-hub-app.
-
-  Option B — Use sslip.io HTTP URL (already works, minimal change):
-    Set LITELLM_URL=http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io in Coolify.
-    The fix-litellm-tls.yml workflow (PR #143) will do this automatically.
-
-Impact if delayed: T-22 cannot be validated. Conv 6+7 remain at state='new'. T-23 blocked.
-Linked: T-22 (PR #141), FQ-35/FQ-36 (resolved), PR #143
+```
+RESOLVED: 2026-06-25 — Root cause was the Coolify container name suffix pattern
+  ({uuid}-{numeric_suffix}). The actual running container is
+  h12xz8887fxvbvjts2hac8if-055055304869, not h12xz8887fxvbvjts2hac8if.
+  Both apps are on the same Docker network; the hostname just needed the full suffix.
+  LITELLM_URL updated and ops-hub-app restarted. Network isolation was never the issue —
+  only the wrong hostname. Internal URL returns HTTP 401 (LiteLLM auth gate) = working.
+Linked: DECISIONS.md 2026-06-25
 ```
 
 ---
