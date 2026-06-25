@@ -546,6 +546,30 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   FQ-34 filed (BLOCKING): founder runs docker exec on FreeScout container to issue GRANT.
 ```
 
+### 2026-06-25 — Team operating system merged; PR batch CI confirmed
+
+```
+2026-06-25 [Production Manager] PR #147 MERGED (squash a26cb80f, 2026-06-25T18:27:03Z).
+  chore/team-operating-system: CLAUDE.md + .claude/team/ (8 files) added to main.
+  All 5 checks green (CodeRabbit pass, Eval Gate, Lint, Security Scan, Unit Tests).
+  CLAUDE.md and all .claude/team/ files confirmed on main post-merge:
+    CONSTITUTION.md, PM.md, QA.md, PRODUCTION.md, CR.md, FOUNDER.md, README.md, COMMS.md.
+  Decision: docs-only change; no rollback path required; no env var changes; no Security
+  Lead sign-off required (no secrets/vault/auth touched).
+
+2026-06-25 [Production Manager] PR CI status batch (all checks confirmed green):
+  PR #148 (T-24 pipeline state machine integration tests) — CI GREEN. All 5 checks pass.
+    Awaiting QA/Tech Lead merge gate. Merge dependency: T-23 migration must be applied
+    to staging before Scenario 3 (triaged→responded) activates.
+  PR #149 (T-23 ticket-respond Inngest function) — CI GREEN. All 5 checks pass.
+    Awaiting Tech Lead merge gate. Production Manager action required post-merge:
+    provision FREESCOUT_DB_URL + FREESCOUT_BOT_USER_ID in Coolify ops-hub-app env vars.
+    Security Lead review required per ADR-0003.
+  PR #150 (T-22 activation wire: triageTicket → ticket.respond emit) — CI GREEN. All 5
+    checks pass. Awaiting Tech Lead merge gate. Recommended merge order: T-23 (#149) first,
+    then T-22 wire (#150), to avoid orphaned event with no consumer on main.
+```
+
 ### 2026-06-23 — T-21 verified; T-22 design: dual-trigger triage + cron sweep
 
 ```

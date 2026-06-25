@@ -125,13 +125,13 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **BLOCKED on FQ-39 (2026-06-25).** Code complete and merged to main. `triageTicket` + `sweepNewTickets` deployed. LITELLM_URL set to internal URL `http://h12xz8887fxvbvjts2hac8if-055055304869:4000` (HTTP 401 = alive). FreeScout tables recreated (DB reset recovery done). GRANT re-issued. **Blocker: Gmail mailbox not reconnected after DB reset — FreeScout has 0 conversations. pollFreeScout polls successfully but ingests nothing. Waiting on FQ-39 (founder reconnects mailbox in FreeScout UI).** | Jul 14 |
-| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22, PT-2 | Function drafts response via LiteLLM; POSTs note to FreeScout conversation via API; Supabase state → `responded`; LangFuse trace `ticket-respond` visible | Jul 16 |
+| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22, PT-2 | ✅ **DONE (2026-06-25, PR #149).** `respondTicket` function + `draftResponse` + `postFreeScoutNote` in `src/inngest/ticket-respond.ts`. Registered in `src/index.ts`. 11 unit tests green. CI green. Migration `20260625000000_t23_responded_state.sql` in repo — awaiting founder apply (FQ-40). FreeScout write-back is config-gated (safe default: off until `FREESCOUT_DB_URL` provisioned by Production Manager). ADR-0003 filed. **Activation wire (triageTicket → ticket.respond event) pending — assigned back to Tech Lead.** | Jul 16 |
 
 ### Track C — Testing + Evals
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-24: Extend integration tests for full pipeline state machine | QA Manager | T-22, T-23 | `ticket-state-machine.test.ts` covers `new → triaged → responded → resolved`; polling cron unit tested (dedup logic, dispatch); all green | Jul 16 |
+| T-24: Extend integration tests for full pipeline state machine | QA Manager | T-22, T-23 | ⏳ **review_ready (2026-06-25, PR #148). CI GREEN (2026-06-25).** `ticket-state-machine.test.ts` extended: new→triaged, dedup, triaged→responded (dormant until T-23 migration applied). All assertions on `ops_hub_app_login` path (RLS-genuine). Fixtures in `src/integration/fixtures/`. All 5 checks pass (CodeRabbit, Eval Gate, Lint, Security Scan, Unit Tests). Awaiting QA/Tech Lead merge gate. | Jul 16 |
 | T-25: Eval cases for triage + response agent behaviors | Evals Lead | T-22/T-23 spec finalized | `evals/ticket-triage.yaml` + `evals/ticket-respond.yaml` added; eval gate passes on PR; no regression in existing 11 evals | Jul 16 |
 
 ### Track D — Delivery + Milestone Close
@@ -212,6 +212,18 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 **Active.** T-06 (test plan) done. **T-19 in progress (2026-06-21):** first integration test `src/integration/ticket-state-machine.test.ts` written — project→tenant→ticket(`new`)→assert→update(`triaged`)→assert→teardown (reverse-FK). Vitest + `@supabase/supabase-js`. Self-skips when `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` absent so CI stays green without secrets. Connects via `service_role` (RLS bypass) as a stopgap — **must migrate to `ops_hub_app_login` once T-12 (Vault + login role) lands** (`// TODO T-12` in file). Reconciled the stale CI wiring: `pr-checks.yml` integration guard + `package.json test:integration` repointed `tests/integration` → `src/integration` (matches the spec'd test path). PR opened. Local `pnpm lint`/`typecheck`/`test`/`test:integration` all green; `--frozen-lockfile` verified after adding supabase-js.
 
 ### Production Manager
+**🟢 ACTIVE (2026-06-25)**
+
+**2026-06-25 — PR batch review + merge (P2 task).**
+
+- **PR #147 — chore/team-operating-system — ✅ MERGED** (squash commit `a26cb80f`, 2026-06-25T18:27:03Z). All 5 checks green (CodeRabbit pass, Eval Gate, Lint, Security Scan, Unit Tests). `CLAUDE.md` and all 8 `.claude/team/` files confirmed on `main` (`CONSTITUTION.md`, `PM.md`, `QA.md`, `PRODUCTION.md`, `CR.md`, `FOUNDER.md`, `README.md`, `COMMS.md`).
+
+- **PR #148 — T-24: pipeline state machine integration tests — CI GREEN.** All 5 checks pass. Status: T-24 → CI green, awaiting QA/Tech Lead merge gate. Note: Scenario 3 (`triaged → responded`) is written but dormant until T-23 `responded` migration is applied to staging (Production Manager dependency: `supabase/migrations/20260625000000_t23_responded_state.sql`).
+
+- **PR #149 — T-23: ticket-respond Inngest function — CI GREEN.** All 5 checks pass. Status: awaiting Tech Lead merge gate. Production Manager action required post-merge: provision `FREESCOUT_DB_URL` (least-priv `freescout_user`, INSERT on `threads`) and `FREESCOUT_BOT_USER_ID` in Coolify ops-hub-app env vars before enabling FreeScout write-back. Security Lead review also requested per ADR-0003.
+
+- **PR #150 — T-22 activation wire (`triageTicket → ticket.respond` emit) — CI GREEN.** All 5 checks pass. Status: awaiting Tech Lead merge gate. Merge dependency: T-23 (#149) must merge first to avoid an orphaned event with no consumer on `main`.
+
 **🟢 ACTIVE (2026-06-21)**
 
 **T-08: LiteLLM — ✅ DONE (2026-06-23).** `litellm-staging` live at `https://litellm-staging.inatechshell.ca`. NVIDIA NIM model `meta/llama-3.3-70b-instruct` registered in LiteLLM DB (run #28043673055: POST /model/new HTTP 200, verified in /model/info: 1 entry). Root cause of 7+ hr 502: Traefik `loadbalancer.server.port=80` while LiteLLM listens on 4000. Fix: decoded base64 custom_labels, sed-replaced port refs, re-encoded, PATCHed + stop/start container recreation (PRs #119–#125). M1 criterion #4 complete. FQ-27 resolved.
