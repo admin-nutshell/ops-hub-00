@@ -27,7 +27,7 @@ jobs:
           HTTP=$(curl -s --max-time 30 -o /tmp/litellm.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$LITELLM_UUID")
-          echo "=== litellm-staging (HTTP $HTTP) ==="
+          echo "=== litellm-staging summary (HTTP $HTTP) ==="
           jq '{
             name,
             status,
@@ -37,10 +37,17 @@ jobs:
             environment_name: (.environment // .environment_name // "N/A"),
             docker_compose_domains,
             container_name: (.container_name // "N/A"),
+            docker_network: (.docker_network // "N/A"),
+            network: (.network // "N/A"),
+            connect_to_docker_network: (.connect_to_docker_network // "N/A"),
             docker_registry_image_name,
             docker_registry_image_tag
           }' /tmp/litellm.json 2>/dev/null \
-            || echo "jq parse failed — raw:"; cat /tmp/litellm.json | head -30
+            || echo "jq parse failed — raw:"
+          echo ""
+          echo "=== litellm-staging FULL raw config (all fields) ==="
+          cat /tmp/litellm.json | python3 -m json.tool 2>/dev/null \
+            || cat /tmp/litellm.json
 
       # ── 2. ops-hub-app full config ───────────────────────────────────────────
       - name: Find ops-hub-app UUID and full config
@@ -71,9 +78,12 @@ jobs:
               ports_exposes,
               project_uuid: (.project_id // .project_uuid // "N/A"),
               environment_name: (.environment // .environment_name // "N/A"),
-              container_name: (.container_name // "N/A")
+              container_name: (.container_name // "N/A"),
+              docker_network: (.docker_network // "N/A"),
+              network: (.network // "N/A"),
+              connect_to_docker_network: (.connect_to_docker_network // "N/A")
             }' /tmp/opshub.json 2>/dev/null \
-              || echo "jq parse failed — raw:"; cat /tmp/opshub.json | head -20
+              || echo "jq parse failed — raw:"
             echo "ops_uuid=$OPS_UUID" >> "$GITHUB_OUTPUT"
           fi
 
@@ -168,10 +178,17 @@ jobs:
             echo "=== LiteLLM reachability FROM INSIDE ops-hub-app container ==="
             jq . /tmp/probe.json 2>/dev/null || cat /tmp/probe.json
             echo ""
-            echo "Key: ERROR ENOTFOUND = DNS not resolving (different network)"
-            echo "     ERROR ETIMEDOUT = network isolation (SYN dropped)"
-            echo "     ERROR ECONNREFUSED = wrong port (resolves, but port closed)"
-            echo "     HTTP 200 = reachable ✅"
+            echo "Key:"
+            echo "  HTTP 200             = reachable ✅ — use this URL as LITELLM_URL"
+            echo "  ERROR ENOTFOUND      = DNS not resolving — different Docker network OR wrong hostname"
+            echo "  ERROR ECONNREFUSED   = DNS resolves, port closed — container up, wrong port"
+            echo "  ERROR ETIMEDOUT      = DNS resolved to an IP, but SYN is dropped (~3 min)"
+            echo "                         Likely cause: hostname resolves to the WRONG container"
+            echo "                         (Coolify names containers '{name}-{uuid}', not the bare name)"
+            echo ""
+            echo "  If 'internal-bare:4000' = ETIMEDOUT and 'internal-uuid:4000' = HTTP 200:"
+            echo "    → Fix = set LITELLM_URL=http://litellm-staging-h12xz8887fxvbvjts2hac8if:4000"
+            echo "    → No Coolify network changes needed — they're already on the same network"
           elif [ "$HTTP" = "404" ]; then
             echo "⚠️  /debug/litellm-connectivity returned 404 — PR #143 not yet deployed"
             echo "   Merge and deploy PR #143 first, then re-run this diagnostic."
@@ -200,17 +217,25 @@ jobs:
           echo " Current LITELLM_URL:      $CURRENT_URL"
           echo ""
           if [ "$LITELLM_PROJ" = "$OPS_PROJ" ]; then
-            echo " Network: SAME project → service name 'litellm-staging' should resolve"
-            echo " → Root cause is likely container down or wrong port, not networking"
+            echo " Network: SAME Coolify project → both apps share the same Docker network"
           else
-            echo " Network: DIFFERENT projects → 'litellm-staging' does NOT resolve from ops-hub-app"
-            echo ""
-            echo " RECOMMENDED FIX options:"
-            echo "  A) Coolify dashboard → litellm-staging → Settings → Add to Network"
-            echo "     → connect it to the same network as ops-hub-app"
-            echo "  B) Set LITELLM_URL=http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io"
-            echo "     → hairpin-NAT through the VPS public IP and Traefik"
-            echo "     → works as long as the VPS allows containers to reach its own external IP"
-            echo "     → run fix-litellm-tls.yml with LITELLM_URL overridden to this value"
+            echo " Network: DIFFERENT Coolify projects → different Docker networks by default"
           fi
+          echo ""
+          echo " NOTE: Project membership alone doesn't explain ETIMEDOUT."
+          echo " ETIMEDOUT = DNS resolved to some IP but SYN is dropped (not RST'd)."
+          echo " This points to the WRONG container being resolved — not a missing DNS entry."
+          echo " Coolify names containers '{name}-{uuid}', so 'litellm-staging' may resolve"
+          echo " to the bare name (no container), while the real container is"
+          echo " 'litellm-staging-h12xz8887fxvbvjts2hac8if'."
+          echo ""
+          echo " PRIMARY FIX (check Step 6 probe results first):"
+          echo "  If 'internal-uuid:4000' = HTTP 200 → LITELLM_URL is just the wrong hostname."
+          echo "    Set LITELLM_URL=http://litellm-staging-h12xz8887fxvbvjts2hac8if:4000"
+          echo "    Run fix-litellm-tls.yml with litellm_url set to the UUID-suffixed name."
+          echo ""
+          echo "  If all internal candidates = ENOTFOUND → different Docker networks confirmed."
+          echo "    Option A: Coolify dashboard → litellm-staging → Settings → Add to Network"
+          echo "              → connect it to the same network as ops-hub-app"
+          echo "    Option B (workaround): sslip.io HTTP URL (unencrypted hairpin — not preferred)"
           echo "========================================================"

@@ -37,9 +37,15 @@ export const server = http.createServer((req, res) => {
     // Deliberately kept unauthenticated for operator use; remove after T-22 confirmed green.
     void (async () => {
       const litellmUrl = process.env.LITELLM_URL ?? "not-set";
+      // Coolify names containers "{name}-{uuid}", not the bare service name.
+      // The UUID-suffixed candidate is the most likely resolvable internal hostname.
       const candidates = [
         { label: "configured", url: `${litellmUrl}/health` },
-        { label: "internal:4000", url: "http://litellm-staging:4000/health" },
+        { label: "internal-bare:4000", url: "http://litellm-staging:4000/health" },
+        {
+          label: "internal-uuid:4000",
+          url: "http://litellm-staging-h12xz8887fxvbvjts2hac8if:4000/health",
+        },
         {
           label: "sslip-http",
           url: "http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health",
