@@ -49,6 +49,260 @@ After founder responds, the originating agent removes the item from this queue a
 
 ---
 
+### FQ-38 — BLOCKING: [Tech Lead] Rebuild Ops Hub schema after DB reset — paste 5 migrations in Supabase SQL Editor
+
+```
+BLOCKING: Supabase project yocoljutbiizdbfraapx DB reset wiped all public-schema tables.
+  No backup/PITR on free tier. Role ops_hub_app_login and Vault secrets confirmed surviving.
+  Schema must be rebuilt from the 5 migration files in the repo.
+  ticket-triage (T-22) is broken until this is done: tickets table does not exist.
+
+Safety analysis — all 5 migrations are safe to re-run in this exact state:
+  Migration 1 (initial_schema): CREATE TABLE has no IF NOT EXISTS, but tables are gone —
+    no conflict possible. Extensions use IF NOT EXISTS. Trigger function uses CREATE OR REPLACE.
+    ✅ safe.
+  Migration 2 (rls_policies): ops_hub_app role creation uses DO $$ IF NOT EXISTS guard.
+    Grants are idempotent (re-granting is a no-op). CREATE POLICY has no IF NOT EXISTS guard,
+    but policies don't exist yet (tables were just created). CREATE OR REPLACE on resolver fns.
+    ✅ safe for this run. NOTE: not idempotent if run a second time — don't paste twice.
+  Migration 3 (kb_seed): project insert uses ON CONFLICT DO NOTHING. KB article inserts have
+    no ON CONFLICT guard but kb_articles is empty — no uniqueness conflict possible.
+    ✅ safe.
+  Migration 4 (t21_freescout_intake): ALTER TABLE ADD COLUMN IF NOT EXISTS. Tenant insert
+    uses ON CONFLICT (id) DO NOTHING. ✅ fully idempotent.
+  Migration 5 (t22_ticket_triage_columns): all ALTER TABLE ADD COLUMN IF NOT EXISTS +
+    CREATE INDEX IF NOT EXISTS. ✅ fully idempotent.
+
+FreeScout GRANT status: DB reset wiped the public schema, which also dropped the FreeScout
+  tables (conversations, threads) that were co-tenanted there. The GRANT from FQ-34 is gone
+  with those tables. After the schema rebuild below:
+    1. Restart the FreeScout container (or wait for its next health-check restart) so Laravel
+       re-runs its migrations and recreates conversations + threads.
+    2. Re-issue the GRANT from FQ-34 (exact command below).
+  T-21 (pollFreeScout) will fail until both steps are done.
+
+Post-rebuild: ops-hub-app does NOT need a restart — the PG pool reconnects on next query
+  and will see the rebuilt schema automatically.
+```
+
+**Action: paste the SQL below into Supabase SQL Editor (project yocoljutbiizdbfraapx) as service_role. Run as one block.**
+
+```sql
+-- ============================================================
+-- OPS HUB SCHEMA REBUILD — run in Supabase SQL Editor
+-- Project: yocoljutbiizdbfraapx
+-- Date: 2026-06-25
+-- Prerequisite: public schema is empty (DB reset confirmed).
+-- ops_hub_app_login role and Vault secrets are confirmed present.
+-- ============================================================
+
+
+-- ── MIGRATION 1: initial_schema (20260618120000) ─────────────
+
+create extension if not exists vector;
+create extension if not exists pgcrypto;
+
+create or replace function set_updated_at()
+returns trigger language plpgsql as $$
+begin new.updated_at = now(); return new; end; $$;
+
+create table projects (
+  id              uuid primary key default gen_random_uuid(),
+  name            text not null unique,
+  context_schema  jsonb not null default '{}'::jsonb,
+  created_at      timestamptz not null default now()
+);
+
+create table tenants (
+  id          uuid primary key default gen_random_uuid(),
+  project_id  uuid not null references projects(id) on delete restrict,
+  name        text not null,
+  tier        text not null check (tier in ('starter', 'growth', 'scale')),
+  sla_config  jsonb not null default '{}'::jsonb,
+  created_at  timestamptz not null default now()
+);
+create index tenants_project_id_idx on tenants (project_id);
+
+create table tickets (
+  id           uuid primary key default gen_random_uuid(),
+  project_id   uuid not null references projects(id) on delete restrict,
+  tenant_id    uuid not null references tenants(id) on delete restrict,
+  title        text not null,
+  body         text,
+  severity     text not null check (severity in ('P1', 'P2', 'P3')),
+  state        text not null default 'new'
+                 check (state in (
+                   'new','triaged','investigating','in_progress','blocked',
+                   'in_review','staged','deploying','verifying','resolved',
+                   'closed','reopened','wont_fix','duplicate')),
+  owner_agent  text,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+create index tickets_project_tenant_idx on tickets (project_id, tenant_id);
+create index tickets_state_idx          on tickets (state);
+create index tickets_severity_idx       on tickets (severity);
+create trigger tickets_set_updated_at
+  before update on tickets
+  for each row execute function set_updated_at();
+
+create table audit_log (
+  id             uuid primary key default gen_random_uuid(),
+  project_id     uuid references projects(id) on delete set null,
+  tenant_id      uuid references tenants(id)  on delete set null,
+  timestamp      timestamptz not null default now(),
+  actor          text not null,
+  action         text not null,
+  resource_type  text not null,
+  resource_id    uuid,
+  payload        jsonb not null default '{}'::jsonb
+);
+create index audit_log_project_tenant_ts_idx on audit_log (project_id, tenant_id, timestamp);
+create index audit_log_resource_idx          on audit_log (resource_type, resource_id);
+
+create table feature_flags (
+  id                  uuid primary key default gen_random_uuid(),
+  project_id          uuid not null references projects(id) on delete cascade,
+  environment         text not null check (environment in ('dev', 'staging', 'prod')),
+  flag_key            text not null,
+  enabled             boolean not null default false,
+  rollout_percentage  int not null default 0 check (rollout_percentage between 0 and 100),
+  description         text,
+  sunset_date         date,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
+  unique (project_id, environment, flag_key)
+);
+create trigger feature_flags_set_updated_at
+  before update on feature_flags
+  for each row execute function set_updated_at();
+
+create table kb_articles (
+  id          uuid primary key default gen_random_uuid(),
+  project_id  uuid not null references projects(id) on delete cascade,
+  title       text not null,
+  body        text not null,
+  embedding   vector(1536),
+  created_at  timestamptz not null default now()
+);
+create index kb_articles_project_id_idx on kb_articles (project_id);
+
+
+-- ── MIGRATION 2: rls_policies (20260618120100) ───────────────
+
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'ops_hub_app') then
+    create role ops_hub_app nologin;
+  end if;
+end $$;
+
+grant usage on schema public to ops_hub_app;
+grant select, insert, update, delete on all tables in schema public to ops_hub_app;
+alter default privileges in schema public
+  grant select, insert, update, delete on tables to ops_hub_app;
+
+create or replace function current_tenant_id() returns uuid language sql stable as $$
+  select coalesce(
+    nullif(current_setting('request.jwt.claims', true)::jsonb ->> 'tenant_id', '')::uuid,
+    nullif(current_setting('app.current_tenant', true), '')::uuid
+  );
+$$;
+
+create or replace function current_project_id() returns uuid language sql stable as $$
+  select coalesce(
+    nullif(current_setting('request.jwt.claims', true)::jsonb ->> 'project_id', '')::uuid,
+    nullif(current_setting('app.current_project', true), '')::uuid
+  );
+$$;
+
+alter table projects      enable row level security;
+alter table tenants       enable row level security;
+alter table tickets       enable row level security;
+alter table audit_log     enable row level security;
+alter table feature_flags enable row level security;
+alter table kb_articles   enable row level security;
+
+create policy projects_select      on projects      for select to ops_hub_app, authenticated using (id = current_project_id());
+create policy tenants_select       on tenants       for select to ops_hub_app, authenticated using (id = current_tenant_id());
+create policy tickets_select       on tickets       for select to ops_hub_app, authenticated using (tenant_id = current_tenant_id());
+create policy tickets_insert       on tickets       for insert to ops_hub_app, authenticated with check (tenant_id = current_tenant_id());
+create policy tickets_update       on tickets       for update to ops_hub_app, authenticated using (tenant_id = current_tenant_id()) with check (tenant_id = current_tenant_id());
+create policy audit_log_insert     on audit_log     for insert to ops_hub_app             with check (true);
+create policy audit_log_select     on audit_log     for select to ops_hub_app, authenticated using (tenant_id = current_tenant_id());
+create policy feature_flags_select on feature_flags for select to ops_hub_app, authenticated using (project_id = current_project_id());
+create policy feature_flags_write  on feature_flags for all    to ops_hub_app             using (project_id = current_project_id()) with check (project_id = current_project_id());
+create policy kb_articles_select   on kb_articles   for select to ops_hub_app, authenticated using (project_id = current_project_id());
+create policy kb_articles_write    on kb_articles   for all    to ops_hub_app             using (project_id = current_project_id()) with check (project_id = current_project_id());
+
+
+-- ── MIGRATION 3: kb_seed (20260621130000) ────────────────────
+
+insert into projects (id, name, context_schema)
+values ('00000000-0000-0000-0000-000000000001', 'ops-hub', '{}')
+on conflict (name) do nothing;
+
+insert into kb_articles (project_id, title, body) values
+('00000000-0000-0000-0000-000000000001', 'Ops Hub — Getting Started',
+ 'Placeholder: overview of the Ops Hub platform, agent roles, and ticket flow. To be expanded in Sprint 2.'),
+('00000000-0000-0000-0000-000000000001', 'FreeScout → Ops Hub ticket intake runbook',
+ 'Placeholder: steps for routing a FreeScout ticket through the triage agent. To be expanded after T-19.');
+
+
+-- ── MIGRATION 4: t21_freescout_intake (20260623180000) ───────
+
+alter table tickets add column if not exists freescout_conversation_id bigint unique;
+
+insert into tenants (id, project_id, name, tier)
+values ('00000000-0000-0000-0000-000000000010',
+        '00000000-0000-0000-0000-000000000001',
+        'staging-support', 'starter')
+on conflict (id) do nothing;
+
+
+-- ── MIGRATION 5: t22_ticket_triage_columns (20260624000000) ──
+
+alter table tickets add column if not exists urgency  text check (urgency in ('critical', 'high', 'normal', 'low'));
+alter table tickets add column if not exists category text;
+alter table tickets add column if not exists routing  text;
+create index if not exists tickets_urgency_idx on tickets (urgency);
+
+
+-- ── POST-RUN VERIFICATION ─────────────────────────────────────
+-- Run this block separately after the above completes.
+-- Expected: 6 tables, 1 project, 1 tenant, 2 kb_articles.
+
+select tablename from pg_tables where schemaname = 'public' order by tablename;
+select count(*) as projects  from projects;
+select count(*) as tenants   from tenants;
+select count(*) as kb_articles from kb_articles;
+select column_name from information_schema.columns
+  where table_name = 'tickets' order by ordinal_position;
+```
+
+**After verification passes — re-issue the FreeScout GRANT (FQ-34):**
+
+Wait for FreeScout to reconnect and re-run its Laravel migrations (conversations + threads will reappear in the Table Editor). Then run:
+
+```sql
+-- Run in Supabase SQL Editor AFTER conversations + threads are visible in Table Editor.
+-- This re-issues the GRANT that was lost with the reset.
+-- Must be run AS freescout_user (same method as FQ-34: docker exec on FreeScout container).
+```
+
+Exact FQ-34 re-issue command (run on FreeScout container, same as before):
+```
+docker exec <freescout-container-name> php artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"
+```
+
+Container name: check `docker ps` on VPS or Coolify → FreeScout service → Container name.
+
+```
+Linked: T-21 (PR #140), T-22 (PR #141), FQ-31, FQ-34 (GRANT must be re-issued after FreeScout remigrates)
+```
+
+---
+
 ### ~~FQ-36 — URGENT: [Tech Lead] Fix LITELLM_URL in Coolify — wrong URL causes TLS failure, ticket triage broken~~ — PARTIAL: TLS fixed, now Docker networking
 
 ```
