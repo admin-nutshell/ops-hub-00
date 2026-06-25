@@ -18,7 +18,7 @@ name: Fix LiteLLM model registration — re-register meta/llama-3.3-70b-instruct
 #   Coolify env var required (already set):
 #     NVIDIA_API_KEY — NVIDIA NIM API key in litellm-staging container env
 #
-# Rollback: POST /model/delete with the model DB id printed in Step 5 output.
+# Rollback: POST /model/delete with the model DB id printed in Step 4 output.
 #
 # Deploy plan: docs/deploys/2026-06-25-litellm-model-reregistration.md
 on:
@@ -72,6 +72,40 @@ jobs:
             exit 1
           fi
           echo "litellm-staging is healthy — proceeding"
+
+      # ── Step 1b: Verify NVIDIA_API_KEY exists on litellm-staging container ────
+      # DECISIONS.md 2026-06-23 recorded the key was added to ops-hub-app.
+      # It must also exist on litellm-staging (os.environ/NVIDIA_API_KEY resolves
+      # from the litellm-staging container env at request time). If absent, the
+      # completion test in Step 7 will fail with an NVIDIA auth error — and there
+      # is nothing this workflow can do to fix it (credential is founder-held).
+      - name: Verify NVIDIA_API_KEY is set on litellm-staging container
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs")
+          echo "GET litellm-staging /envs → HTTP $HTTP"
+
+          if [ "$HTTP" != "200" ]; then
+            echo "WARNING: could not read litellm-staging env vars (HTTP $HTTP) — continuing"
+          else
+            KEY_EXISTS=$(jq -r '[.[] | select(.key == "NVIDIA_API_KEY")] | length' \
+              /tmp/litellm_envs.json 2>/dev/null || echo 0)
+            if [ "$KEY_EXISTS" -gt "0" ]; then
+              echo "NVIDIA_API_KEY is set on litellm-staging (value masked)"
+            else
+              echo ""
+              echo "WARNING: NVIDIA_API_KEY is NOT set on litellm-staging"
+              echo "  The key may only be set on ops-hub-app (per DECISIONS.md 2026-06-23)."
+              echo "  litellm_params.api_key=os.environ/NVIDIA_API_KEY resolves from"
+              echo "  the litellm-staging container env — if missing, the completion"
+              echo "  call (Step 7) will fail with an NVIDIA auth error."
+              echo ""
+              echo "  If Step 7 fails: escalate to FOUNDER_QUEUE — this is a credential"
+              echo "  the founder must add to Coolify litellm-staging env vars."
+              echo "  (No restart needed — env var update + container recreate in Coolify UI)"
+            fi
+          fi
 
       # ── Step 2: Inspect currently registered models (read-only) ─────────────
       - name: Inspect currently registered models
