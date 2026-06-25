@@ -255,3 +255,35 @@ jobs:
           done
           echo "ERROR: health check timed out after 3 minutes"
           exit 1
+
+      # ── Inngest function sync ─────────────────────────────────────────────────
+      # After the container is live, trigger an out-of-band Inngest sync so the
+      # dashboard immediately reflects new/removed functions without waiting for
+      # the next Inngest poll cycle.  An unsigned PUT to /api/inngest triggers the
+      # SDK to call api.inngest.com/fn/register directly from the running app —
+      # no Inngest API key is required here.
+      - name: Sync Inngest functions
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          STAGING_URL: ${{ secrets.COOLIFY_STAGING_APP_URL }}
+          APP_UUID: ${{ steps.coolify.outputs.app_uuid }}
+        run: |
+          if [ -z "$STAGING_URL" ] && [ -n "$APP_UUID" ]; then
+            STAGING_URL=$(curl -s --max-time 30 \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$APP_UUID" \
+              | jq -r '.fqdn // empty' | sed 's|/$||')
+          fi
+          if [ -z "$STAGING_URL" ]; then
+            echo "STAGING_URL not available — skipping Inngest sync."
+            exit 0
+          fi
+          echo "Syncing Inngest functions at $STAGING_URL/api/inngest ..."
+          SYNC_HTTP=$(curl -s --max-time 30 -o /tmp/sync.json -w "%{http_code}" -X PUT \
+            -H "Content-Type: application/json" \
+            "$STAGING_URL/api/inngest")
+          echo "Sync HTTP $SYNC_HTTP"
+          cat /tmp/sync.json
+          if [ "$SYNC_HTTP" != "200" ] && [ "$SYNC_HTTP" != "201" ]; then
+            echo "WARNING: Inngest sync returned HTTP $SYNC_HTTP — functions may not be updated"
+          fi
