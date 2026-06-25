@@ -119,6 +119,21 @@ Violating any of the above is a hard stop. Flag it immediately in `FOUNDER_QUEUE
 
 ---
 
+## Communication standard
+
+All agent-to-agent and agent-to-PM communication follows the formats in `.claude/team/COMMS.md`.
+
+Short version:
+- Assignments use the TASK template — scope, criteria, deadline, handoff target
+- Status uses the STATUS template — state, progress, next, ETA, blockers
+- Blockers use the BLOCKED template — what was tried, what is needed, proposed path
+- Done uses the DONE template — outcomes, evidence, WORK.md updated
+- Handoffs use the HANDOFF template — state, artefacts, watch-outs, next criteria
+
+**No walls of text. No vague status. No "done" without evidence.**
+
+---
+
 ## Starting a session checklist (every agent)
 
 Before doing any work:

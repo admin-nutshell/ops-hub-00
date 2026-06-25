@@ -12,6 +12,7 @@
 | `QA.md` | QA agent | Test planning, entry/exit criteria, bug format |
 | `PRODUCTION.md` | Production Manager agent | Deploy protocol, env var rules, rollback decision tree |
 | `CR.md` | CR / code-reviewer agent | Review dimensions, merge criteria, security checklist |
+| `COMMS.md` | **Every agent** | Message formats: TASK, RECEIPT, STATUS, BLOCKED, DONE, HANDOFF + communication principles |
 | `FOUNDER.md` | All agents (before escalating) | What reaches the Founder, what doesn't, required escalation format |
 
 ---
@@ -20,8 +21,9 @@
 
 Every agent reads in this order before doing any work:
 1. `CONSTITUTION.md` — always first, no exceptions
-2. Their own role playbook (`PM.md`, `QA.md`, `PRODUCTION.md`, `CR.md`)
-3. `FOUNDER.md` — before any escalation decision
+2. `COMMS.md` — message formats and communication standard
+3. Their own role playbook (`PM.md`, `QA.md`, `PRODUCTION.md`, `CR.md`)
+4. `FOUNDER.md` — before any escalation decision
 
 ---
 
