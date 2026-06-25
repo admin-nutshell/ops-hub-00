@@ -132,7 +132,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-24: Extend integration tests for full pipeline state machine | QA Manager | T-22, T-23 | `ticket-state-machine.test.ts` covers `new → triaged → responded → resolved`; polling cron unit tested (dedup logic, dispatch); all green | Jul 16 |
-| T-25: Eval cases for triage + response agent behaviors | Evals Lead | T-22/T-23 spec finalized | `evals/ticket-triage.yaml` + `evals/ticket-respond.yaml` added; eval gate passes on PR; no regression in existing 11 evals | Jul 16 |
+| T-25: Eval cases for triage + response agent behaviors | Evals Lead | T-22/T-23 spec finalized | 🟢 **REVIEW READY (2026-06-25) — PR #154.** `evals/ticket-triage.yaml` (4 cases: critical/high/normal/low) + `evals/ticket-respond.yaml` (4 cases: critical no-ETA / high no-over-commit / frustrated-empathy / missing-info) added. Prompts copied verbatim from `classifyTicket()` + `TONE` map; assert the real `{critical\|high\|normal\|low}` enum, not P1/P2/P3 (ticket-triage.ts out of scope). Eval Gate (`promptfoo validate`, schema-only, no API key) green locally on all 13 files; existing 11 evals untouched. **Next: CR + PM merge.** | Jul 16 |
 
 ### Track D — Delivery + Milestone Close
 
