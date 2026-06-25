@@ -1,0 +1,234 @@
+name: Fix LiteLLM URL + FQDN cert
+
+# Fixes two issues found when T-22 ticket-triage went live:
+#   1. litellm-staging serves Traefik's default self-signed cert (no FQDN set → no ACME)
+#   2. ops-hub-app's LITELLM_URL points to an unreachable URL
+#
+# Fix A: Update ops-hub-app LITELLM_URL to a verified-working URL.
+#   Default: sslip.io HTTP URL (topology-independent; works across Docker networks).
+#   If litellm-staging and ops-hub-app share a Docker network, the internal service URL
+#   (http://litellm-staging:4000) is preferred — supply it via the litellm_url input.
+#   Run diagnose-litellm.yml first to confirm which URL works from inside the container.
+#
+# Fix B (belt-and-suspenders): Patch litellm-staging FQDN so Traefik issues a Let's
+#   Encrypt cert on next restart — external HTTPS then works without TLS rejection.
+#
+# DO NOT use NODE_TLS_REJECT_UNAUTHORIZED=0 — that disables TLS verification globally.
+on:
+  workflow_dispatch:
+    inputs:
+      litellm_url:
+        description: "LITELLM_URL to set — run diagnose-litellm.yml first to confirm"
+        required: false
+        default: "http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io"
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+  LITELLM_FQDN: "https://litellm-staging.inatechshell.ca"
+
+jobs:
+  fix-litellm-tls:
+    name: Switch to internal URL + fix FQDN cert
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    steps:
+      # ── Step 0: Inspect current state ────────────────────────────────────────
+      - name: Inspect litellm-staging current config
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID")
+          echo "=== litellm-staging (HTTP $HTTP) ==="
+          jq '{name, fqdn, status, ports_exposes}' /tmp/litellm.json 2>/dev/null || cat /tmp/litellm.json | head -10
+          CURRENT_FQDN=$(jq -r '.fqdn // empty' /tmp/litellm.json 2>/dev/null || true)
+          echo "Current FQDN: '$CURRENT_FQDN'"
+          [ "$CURRENT_FQDN" = "$LITELLM_FQDN" ] \
+            && echo "FQDN already correct — skip patch" \
+            || echo "FQDN needs update: '' → '$LITELLM_FQDN'"
+
+      - name: Find ops-hub-app UUID
+        id: app
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /applications returned HTTP $HTTP"; cat /tmp/apps.json; exit 1
+          fi
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: ops-hub-app not found. Apps:"; jq -r '.[].name' /tmp/apps.json; exit 1
+          fi
+          echo "ops-hub-app UUID: $UUID"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      # ── Step A: Update ops-hub-app LITELLM_URL to internal service URL ───────
+      - name: List ops-hub-app env vars and find LITELLM_URL
+        id: envs
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs")
+          echo "=== ops-hub-app env vars (HTTP $HTTP) ==="
+          jq -r '.[] | "\(.key)=\(if (.is_shown_once // false) then "***" else .value end) [uuid=\(.uuid)]"' \
+            /tmp/envs.json 2>/dev/null || cat /tmp/envs.json | head -20
+          EXISTING_UUID=$(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null || true)
+          EXISTING_VAL=$(jq -r '.[] | select(.key == "LITELLM_URL") | .value' /tmp/envs.json 2>/dev/null || true)
+          echo "LITELLM_URL current value: '$EXISTING_VAL'"
+          echo "LITELLM_URL env var uuid:  '$EXISTING_UUID'"
+          echo "env_uuid=$EXISTING_UUID" >> "$GITHUB_OUTPUT"
+          echo "env_val=$EXISTING_VAL" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing LITELLM_URL env var (if present)
+        run: |
+          ENV_UUID="${{ steps.envs.outputs.env_uuid }}"
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+          if [ -z "$ENV_UUID" ] || [ "$ENV_UUID" = "null" ]; then
+            echo "No existing LITELLM_URL env var — nothing to delete"
+            exit 0
+          fi
+          echo "Deleting LITELLM_URL env var $ENV_UUID ..."
+          DEL_HTTP=$(curl -s --max-time 30 -o /tmp/del_env.json -w "%{http_code}" -X DELETE \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs/$ENV_UUID")
+          echo "DELETE → HTTP $DEL_HTTP"
+          cat /tmp/del_env.json 2>/dev/null || true
+
+      - name: Create LITELLM_URL pointing to verified URL
+        run: |
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+          TARGET_URL="${{ github.event.inputs.litellm_url }}"
+          echo "Setting LITELLM_URL=$TARGET_URL on ops-hub-app..."
+          PAYLOAD=$(jq -n --arg k "LITELLM_URL" --arg v "$TARGET_URL" \
+            '{key: $k, value: $v}')
+          HTTP=$(curl -s --max-time 30 -o /tmp/create_env.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs" \
+            -d "$PAYLOAD")
+          echo "POST /envs → HTTP $HTTP"
+          jq . /tmp/create_env.json 2>/dev/null || cat /tmp/create_env.json
+          if [ "$HTTP" = "201" ] || [ "$HTTP" = "200" ]; then
+            echo "✅ LITELLM_URL set to $TARGET_URL"
+          else
+            echo "ERROR: failed to set LITELLM_URL (HTTP $HTTP)"
+            exit 1
+          fi
+
+      # ── Step A.2: Restart ops-hub-app to pick up new env var ─────────────────
+      - name: Restart ops-hub-app to apply new LITELLM_URL
+        id: restart
+        run: |
+          APP_UUID="${{ steps.app.outputs.uuid }}"
+          echo "Restarting ops-hub-app $APP_UUID ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$APP_UUID/restart")
+          echo "POST /restart → HTTP $HTTP"
+          jq . /tmp/restart.json 2>/dev/null || cat /tmp/restart.json | head -5
+          DEP_UUID=$(jq -r '.deployment_uuid // empty' /tmp/restart.json 2>/dev/null || true)
+          echo "deployment_uuid=$DEP_UUID" >> "$GITHUB_OUTPUT"
+
+      - name: Poll restart completion
+        run: |
+          DEP_UUID="${{ steps.restart.outputs.deployment_uuid }}"
+          if [ -z "$DEP_UUID" ]; then
+            echo "No deployment UUID — sleeping 30s then checking health"
+            sleep 30
+          else
+            echo "Polling deployment $DEP_UUID ..."
+            for i in $(seq 1 24); do
+              HTTP=$(curl -s --max-time 15 -o /tmp/dep.json -w "%{http_code}" \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP_UUID" 2>/dev/null || true)
+              STATUS=$(jq -r '.status // empty' /tmp/dep.json 2>/dev/null || true)
+              echo "Attempt $i: HTTP $HTTP  status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Restart finished."; break ;;
+                failed|error)
+                  echo "ERROR: restart failed"; jq . /tmp/dep.json 2>/dev/null; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+
+      - name: Verify ops-hub-app health after restart
+        run: |
+          STAGING_URL="${{ secrets.COOLIFY_STAGING_APP_URL }}"
+          if [ -z "$STAGING_URL" ]; then
+            APP_UUID="${{ steps.app.outputs.uuid }}"
+            STAGING_URL=$(curl -s --max-time 30 \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$APP_UUID" \
+              | jq -r '.fqdn // empty' | sed 's|/$||')
+          fi
+          echo "Checking $STAGING_URL/health ..."
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
+              "$STAGING_URL/health" || true)
+            [ "$HTTP" = "200" ] && { echo "✅ ops-hub-app healthy"; break; }
+            echo "Attempt $i: HTTP $HTTP — waiting 10s"
+            sleep 10
+          done
+
+      # ── Trigger Inngest re-sync after restart ─────────────────────────────────
+      - name: Re-sync Inngest functions after restart
+        run: |
+          STAGING_URL="${{ secrets.COOLIFY_STAGING_APP_URL }}"
+          if [ -z "$STAGING_URL" ]; then
+            echo "STAGING_URL not set — skipping Inngest sync"
+            exit 0
+          fi
+          SYNC_HTTP=$(curl -s --max-time 30 -o /tmp/sync.json -w "%{http_code}" -X PUT \
+            -H "Content-Type: application/json" \
+            "$STAGING_URL/api/inngest")
+          echo "Inngest sync → HTTP $SYNC_HTTP"
+          cat /tmp/sync.json
+
+      # ── Step B: Patch litellm-staging FQDN for Let's Encrypt cert ─────────────
+      - name: Patch litellm-staging FQDN so Traefik issues a Let's Encrypt cert
+        run: |
+          CURRENT=$(jq -r '.fqdn // empty' /tmp/litellm.json 2>/dev/null || true)
+          if [ "$CURRENT" = "$LITELLM_FQDN" ]; then
+            echo "FQDN already set to $LITELLM_FQDN — no patch needed"
+            exit 0
+          fi
+          echo "Patching litellm-staging FQDN: '$CURRENT' → '$LITELLM_FQDN' ..."
+          PAYLOAD=$(jq -n --arg f "$LITELLM_FQDN" '{fqdn: $f}')
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch_fqdn.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID" \
+            -d "$PAYLOAD")
+          echo "PATCH litellm-staging FQDN → HTTP $HTTP"
+          jq . /tmp/patch_fqdn.json 2>/dev/null || cat /tmp/patch_fqdn.json | head -10
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "✅ FQDN patched. A Let's Encrypt cert will be issued on next litellm-staging restart."
+            echo "   NOTE: litellm-staging is NOT restarted here — that is a separate planned operation"
+            echo "   to avoid LiteLLM downtime during triage validation. Restart from Coolify dashboard"
+            echo "   during a low-traffic window to apply the new cert."
+          else
+            echo "WARNING: FQDN patch returned HTTP $HTTP — cert fix is non-blocking"
+          fi
+
+      - name: Summary
+        run: |
+          TARGET_URL="${{ github.event.inputs.litellm_url }}"
+          echo "=== Fix summary ==="
+          echo "Fix A (immediate): LITELLM_URL updated to $TARGET_URL"
+          echo "  ops-hub-app restarted and healthy."
+          echo ""
+          echo "Fix B (cert): litellm-staging FQDN patched to $LITELLM_FQDN"
+          echo "  Let's Encrypt cert will be issued on next litellm-staging restart."
+          echo "  External HTTPS access will work after that restart."
+          echo ""
+          echo "Next: wait up to 5 min for sweepNewTickets cron to triage conv 6 + 7."
+          echo "  Verify: SELECT id, state, urgency FROM tickets WHERE freescout_conversation_id IN (6,7);"

@@ -32,6 +32,47 @@ export const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ error: "Test error captured by Sentry" }));
     return;
   }
+  if (req.method === "GET" && req.url === "/debug/litellm-connectivity") {
+    // T-22 diagnosis: tests LiteLLM reachability from inside this container.
+    // Deliberately kept unauthenticated for operator use; remove after T-22 confirmed green.
+    void (async () => {
+      const litellmUrl = process.env.LITELLM_URL ?? "not-set";
+      // Coolify names containers "{name}-{uuid}", not the bare service name.
+      // The UUID-suffixed candidate is the most likely resolvable internal hostname.
+      const candidates = [
+        { label: "configured", url: `${litellmUrl}/health` },
+        { label: "internal-bare:4000", url: "http://litellm-staging:4000/health" },
+        {
+          label: "internal-uuid:4000",
+          url: "http://litellm-staging-h12xz8887fxvbvjts2hac8if:4000/health",
+        },
+        {
+          label: "sslip-http",
+          url: "http://h12xz8887fxvbvjts2hac8if.187.124.76.235.sslip.io/health",
+        },
+      ];
+      const results = await Promise.all(
+        candidates.map(async ({ label, url }) => {
+          try {
+            const r = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+            return { label, url, result: `HTTP ${r.status}` };
+          } catch (err) {
+            const cause = (err as { cause?: { code?: string } }).cause;
+            const code = cause?.code ?? "unknown";
+            const msg = err instanceof Error ? err.message : String(err);
+            return { label, url, result: `ERROR ${code}: ${msg}` };
+          }
+        })
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ configured_url: litellmUrl, results }));
+    })().catch((err) => {
+      Sentry.captureException(err);
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: "probe failed" }));
+    });
+    return;
+  }
   res.writeHead(404);
   res.end();
 });
