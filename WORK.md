@@ -192,6 +192,17 @@ Migration `supabase/migrations/20260625000000_t23_responded_state.sql` adds `'re
 
 **Handoff → QA Manager (T-24):** PR open, CI target green. The QA contract stub (`it.todo` list) in `ticket-respond.test.ts` is now converted to real assertions per its own instructions. Extend `ticket-state-machine.test.ts` to cover `triaged → responded`; the respond path's FreeScout delivery is mocked, so integration coverage of the state machine does not need the credential.
 
+### Security Lead
+**🟢 T-23 write-back SECURITY REVIEW DONE (2026-06-25) — CONDITIONAL SIGN-OFF.** Branch `security/t23-freescout-writeback-review` (off `feat/t23-ticket-respond`). Full verdict in `docs/adr/0003-freescout-response-writeback.md` §Security Lead Review; logged in DECISIONS.md.
+
+**BLOCKING condition C1 (gates provisioning):** `FREESCOUT_DB_URL` must **NOT** be the `freescout_user` DSN — `freescout_user` owns every FreeScout table (customers/emails/users-password-hashes/mailboxes/conversations/threads), the max-blast-radius cross-app credential this ADR rejected for Option B. Provision a dedicated least-privilege LOGIN role **`freescout_writer`**: `INSERT` on `threads` only + the threads sequence grant, nothing else. The `GRANT INSERT` must run AS `freescout_user` via `docker exec artisan tinker` (FQ-34 owner-grant path). **SQL + step-by-step in `docs/engineering/t23-freescout-writeback-runbook.md`.**
+
+**Confirmed fine:** NOTE-not-reply safety; no SQLi (INSERT fully parameterized, note bound as `$3`, ids cast `bigint`); config-gate is a sound fail-closed default; non-atomic duplicate-note risk acceptable for dormant v1; zero secrets in T-23 git history; no new deps.
+
+**Track before ACTIVATION (NOT blocking provisioning):** T1 stored-XSS (raw INSERT bypasses FreeScout sanitization — confirm `thread.body` output-sanitized or sanitize pre-INSERT); T2 confirm raw INSERT triggers no customer email; T3 dedup guard; T4 audit-log entry per write (SOC 2 / PIPEDA).
+
+**Handoff → Production Manager:** ✅ **UNBLOCKED to provision** the moment `FREESCOUT_DB_URL` points at `freescout_writer` (condition C1), following the runbook. Do **not** provision `freescout_user`. Not a FOUNDER_QUEUE item.
+
 **✅ T-21 DONE (2026-06-23).** `pollFreeScout` cron verified end-to-end: two tickets confirmed in Supabase (`freescout_conversation_id: 6 + 7`), dedup working. FQ-31/33/34 resolved. PR #140 merged.
 
 **⏳ T-22 IN PROGRESS (2026-06-23) — branch `feat/t22-ticket-triage`.**
