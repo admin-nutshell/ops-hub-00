@@ -1,0 +1,152 @@
+name: Restart FreeScout + print re-grant command
+
+# Restarts freescout-staging so Laravel re-runs pending migrations (recreates
+# conversations + threads tables wiped by the DB reset). Does NOT issue the GRANT —
+# that requires docker exec as freescout_user (no Coolify exec API endpoint).
+# After this run: founder pastes the printed docker exec command, then pollFreeScout resumes.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+
+jobs:
+  restart-freescout:
+    name: Restart FreeScout + print GRANT command
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    steps:
+      # ── 1. Find freescout-staging UUID + container name ──────────────────────
+      - name: Find freescout-staging UUID and container name
+        id: fs
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /applications HTTP $HTTP"; cat /tmp/apps.json; exit 1
+          fi
+          UUID=$(jq -r '.[] | select(.name == "freescout-staging") | .uuid' /tmp/apps.json 2>/dev/null)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: freescout-staging not found"
+            jq -r '.[].name' /tmp/apps.json
+            exit 1
+          fi
+          echo "freescout-staging UUID: $UUID"
+
+          # Get full config for container name
+          curl -s --max-time 30 -o /tmp/fs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID"
+          CONTAINER=$(jq -r '.container_name // empty' /tmp/fs.json 2>/dev/null || true)
+          STATUS=$(jq -r '.status // "unknown"' /tmp/fs.json 2>/dev/null || true)
+          echo "Container name (from API): '$CONTAINER'"
+          echo "Current status: $STATUS"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "container=$CONTAINER" >> "$GITHUB_OUTPUT"
+
+      # ── 2. Restart freescout-staging ─────────────────────────────────────────
+      - name: Restart freescout-staging
+        id: restart
+        run: |
+          UUID="${{ steps.fs.outputs.uuid }}"
+          echo "Restarting freescout-staging ($UUID) ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$UUID/restart")
+          echo "POST /restart → HTTP $HTTP"
+          jq . /tmp/restart.json 2>/dev/null || cat /tmp/restart.json | head -5
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/restart.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Poll deployment + wait for healthy ────────────────────────────────
+      - name: Wait for FreeScout restart
+        run: |
+          DEP="${{ steps.restart.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then
+            echo "No deployment UUID — sleeping 60s"
+            sleep 60
+          else
+            echo "Polling deployment $DEP ..."
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" \
+                | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Restart deployment finished."; break ;;
+                failed|error) echo "ERROR: restart failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+
+          # Wait for FreeScout HTTP 200 (Laravel migrates on startup — may take ~60s)
+          echo "Waiting for FreeScout HTTP 200 at freescout-staging.inatechshell.ca ..."
+          for i in $(seq 1 18); do
+            HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
+              "https://freescout-staging.inatechshell.ca" || echo "000")
+            echo "Attempt $i: HTTP $HTTP"
+            [ "$HTTP" = "200" ] && { echo "✅ FreeScout healthy"; break; }
+            [ "$i" = "18" ] && echo "⚠️  FreeScout not yet 200 after 3 min — Laravel migrations may still be running"
+            sleep 10
+          done
+
+      # ── 4. Confirm container name via docker ps hint ──────────────────────────
+      - name: Re-fetch container name after restart
+        id: container
+        run: |
+          UUID="${{ steps.fs.outputs.uuid }}"
+          curl -s --max-time 30 -o /tmp/fs2.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID"
+
+          # Coolify v4 container name = app UUID (confirmed pattern for dockerimage apps)
+          CONTAINER_API=$(jq -r '.container_name // empty' /tmp/fs2.json 2>/dev/null || true)
+          STATUS=$(jq -r '.status // "unknown"' /tmp/fs2.json 2>/dev/null || true)
+          echo "container_name from API: '$CONTAINER_API'"
+          echo "status after restart:    $STATUS"
+
+          # Coolify v4 uses UUID as container name if custom container name is not set
+          # The running container name will be the UUID or UUID-suffix
+          if [ -z "$CONTAINER_API" ] || [ "$CONTAINER_API" = "null" ]; then
+            CONTAINER_API="$UUID"
+            echo "(no custom container_name set — defaulting to UUID: $CONTAINER_API)"
+          fi
+          echo "name=$CONTAINER_API" >> "$GITHUB_OUTPUT"
+
+      # ── 5. Print the exact docker exec GRANT command ─────────────────────────
+      - name: Print GRANT re-issue command for founder
+        run: |
+          FS_UUID="${{ steps.fs.outputs.uuid }}"
+          CONTAINER="${{ steps.container.outputs.name }}"
+
+          echo "========================================================"
+          echo " FREESCOUT RESTART COMPLETE"
+          echo "========================================================"
+          echo ""
+          echo " Coolify restart: done"
+          echo " FreeScout URL:   https://freescout-staging.inatechshell.ca"
+          echo ""
+          echo " ── NEXT ACTION REQUIRED (founder, ~10 seconds) ────────"
+          echo ""
+          echo " Verify conversations + threads tables exist in"
+          echo " Supabase Table Editor, then SSH to VPS and run:"
+          echo ""
+          echo "   docker exec \$(docker ps -qf 'name=$CONTAINER') \\"
+          echo "     php artisan tinker --execute=\"DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');\""
+          echo ""
+          echo " If the container name filter doesn't match, try:"
+          echo "   docker ps | grep freescout"
+          echo " to find the exact running container, then:"
+          echo "   docker exec <container_id> php artisan tinker --execute=\"DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');\""
+          echo ""
+          echo " After the GRANT: pollFreeScout will re-ingest conv 6+7"
+          echo " on its next 60s tick, then sweepNewTickets triages them."
+          echo "========================================================"
