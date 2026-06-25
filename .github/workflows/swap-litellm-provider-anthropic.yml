@@ -7,15 +7,19 @@ name: Swap LiteLLM provider — Anthropic Claude Haiku
 # What this workflow does:
 #   1.  Verify litellm-staging is reachable.
 #   2.  Test NVIDIA NIM directly — confirms 402/401/429 (credit exhaustion).
-#   3.  Derive the registered NVIDIA model ID from /model/info — delete it.
-#   4.  Detect whether ANTHROPIC_API_KEY already lives in litellm-staging env.
+#   3.  Detect whether ANTHROPIC_API_KEY already lives in litellm-staging env.
 #       a. Present  → proceed; use os.environ/ANTHROPIC_API_KEY reference.
 #       b. Absent + ANTHROPIC_API_KEY secret set → inject via Coolify API,
 #          restart litellm-staging, wait for health, then use os.environ ref.
 #       c. Absent + no secret → fail with escalation instructions.
-#   5.  Register claude-haiku-4-5 under meta/llama-3.3-70b-instruct alias.
-#   6.  Live completion test using model: "meta/llama-3.3-70b-instruct" (the
-#       exact string the application sends) — confirms end-to-end path.
+#   4.  Register claude-haiku-4-5 under meta/llama-3.3-70b-instruct alias.
+#       LiteLLM now has both entries; the router skips the cooled-down NVIDIA
+#       entry and routes to Haiku immediately. Triage calls recover at this step.
+#   5.  Live completion test via model: "meta/llama-3.3-70b-instruct" alias.
+#       Confirms Haiku is serving before NVIDIA is touched.
+#   6.  Delete NVIDIA entry from LiteLLM registry — targeted by EXPECTED_NIM_ID
+#       or api_base to avoid accidentally deleting the newly-registered Haiku.
+#       Safe only after step 5 confirms Haiku is serving.
 #   7.  Check LITELLM_DEFAULT_MODEL in ops-hub-app env vars; set if absent.
 #
 # Rollback path:
@@ -36,7 +40,7 @@ name: Swap LiteLLM provider — Anthropic Claude Haiku
 #   COOLIFY_API_TOKEN  — Coolify admin API token
 #   LITELLM_MASTER_KEY — LiteLLM admin key (must match Coolify env var)
 #   ANTHROPIC_API_KEY  — Anthropic API key (required only if not already in
-#                        litellm-staging Coolify env vars — see step 4 above)
+#                        litellm-staging Coolify env vars — see step 3 above)
 #
 # This workflow NEVER hard-codes secret values. All keys are resolved from
 # either GitHub secrets or the litellm-staging container environment.
@@ -58,7 +62,7 @@ env:
   HAIKU_MODEL: "anthropic/claude-haiku-4-5"
   # The alias the application sends — must not change
   MODEL_ALIAS: "meta/llama-3.3-70b-instruct"
-  # Cooldown ID from incident error log (used only for cross-check)
+  # Cooldown ID from incident error log — used to target delete precisely
   EXPECTED_NIM_ID: "48ea73ba-7c3c-4a88-a261-921558c3fc19"
 
 jobs:
@@ -134,63 +138,7 @@ jobs:
           echo "nim_status=$NIM_STATUS" >> "$GITHUB_OUTPUT"
           # Continue regardless — this step is diagnostic only
 
-      # ── 3. Find + delete NVIDIA model from LiteLLM registry ──────────────────
-      - name: Find NVIDIA model in LiteLLM registry
-        id: find-model
-        run: |
-          HTTP=$(curl -s --max-time 30 -o /tmp/model_info.json -w "%{http_code}" \
-            -H "Authorization: Bearer $LITELLM_KEY" \
-            -H "Accept: application/json" \
-            "$LITELLM_BASE/model/info")
-          echo "GET /model/info → HTTP $HTTP"
-          if [ "$HTTP" != "200" ]; then
-            echo "ERROR: /model/info HTTP $HTTP"
-            cat /tmp/model_info.json 2>/dev/null | head -5 || true
-            exit 1
-          fi
-
-          # Extract DB model ID — this is the authoritative ID for deletion
-          MODEL_DB_ID=$(jq -r \
-            '.data[] | select(.model_name == "'"$MODEL_ALIAS"'") | .model_info.id // empty' \
-            /tmp/model_info.json 2>/dev/null | head -1 || echo "")
-
-          echo "Registered models:"
-          jq -r '.data[] | "\(.model_name) → id=\(.model_info.id // "none")"' \
-            /tmp/model_info.json 2>/dev/null | head -20 || true
-
-          if [ -z "$MODEL_DB_ID" ] || [ "$MODEL_DB_ID" = "null" ]; then
-            echo "No model registered under alias '$MODEL_ALIAS' — nothing to delete"
-            echo "model_id=" >> "$GITHUB_OUTPUT"
-          else
-            echo "Found model ID: $MODEL_DB_ID"
-            if [ "$MODEL_DB_ID" = "$EXPECTED_NIM_ID" ]; then
-              echo "ID matches cooldown ID from incident report — confirmed NVIDIA NIM entry"
-            else
-              echo "ID differs from cooldown ID ($EXPECTED_NIM_ID) — will delete current DB entry"
-            fi
-            echo "model_id=$MODEL_DB_ID" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Delete NVIDIA model from LiteLLM
-        if: steps.find-model.outputs.model_id != ''
-        run: |
-          MODEL_DB_ID="${{ steps.find-model.outputs.model_id }}"
-          echo "Deleting model ID: $MODEL_DB_ID ..."
-          HTTP=$(curl -s --max-time 30 -o /tmp/del_resp.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $LITELLM_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            "$LITELLM_BASE/model/delete" \
-            -d "{\"id\": \"$MODEL_DB_ID\"}")
-          echo "POST /model/delete → HTTP $HTTP"
-          cat /tmp/del_resp.json 2>/dev/null | head -5 || true
-          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-            echo "Deleted model $MODEL_DB_ID"
-          else
-            echo "WARNING: delete returned HTTP $HTTP — may not have deleted. Proceeding to register."
-          fi
-
-      # ── 4. Check ANTHROPIC_API_KEY in litellm-staging container env ──────────
+      # ── 3. Check ANTHROPIC_API_KEY in litellm-staging container env ──────────
       - name: Check ANTHROPIC_API_KEY in litellm-staging env
         id: apikey
         run: |
@@ -219,7 +167,7 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── 4b. Inject ANTHROPIC_API_KEY into Coolify env (only if absent) ───────
+      # ── 3b. Inject ANTHROPIC_API_KEY into Coolify env (only if absent) ───────
       - name: Inject ANTHROPIC_API_KEY into litellm-staging Coolify env
         id: inject
         if: steps.apikey.outputs.present == 'false'
@@ -280,7 +228,7 @@ jobs:
             exit 1
           fi
 
-      # ── 4c. Restart litellm-staging to pick up injected env var ──────────────
+      # ── 3c. Restart litellm-staging to pick up injected env var ──────────────
       # Only runs when the key was absent and just injected above.
       # litellm-staging is already failing (429) so downtime is not additive.
       - name: Restart litellm-staging (picks up injected ANTHROPIC_API_KEY)
@@ -336,7 +284,9 @@ jobs:
             sleep 10
           done
 
-      # ── 5. Register Claude Haiku under the existing model alias ──────────────
+      # ── 4. Register Claude Haiku under the existing model alias ──────────────
+      # Register BEFORE deleting NVIDIA. LiteLLM routes to Haiku immediately
+      # because the NVIDIA entry is in cooldown. Triage calls recover here.
       - name: Register Claude Haiku 4.5 under meta/llama-3.3-70b-instruct alias
         id: register
         run: |
@@ -346,7 +296,7 @@ jobs:
           fi
 
           # LiteLLM reads ANTHROPIC_API_KEY from container env at request time.
-          # Key was verified present (step 4) or injected + container restarted (step 4b/c).
+          # Key was verified present (step 3) or injected + container restarted (step 3b/c).
           PAYLOAD=$(jq -n \
             --arg alias "$MODEL_ALIAS" \
             --arg model "$HAIKU_MODEL" \
@@ -380,7 +330,7 @@ jobs:
             exit 1
           fi
 
-      # ── 5a. Verify registration ───────────────────────────────────────────────
+      # ── 4a. Verify registration ───────────────────────────────────────────────
       - name: Verify model registration
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/verify.json -w "%{http_code}" \
@@ -397,7 +347,7 @@ jobs:
             /tmp/verify.json 2>/dev/null || true
 
           if [ "$COUNT" -gt "0" ]; then
-            echo "Confirmed: $MODEL_ALIAS is in LiteLLM registry ($COUNT entry)"
+            echo "Confirmed: $MODEL_ALIAS is in LiteLLM registry ($COUNT entry/entries)"
           else
             echo "ERROR: $MODEL_ALIAS not found in /model/info after registration"
             echo "All registered models:"
@@ -405,9 +355,10 @@ jobs:
             exit 1
           fi
 
-      # ── 6. Live completion test — use the alias the app sends ─────────────────
+      # ── 5. Live completion test — use the alias the app sends ─────────────────
       # IMPORTANT: model must be "$MODEL_ALIAS" (meta/llama-3.3-70b-instruct),
       # NOT anthropic/claude-haiku-4-5. This validates the exact app call path.
+      # NVIDIA is deleted only after this step succeeds.
       - name: Live completion test via meta/llama-3.3-70b-instruct alias
         run: |
           TEST_PAYLOAD=$(jq -n --arg alias "$MODEL_ALIAS" '{
@@ -430,11 +381,7 @@ jobs:
             echo "Response content: $CONTENT"
             echo "Model returned in response: $MODEL_USED"
             echo ""
-            echo "=== PROVIDER SWAP COMPLETE ==="
-            echo "  Alias:    $MODEL_ALIAS"
-            echo "  Routed to: $HAIKU_MODEL"
-            echo "  Key ref:  os.environ/ANTHROPIC_API_KEY"
-            echo "  Test:     HTTP 200 — live completion confirmed"
+            echo "=== HAIKU SERVING — SAFE TO REMOVE NVIDIA ENTRY ==="
           else
             echo "ERROR: live completion failed (HTTP $HTTP)"
             jq . /tmp/completion.json 2>/dev/null || cat /tmp/completion.json | head -10 || true
@@ -443,7 +390,71 @@ jobs:
             echo "  - ANTHROPIC_API_KEY invalid or quota exceeded"
             echo "  - LiteLLM did not pick up env var (container restart may be needed)"
             echo "  - Model name mismatch in litellm_params"
+            echo ""
+            echo "NVIDIA entry has NOT been deleted. Registry is intact."
             exit 1
+          fi
+
+      # ── 6. Find + delete NVIDIA model from LiteLLM registry ──────────────────
+      # Runs AFTER live test confirms Haiku is serving. Targets NVIDIA entry
+      # specifically — by EXPECTED_NIM_ID or api_base — to avoid deleting Haiku.
+      - name: Find NVIDIA model in LiteLLM registry
+        id: find-model
+        run: |
+          # Re-fetch model/info: both NVIDIA + Haiku entries are now present
+          HTTP=$(curl -s --max-time 30 -o /tmp/model_info_post.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/info")
+          echo "GET /model/info → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /model/info HTTP $HTTP"
+            cat /tmp/model_info_post.json 2>/dev/null | head -5 || true
+            exit 1
+          fi
+
+          echo "All entries under alias $MODEL_ALIAS:"
+          jq -r '.data[] | select(.model_name == "'"$MODEL_ALIAS"'") |
+            "  id=\(.model_info.id // "none")  model=\(.litellm_params.model // "?")  api_base=\(.litellm_params.api_base // "(none)")"' \
+            /tmp/model_info_post.json 2>/dev/null || true
+
+          # Target NVIDIA specifically — by known cooldown ID or api_base containing "nvidia"
+          # This avoids accidentally deleting the newly-registered Haiku entry
+          MODEL_DB_ID=$(jq -r \
+            '.data[] | select(.model_name == "'"$MODEL_ALIAS"'") |
+             select(
+               (.model_info.id == "'"$EXPECTED_NIM_ID"'") or
+               ((.litellm_params.api_base // "") | test("nvidia"; "i"))
+             ) | .model_info.id // empty' \
+            /tmp/model_info_post.json 2>/dev/null | head -1 || echo "")
+
+          if [ -z "$MODEL_DB_ID" ] || [ "$MODEL_DB_ID" = "null" ]; then
+            echo "NVIDIA entry not found (may have been removed already or ID changed)"
+            echo "Skipping delete — registry already clean"
+            echo "model_id=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found NVIDIA model ID to delete: $MODEL_DB_ID"
+            echo "model_id=$MODEL_DB_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Delete NVIDIA model from LiteLLM
+        if: steps.find-model.outputs.model_id != ''
+        run: |
+          MODEL_DB_ID="${{ steps.find-model.outputs.model_id }}"
+          echo "Deleting NVIDIA model ID: $MODEL_DB_ID ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/del_resp.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/delete" \
+            -d "{\"id\": \"$MODEL_DB_ID\"}")
+          echo "POST /model/delete → HTTP $HTTP"
+          cat /tmp/del_resp.json 2>/dev/null | head -5 || true
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Deleted NVIDIA model $MODEL_DB_ID"
+          else
+            echo "WARNING: delete returned HTTP $HTTP — may not have deleted."
+            echo "Registry is still intact (Haiku is serving). Clean up manually if needed."
           fi
 
       # ── 7. Check / set LITELLM_DEFAULT_MODEL in ops-hub-app ──────────────────
@@ -508,14 +519,14 @@ jobs:
           echo " PROVIDER SWAP SUMMARY"
           echo "============================================================"
           echo " Date:           2026-06-25"
-          echo " Branch:         ops/freescout-regrant"
+          echo " Branch:         ops/pm-status-20260625 → merged to main"
           echo " NVIDIA NIM test: HTTP $NIM_STATUS (expected non-200)"
-          echo " NVIDIA model deleted: ${MODEL_ID:-none found}"
           echo " ANTHROPIC_API_KEY: ${KEY_WAS_PRESENT:-unknown} in container env"
           [ "$KEY_INJECTED" = "true" ] && echo "   (key was injected via Coolify API + container restarted)"
           echo " New model:      $HAIKU_MODEL"
           echo " Alias:          $MODEL_ALIAS (unchanged — app code requires no edit)"
           echo " Key ref:        os.environ/ANTHROPIC_API_KEY"
+          echo " NVIDIA deleted: ${MODEL_ID:-none found / already removed}"
           echo "============================================================"
           echo ""
           echo "Monitoring window: 24 hours"

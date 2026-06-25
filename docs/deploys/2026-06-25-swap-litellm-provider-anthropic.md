@@ -82,16 +82,16 @@ acquiring new credits (founder decision, not an automated rollback).
 
 ## Deploy steps
 
-1. Push `swap-litellm-provider-anthropic.yml` to `ops/pm-status-20260625`
-2. Trigger: `gh workflow run swap-litellm-provider-anthropic.yml --ref ops/pm-status-20260625`
+1. Merge PR from `ops/pm-status-20260625` → `main` (workflow_dispatch requires the file on main to be dispatchable)
+2. Trigger: `gh workflow run swap-litellm-provider-anthropic.yml`
 3. Monitor workflow run in GitHub Actions
-4. If step 4 fails ("ANTHROPIC_API_KEY absent + no secret"): resolve FOUNDER_QUEUE item FQ-42, then re-trigger
+4. If step 3 fails ("ANTHROPIC_API_KEY absent + no secret"): resolve FOUNDER_QUEUE item FQ-42, then re-trigger
 
 ---
 
 ## Post-deploy smoke test
 
-The workflow itself runs a live completion test (step 6):
+The workflow itself runs a live completion test (step 5):
 ```
 POST /chat/completions
 model: "meta/llama-3.3-70b-instruct"  ← the alias the app sends

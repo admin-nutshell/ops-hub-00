@@ -51,22 +51,24 @@ After founder responds, the originating agent removes the item from this queue a
 
 **URGENT: FQ-42** [Production Manager] ANTHROPIC_API_KEY required to unblock P1 triage incident
         Context: NVIDIA NIM credits exhausted; all ticket-triage LiteLLM calls returning 429.
-          swap-litellm-provider-anthropic.yml is ready to run on branch ops/pm-status-20260625.
+          swap-litellm-provider-anthropic.yml is ready — PR open to merge to main.
+          workflow_dispatch requires the file on the default branch (main) before it can be
+          triggered. Merge the PR, then trigger.
           Workflow self-detects whether ANTHROPIC_API_KEY is already in litellm-staging Coolify
           env. If present: runs fully automatically and clears the incident.
-          If absent: workflow fails at step 4 with instructions unless GitHub secret is set.
+          If absent: workflow fails at step 3 with instructions unless GitHub secret is set.
           Action required (choose one):
             Option A — Automated (recommended, 2 min):
               Add ANTHROPIC_API_KEY to GitHub Actions secrets:
               https://github.com/admin-nutshell/ops-hub-00/settings/secrets/actions
               Value: your Anthropic API key (same key used by ops-hub-app already).
-              Then trigger: gh workflow run swap-litellm-provider-anthropic.yml --ref ops/pm-status-20260625
+              Merge PR, then trigger: gh workflow run swap-litellm-provider-anthropic.yml
               Workflow will inject key into litellm-staging + restart + register Haiku model.
             Option B — Manual Coolify (5 min):
               Go to https://coolify.inatechshell.ca → litellm-staging → Environment Variables.
               Add: ANTHROPIC_API_KEY = <your Anthropic API key>
               Restart litellm-staging from Coolify UI.
-              Then trigger: gh workflow run swap-litellm-provider-anthropic.yml --ref ops/pm-status-20260625
+              Merge PR, then trigger: gh workflow run swap-litellm-provider-anthropic.yml
               (no secret needed; key will be found in container env).
           If ANTHROPIC_API_KEY is already in litellm-staging env from prior setup:
             workflow runs automatically with no action needed — trigger it and it will self-detect.
