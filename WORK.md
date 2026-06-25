@@ -223,7 +223,7 @@ in permanent cooldown. All ticket-triage calls returning 429.
 
 Resolution workflow: `.github/workflows/swap-litellm-provider-anthropic.yml`.
 Registers `claude-haiku-4-5` under the same `meta/llama-3.3-70b-instruct` alias → zero code changes.
-PR open from `ops/pm-status-20260625` → `main` — workflow_dispatch requires merge before dispatch.
+PR #157 open: https://github.com/admin-nutshell/ops-hub-00/pull/157 — workflow_dispatch requires merge to main before dispatch.
 
 To trigger once PR merged and FQ-42 resolved:
   `gh workflow run swap-litellm-provider-anthropic.yml`

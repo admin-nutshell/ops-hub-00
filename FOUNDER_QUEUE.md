@@ -51,7 +51,8 @@ After founder responds, the originating agent removes the item from this queue a
 
 **URGENT: FQ-42** [Production Manager] ANTHROPIC_API_KEY required to unblock P1 triage incident
         Context: NVIDIA NIM credits exhausted; all ticket-triage LiteLLM calls returning 429.
-          swap-litellm-provider-anthropic.yml is ready — PR open to merge to main.
+          swap-litellm-provider-anthropic.yml is ready — PR #157 open to merge to main:
+          https://github.com/admin-nutshell/ops-hub-00/pull/157
           workflow_dispatch requires the file on the default branch (main) before it can be
           triggered. Merge the PR, then trigger.
           Workflow self-detects whether ANTHROPIC_API_KEY is already in litellm-staging Coolify
