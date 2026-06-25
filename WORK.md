@@ -145,7 +145,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-28: Sprint 1 retrospective doc | PM | Sprint 1 ✅ | `docs/retros/sprint-1.md` committed — what worked, what didn't, process changes for Sprint 2 | Jul 4 |
+| T-28: Sprint 1 retrospective doc | PM | Sprint 1 ✅ | ✅ **Done (2026-06-25).** `docs/retros/sprint-1.md` authored — 7 sections (summary, what worked, what didn't, incidents/resolutions, process changes, M1 status, open risks). Captures FreeScout 40+ PR saga, LiteLLM hostname discovery, branch-protection free-tier wall, T-23/T-24 worktree collision; codifies 6 Sprint 2 process changes (worktree isolation, env-var REPLACE-not-APPEND, sslip.io diagnostic-only). PR `docs/t28-sprint-1-retro`. | Jul 4 |
 | T-29: First monthly founder briefing (M1 criterion #13) | PM | All M1 criteria green | Briefing doc delivered to founder via FOUNDER_QUEUE — Sprint 1+2 summary, M2 preview, open risks | Jul 31 |
 
 ---
@@ -162,6 +162,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 ## Per-agent status
 
 ### PM
+**2026-06-25 — T-28 Sprint 1 retro authored.** `docs/retros/sprint-1.md` committed on `docs/t28-sprint-1-retro` (PR open). 7 sections; honest on the FreeScout 40+ PR saga, LiteLLM internal-hostname discovery, branch-protection free-tier wall, and the T-23/T-24 parallel-dispatch worktree collision; 6 Sprint 2 process changes codified. Internal learning doc — not founder-facing (that's T-29). T-28 → done.
+
 **2026-06-25 — Sprint 2 session start. Team OS live.**
 CLAUDE.md + `.claude/team/` (CONSTITUTION, COMMS, PM, QA, PRODUCTION, CR, FOUNDER playbooks) committed on branch `chore/team-operating-system` (PR #147, open). Sprint 2 critical path blocked at T-22 on FQ-39 (Gmail mailbox reconnect — founder action). FQ-36 and FQ-37 closed (LITELLM_URL resolved via internal container URL). Issuing parallel tasks to Tech Lead (T-23 specwork) and QA (T-24 spec) while T-22 validation gate is open. FQ-29 (DNC scope) still open — blocking T-27 only; non-critical until T-26 complete.
 
