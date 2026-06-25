@@ -124,7 +124,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **In progress (2026-06-23).** Branch `feat/t22-ticket-triage`. `triageTicket` (event-driven) + `sweepNewTickets` (cron */5) in `src/inngest/ticket-triage.ts`. 11 unit tests green. CI passes. Blocked on FQ-35 (LITELLM_URL + LITELLM_MASTER_KEY env vars in Coolify ops-hub-app). | Jul 14 |
+| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **BLOCKED on FQ-39 (2026-06-25).** Code complete and merged to main. `triageTicket` + `sweepNewTickets` deployed. LITELLM_URL set to internal URL `http://h12xz8887fxvbvjts2hac8if-055055304869:4000` (HTTP 401 = alive). FreeScout tables recreated (DB reset recovery done). GRANT re-issued. **Blocker: Gmail mailbox not reconnected after DB reset — FreeScout has 0 conversations. pollFreeScout polls successfully but ingests nothing. Waiting on FQ-39 (founder reconnects mailbox in FreeScout UI).** | Jul 14 |
 | T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22 | 🟢 **CODE COMPLETE (2026-06-25) — PR `feat/t23-ticket-respond`.** `src/inngest/ticket-respond.ts` (`respondTicket` on `ops-hub/ticket.respond`) registered in `src/index.ts`. Drafts reply via LiteLLM; delivers as internal FreeScout NOTE behind a mockable, config-gated seam; state → `responded`; LangFuse trace `ticket-respond`. 11 unit tests green; lint/typecheck/test pass. Migration `20260625000000_t23_responded_state.sql` adds `'responded'` to the state enum. ADR-0003 records the write-back decision. **Delivery dormant until `FREESCOUT_DB_URL` + `FREESCOUT_BOT_USER_ID` are provisioned (flagged below).** No REST API — direct DB write as `freescout_user`. | Jul 16 |
 
 ### Track C — Testing + Evals
@@ -162,6 +162,9 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 ## Per-agent status
 
 ### PM
+**2026-06-25 — Sprint 2 session start. Team OS live.**
+CLAUDE.md + `.claude/team/` (CONSTITUTION, COMMS, PM, QA, PRODUCTION, CR, FOUNDER playbooks) committed on branch `chore/team-operating-system` (PR #147, open). Sprint 2 critical path blocked at T-22 on FQ-39 (Gmail mailbox reconnect — founder action). FQ-36 and FQ-37 closed (LITELLM_URL resolved via internal container URL). Issuing parallel tasks to Tech Lead (T-23 specwork) and QA (T-24 spec) while T-22 validation gate is open. FQ-29 (DNC scope) still open — blocking T-27 only; non-critical until T-26 complete.
+
 **2026-06-23 — Sprint 2 planned.** Sprint 2 task list committed (T-21–T-29). Critical path: T-21 → T-22 → T-23 → T-26 (#11) → T-27 (#12). Pre-sprint ops (PT-1/PT-2) assigned to Production Manager. Two FOUNDER_QUEUE items filed: FQ-28 (FreeScout admin access confirmation for PT-1/PT-2) and FQ-29 (DNC project scope clarification for T-27). Sprint 1 retro (T-28) due July 4. Monitoring M1 checklist. M1 criteria #11–#12 are the Sprint 2 close gates.
 
 **2026-06-23 — Sprint 1: 20/20 tasks done (100%).** T-14 UptimeRobot ✅ Done — 3 monitors created manually in dashboard (FQ-17 resolved). All Sprint 1 foundation tasks complete. M1 criteria #1–#9 all green; #10 confirmed 2026-06-23.
@@ -191,17 +194,6 @@ Migration `supabase/migrations/20260625000000_t23_responded_state.sql` adds `'re
 - **Activation wiring deferred:** `triageTicket` must emit `ops-hub/ticket.respond` on success — one-line `step.sendEvent`, NOT added (T-23 must not modify `ticket-triage.ts`; T-22 blocked on FQ-39). Add when T-22 validates, or add a `sweepTriagedTickets` cron mirroring `sweepNewTickets`.
 
 **Handoff → QA Manager (T-24):** PR open, CI target green. The QA contract stub (`it.todo` list) in `ticket-respond.test.ts` is now converted to real assertions per its own instructions. Extend `ticket-state-machine.test.ts` to cover `triaged → responded`; the respond path's FreeScout delivery is mocked, so integration coverage of the state machine does not need the credential.
-
-### Security Lead
-**🟢 T-23 write-back SECURITY REVIEW DONE (2026-06-25) — CONDITIONAL SIGN-OFF.** Branch `security/t23-freescout-writeback-review` (off `feat/t23-ticket-respond`). Full verdict in `docs/adr/0003-freescout-response-writeback.md` §Security Lead Review; logged in DECISIONS.md.
-
-**BLOCKING condition C1 (gates provisioning):** `FREESCOUT_DB_URL` must **NOT** be the `freescout_user` DSN — `freescout_user` owns every FreeScout table (customers/emails/users-password-hashes/mailboxes/conversations/threads), the max-blast-radius cross-app credential this ADR rejected for Option B. Provision a dedicated least-privilege LOGIN role **`freescout_writer`**: `INSERT` on `threads` only + the threads sequence grant, nothing else. The `GRANT INSERT` must run AS `freescout_user` via `docker exec artisan tinker` (FQ-34 owner-grant path). **SQL + step-by-step in `docs/engineering/t23-freescout-writeback-runbook.md`.**
-
-**Confirmed fine:** NOTE-not-reply safety; no SQLi (INSERT fully parameterized, note bound as `$3`, ids cast `bigint`); config-gate is a sound fail-closed default; non-atomic duplicate-note risk acceptable for dormant v1; zero secrets in T-23 git history; no new deps.
-
-**Track before ACTIVATION (NOT blocking provisioning):** T1 stored-XSS (raw INSERT bypasses FreeScout sanitization — confirm `thread.body` output-sanitized or sanitize pre-INSERT); T2 confirm raw INSERT triggers no customer email; T3 dedup guard; T4 audit-log entry per write (SOC 2 / PIPEDA).
-
-**Handoff → Production Manager:** ✅ **UNBLOCKED to provision** the moment `FREESCOUT_DB_URL` points at `freescout_writer` (condition C1), following the runbook. Do **not** provision `freescout_user`. Not a FOUNDER_QUEUE item.
 
 **✅ T-21 DONE (2026-06-23).** `pollFreeScout` cron verified end-to-end: two tickets confirmed in Supabase (`freescout_conversation_id: 6 + 7`), dedup working. FQ-31/33/34 resolved. PR #140 merged.
 
