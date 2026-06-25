@@ -69,8 +69,7 @@ jobs:
           echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
 
       # ── Step A: Update ops-hub-app LITELLM_URL to internal service URL ───────
-      - name: List ops-hub-app env vars and find LITELLM_URL
-        id: envs
+      - name: List ops-hub-app env vars and delete ALL LITELLM_URL duplicates
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
@@ -79,27 +78,18 @@ jobs:
           echo "=== ops-hub-app env vars (HTTP $HTTP) ==="
           jq -r '.[] | "\(.key)=\(if (.is_shown_once // false) then "***" else .value end) [uuid=\(.uuid)]"' \
             /tmp/envs.json 2>/dev/null || cat /tmp/envs.json | head -20
-          EXISTING_UUID=$(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null || true)
-          EXISTING_VAL=$(jq -r '.[] | select(.key == "LITELLM_URL") | .value' /tmp/envs.json 2>/dev/null || true)
-          echo "LITELLM_URL current value: '$EXISTING_VAL'"
-          echo "LITELLM_URL env var uuid:  '$EXISTING_UUID'"
-          echo "env_uuid=$EXISTING_UUID" >> "$GITHUB_OUTPUT"
-          echo "env_val=$EXISTING_VAL" >> "$GITHUB_OUTPUT"
 
-      - name: Delete existing LITELLM_URL env var (if present)
-        run: |
-          ENV_UUID="${{ steps.envs.outputs.env_uuid }}"
-          APP_UUID="${{ steps.app.outputs.uuid }}"
-          if [ -z "$ENV_UUID" ] || [ "$ENV_UUID" = "null" ]; then
-            echo "No existing LITELLM_URL env var — nothing to delete"
-            exit 0
-          fi
-          echo "Deleting LITELLM_URL env var $ENV_UUID ..."
-          DEL_HTTP=$(curl -s --max-time 30 -o /tmp/del_env.json -w "%{http_code}" -X DELETE \
-            -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications/$APP_UUID/envs/$ENV_UUID")
-          echo "DELETE → HTTP $DEL_HTTP"
-          cat /tmp/del_env.json 2>/dev/null || true
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo ""
+          echo "Found $COUNT LITELLM_URL var(s) — deleting all before re-creating"
+          jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null \
+            | while read -r ENV_UUID; do
+                [ -z "$ENV_UUID" ] || [ "$ENV_UUID" = "null" ] && continue
+                DEL_HTTP=$(curl -s --max-time 30 -o /tmp/del_env.json -w "%{http_code}" -X DELETE \
+                  -H "Authorization: Bearer $TOKEN" \
+                  "$COOLIFY_BASE/applications/$UUID/envs/$ENV_UUID")
+                echo "DELETE $ENV_UUID → HTTP $DEL_HTTP"
+              done
 
       - name: Create LITELLM_URL pointing to verified URL
         run: |
