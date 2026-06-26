@@ -248,7 +248,7 @@ Two required founder actions (FQ-41):
 - Re-issue GRANT: `docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') php artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"`
 - FreeScout UI: `https://freescout-staging.inatechshell.ca/mailboxes` → Edit "ITS Support" → Incoming Email → verify/re-authorize Google OAuth → Save + Test Connection
 
-Also checking mailboxes table (check-freescout-mailboxes.yml, PR #167) to confirm whether the mailbox row survived the reset or needs full re-entry.
+Mailbox confirmed via check-freescout-mailboxes.yml runs #28215633753 and #28215745025: mailbox row EXISTS (id=1 "ITS Support", imap.gmail.com:993 SSL, created_at=02:48 UTC, updated_at=03:03 UTC). Founder already re-configured and likely re-authorized OAuth. The GRANT is the only confirmed remaining blocker.
 
 **triage-model alias configuration — BLOCKED ON FQ-40 (updated 2026-06-26, run #28210675694 — third 401).**
 
