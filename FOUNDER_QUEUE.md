@@ -26,10 +26,28 @@ The only confirmed remaining blocker is the GRANT.
 
 ### Required founder actions (two steps — must both be done)
 
-#### Step 1: Re-issue the GRANT (via SSH to Coolify VPS)
+#### Step 1: Re-issue the GRANT + make it permanent (via SSH to Coolify VPS)
 
-Run this command on the VPS hosting the Coolify FreeScout container:
+Run **both commands** on the VPS hosting the Coolify FreeScout container.
 
+> **Why via SSH/artisan tinker:** The Supabase SQL Editor runs as `postgres`, which cannot
+> alter default privileges for another role. `artisan tinker` connects as `freescout_user`
+> (FreeScout's own DB user, who owns `conversations` and `threads`). Only the owner can set
+> default privileges for that role. Running from Supabase SQL Editor will return
+> `permission denied to change default privileges`.
+
+**Command A — permanent fix (runs as freescout_user, sets default privileges):**
+```bash
+docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') \
+  php artisan tinker \
+  --execute="DB::statement('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ops_hub_app');"
+```
+
+Expected output: `=> true`
+
+This makes any future table FreeScout creates (via Laravel migrations on next restart) automatically grant SELECT to `ops_hub_app`. This is the permanent fix — once set, it survives all future FreeScout schema resets.
+
+**Command B — apply grant to current tables:**
 ```bash
 docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') \
   php artisan tinker \
@@ -38,11 +56,22 @@ docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') \
 
 Expected output: `=> true`
 
-If the container name lookup fails, get the container ID directly:
+If the container name lookup fails (`docker ps -qf` returns empty), find the container ID directly:
 ```bash
 docker ps | grep sgnpza1r8jlq19f0dboqpzq6
+# Then substitute <CONTAINER_ID> below:
+docker exec <CONTAINER_ID> php artisan tinker --execute="DB::statement('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ops_hub_app');"
 docker exec <CONTAINER_ID> php artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"
 ```
+
+**Verify the grant took effect** (run in Supabase SQL Editor):
+```sql
+SELECT grantee, privilege_type
+FROM information_schema.role_table_grants
+WHERE table_name IN ('conversations', 'threads')
+  AND grantee = 'ops_hub_app';
+```
+Expect 2 rows (one SELECT grant per table).
 
 #### Step 2: Verify Gmail OAuth connection in FreeScout UI
 
@@ -60,12 +89,14 @@ The mailbox row IS in the DB (confirmed from DB query, updated_at=03:03 UTC). Th
 To verify emails start appearing without waiting for the cron:
 ```bash
 docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') \
-  php artisan fetch:emails
+  php artisan freescout:fetch-emails
 ```
+
+Note: the artisan binary is at `/www/html/artisan` inside the container (not `/var/www/html/artisan`). If `php artisan` doesn't resolve, use `php /www/html/artisan freescout:fetch-emails`.
 
 ### After resolution
 
-Notify Production Manager: "GRANT re-issued + Gmail OAuth reconnected in FreeScout"
+Notify Production Manager: "GRANT re-issued + ALTER DEFAULT PRIVILEGES applied + Gmail OAuth reconnected in FreeScout"
 
 Production Manager will:
 1. Run `discover-freescout-schema.yml` to confirm conversations rows are appearing
@@ -75,7 +106,7 @@ Production Manager will:
 
 ### Note on recurrence
 
-This is the second time the GRANT has been lost to a DB reset. The GRANT is session-persistent in Supabase (not a migration) — it survives restarts but NOT schema resets. If schema resets continue, consider adding the GRANT to a FreeScout startup script or using a Supabase migration to make it permanent. Filed for PM + Tech Lead awareness.
+This has happened twice. Root cause: GRANTs on FreeScout-owned tables are lost when FreeScout re-runs Laravel migrations (e.g. on DB reset). The permanent fix is `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ops_hub_app` — run once as `freescout_user` via artisan tinker (Step 1 above). After that, every table FreeScout creates will automatically carry the grant. **This fix must be run via artisan tinker, not Supabase SQL Editor** (Supabase SQL Editor connects as `postgres`, which returns `permission denied to change default privileges` for another role's defaults).
 
 ---
 

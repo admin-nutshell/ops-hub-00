@@ -1,0 +1,157 @@
+name: Provision LITELLM_TRIAGE_MODEL env var (one-shot)
+
+# Sets LITELLM_TRIAGE_MODEL on ops-hub-app in Coolify, then restarts it.
+# Required so ticket-triage.ts and ticket-respond.ts resolve the model alias
+# from env instead of the (now-removed) hardcoded "meta/llama-3.3-70b-instruct".
+#
+# Default value: "triage-model" — the LiteLLM alias registered by
+# configure-litellm-triage-model.yml. Override via workflow input if you want
+# to point directly at a specific model (e.g. "gpt-4o-mini") for debugging.
+#
+# Prerequisites (GitHub Actions secrets):
+#   COOLIFY_API_TOKEN — Coolify admin API token
+#
+# Rollback: re-run with mode=delete to remove the var and restart.
+# Idempotent: deletes any existing entry before creating the new one.
+#
+# After running: trigger configure-litellm-triage-model.yml to ensure the
+# triage-model alias is registered in LiteLLM, then watch Inngest for
+# ticket-triage: Completed on next incoming ticket.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_alias:
+        description: 'LiteLLM model alias for triage (default: triage-model)'
+        required: false
+        default: 'triage-model'
+      mode:
+        description: 'set = provision var; delete = remove var'
+        required: false
+        default: 'set'
+        type: choice
+        options: ['set', 'delete']
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+
+jobs:
+  provision:
+    name: Provision LITELLM_TRIAGE_MODEL on ops-hub-app
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Find ops-hub-app UUID
+        id: find-app
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          echo "GET /applications → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: Coolify API unavailable (HTTP $HTTP)"; cat /tmp/apps.json; exit 1
+          fi
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: ops-hub-app not found in Coolify. Apps present:"
+            jq -r '.[].name' /tmp/apps.json
+            exit 1
+          fi
+          echo "ops-hub-app UUID: $UUID"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing LITELLM_TRIAGE_MODEL entry (idempotent)
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_TRIAGE_MODEL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Existing LITELLM_TRIAGE_MODEL entries: $COUNT"
+          for eu in $(jq -r '.[] | select(.key == "LITELLM_TRIAGE_MODEL") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$UUID/envs/$eu")
+            echo "  DELETE LITELLM_TRIAGE_MODEL $eu → HTTP $DEL"
+          done
+
+      - name: Set LITELLM_TRIAGE_MODEL
+        if: inputs.mode == 'set'
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          ALIAS="${{ inputs.model_alias }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/set-model.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_TRIAGE_MODEL" --arg v "$ALIAS" '{key:$k,value:$v}')")
+          echo "POST LITELLM_TRIAGE_MODEL=$ALIAS → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set LITELLM_TRIAGE_MODEL (HTTP $HTTP)"
+            cat /tmp/set-model.json | head -5
+            exit 1
+          fi
+          echo "LITELLM_TRIAGE_MODEL set to: $ALIAS"
+
+      - name: Restart ops-hub-app
+        if: inputs.mode == 'set'
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          echo "Restarting ops-hub-app to apply new env var..."
+          HTTP=$(curl -s --max-time 60 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$UUID/restart")
+          echo "Restart → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "WARNING: restart returned HTTP $HTTP — verify manually."
+            cat /tmp/restart.json | head -5
+          else
+            echo "Restart queued. Waiting 30s..."
+            sleep 30
+          fi
+
+      - name: Verify ops-hub-app health
+        if: inputs.mode == 'set'
+        run: |
+          set -euo pipefail
+          MAX=6; WAIT=10; n=0
+          until curl -sf --max-time 10 "https://ops-hub-staging.inatechshell.ca/health" > /tmp/health.json 2>/dev/null; do
+            n=$((n+1))
+            if [ $n -ge $MAX ]; then
+              echo "ERROR: health check failed after $((MAX*WAIT))s"
+              cat /tmp/health.json 2>/dev/null || true
+              exit 1
+            fi
+            echo "  [$n/$MAX] waiting ${WAIT}s..."
+            sleep $WAIT
+          done
+          echo "ops-hub-app healthy:"
+          cat /tmp/health.json
+
+      - name: Summary
+        if: inputs.mode == 'set'
+        run: |
+          echo ""
+          echo "=== LITELLM_TRIAGE_MODEL provisioned ==="
+          echo "LITELLM_TRIAGE_MODEL: ${{ inputs.model_alias }}"
+          echo ""
+          echo "Next steps:"
+          echo "  1. Run configure-litellm-triage-model.yml to ensure the"
+          echo "     '${{ inputs.model_alias }}' alias is registered in LiteLLM."
+          echo "  2. Watch Inngest for ticket-triage: Completed on next incoming ticket."
+          echo "  3. Confirm ticket-respond: Completed follows, with internal note in FreeScout."

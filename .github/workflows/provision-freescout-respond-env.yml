@@ -1,0 +1,217 @@
+name: Provision FreeScout respond env vars (one-shot)
+
+# Sets FREESCOUT_DB_URL and FREESCOUT_BOT_USER_ID on ops-hub-app in Coolify,
+# then restarts it. Required for ticket-respond to deliver internal notes to
+# FreeScout conversations (T-23).
+#
+# FREESCOUT_DB_URL  — freescout_user's connection string. The `postFreeScoutNote`
+#   function writes to FreeScout's `threads` table as freescout_user (ops_hub_app
+#   is read-only on FreeScout tables per CLAUDE.md). Constructed from FREESCOUT_DB_PASS.
+#
+# FREESCOUT_BOT_USER_ID — FreeScout user ID used to attribute AI-drafted notes.
+#   Defaults to 1 (the FreeScout admin user, haytham@inatechshell.ca per project
+#   memory). Override via workflow input if a dedicated bot user is later created.
+#
+# Prerequisites (GitHub Actions secrets):
+#   COOLIFY_API_TOKEN — Coolify admin API token
+#   FREESCOUT_DB_PASS — freescout_user PostgreSQL password (set 2026-06-23)
+#
+# Rollback: re-run with mode=delete to remove both vars and restart.
+# Idempotent: deletes any existing entries before creating new ones.
+#
+# After running: watch Inngest for ticket-respond runs on next triaged ticket.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bot_user_id:
+        description: 'FreeScout user ID for AI notes (default: 1 = admin)'
+        required: false
+        default: '1'
+      mode:
+        description: 'set = provision vars; delete = remove vars'
+        required: false
+        default: 'set'
+        type: choice
+        options: ['set', 'delete']
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  FS_DB_HOST: "aws-1-ca-central-1.pooler.supabase.com"
+  FS_DB_USER: "freescout_user.yocoljutbiizdbfraapx"
+  FS_DB_PORT: "5432"
+  FS_DB_NAME: "postgres"
+
+jobs:
+  provision:
+    name: Provision FREESCOUT_DB_URL + FREESCOUT_BOT_USER_ID on ops-hub-app
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Find ops-hub-app UUID
+        id: find-app
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          echo "GET /applications → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: Coolify API unavailable (HTTP $HTTP)"; cat /tmp/apps.json; exit 1
+          fi
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: ops-hub-app not found in Coolify. Apps present:"
+            jq -r '.[].name' /tmp/apps.json
+            exit 1
+          fi
+          echo "ops-hub-app UUID: $UUID"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      - name: Build and mask FREESCOUT_DB_URL
+        id: build-url
+        env:
+          FS_PASS: ${{ secrets.FREESCOUT_DB_PASS }}
+        run: |
+          set -euo pipefail
+          URL="postgresql://${FS_DB_USER}:${FS_PASS}@${FS_DB_HOST}:${FS_DB_PORT}/${FS_DB_NAME}"
+          echo "::add-mask::$URL"
+          echo "::add-mask::$FS_PASS"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "FREESCOUT_DB_URL constructed (value masked)."
+
+      - name: Delete existing FREESCOUT_DB_URL entries (idempotent)
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "FREESCOUT_DB_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Existing FREESCOUT_DB_URL entries: $COUNT"
+          for eu in $(jq -r '.[] | select(.key == "FREESCOUT_DB_URL") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$UUID/envs/$eu")
+            echo "  DELETE FREESCOUT_DB_URL $eu → HTTP $DEL"
+          done
+
+      - name: Delete existing FREESCOUT_BOT_USER_ID entries (idempotent)
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          curl -s --max-time 30 -o /tmp/envs2.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs"
+          for eu in $(jq -r '.[] | select(.key == "FREESCOUT_BOT_USER_ID") | .uuid' /tmp/envs2.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$UUID/envs/$eu")
+            echo "  DELETE FREESCOUT_BOT_USER_ID $eu → HTTP $DEL"
+          done
+
+      - name: Set FREESCOUT_DB_URL
+        if: inputs.mode == 'set'
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+          DB_URL: ${{ steps.build-url.outputs.url }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$DB_URL"
+          HTTP=$(curl -s --max-time 30 -o /tmp/set-url.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs" \
+            -d "$(jq -n --arg k "FREESCOUT_DB_URL" --arg v "$DB_URL" '{key:$k,value:$v}')")
+          echo "POST FREESCOUT_DB_URL → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set FREESCOUT_DB_URL (HTTP $HTTP)"
+            cat /tmp/set-url.json | head -5
+            exit 1
+          fi
+          echo "FREESCOUT_DB_URL set (value masked)."
+
+      - name: Set FREESCOUT_BOT_USER_ID
+        if: inputs.mode == 'set'
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          BOT_ID="${{ inputs.bot_user_id }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/set-bot.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs" \
+            -d "$(jq -n --arg k "FREESCOUT_BOT_USER_ID" --arg v "$BOT_ID" '{key:$k,value:$v}')")
+          echo "POST FREESCOUT_BOT_USER_ID=$BOT_ID → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set FREESCOUT_BOT_USER_ID (HTTP $HTTP)"
+            cat /tmp/set-bot.json | head -5
+            exit 1
+          fi
+          echo "FREESCOUT_BOT_USER_ID set to $BOT_ID."
+
+      - name: Restart ops-hub-app
+        if: inputs.mode == 'set'
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          echo "Restarting ops-hub-app to apply new env vars..."
+          HTTP=$(curl -s --max-time 60 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$UUID/restart")
+          echo "Restart → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "WARNING: restart returned HTTP $HTTP — verify manually."
+            cat /tmp/restart.json | head -5
+          else
+            echo "Restart queued. Waiting 30s..."
+            sleep 30
+          fi
+
+      - name: Verify ops-hub-app health
+        if: inputs.mode == 'set'
+        run: |
+          set -euo pipefail
+          MAX=6; WAIT=10; n=0
+          until curl -sf --max-time 10 "https://ops-hub-staging.inatechshell.ca/health" > /tmp/health.json 2>/dev/null; do
+            n=$((n+1))
+            if [ $n -ge $MAX ]; then
+              echo "ERROR: health check failed after $((MAX*WAIT))s"
+              cat /tmp/health.json 2>/dev/null || true
+              exit 1
+            fi
+            echo "  [$n/$MAX] waiting ${WAIT}s..."
+            sleep $WAIT
+          done
+          echo "ops-hub-app healthy:"
+          cat /tmp/health.json
+
+      - name: Summary
+        if: inputs.mode == 'set'
+        run: |
+          echo ""
+          echo "=== FREESCOUT respond env provisioned ==="
+          echo "FREESCOUT_DB_URL     : set (masked) — freescout_user connection to Supabase"
+          echo "FREESCOUT_BOT_USER_ID: ${{ inputs.bot_user_id }}"
+          echo ""
+          echo "ticket-respond will now:"
+          echo "  1. Draft a reply via LiteLLM"
+          echo "  2. POST it as an internal NOTE on the FreeScout conversation (type=3)"
+          echo "  3. Advance ticket state to 'responded'"
+          echo ""
+          echo "Watch Inngest dashboard for ticket-respond runs on next triaged ticket."
+          echo "Notes appear in FreeScout UI under the conversation (not sent to customer)."
