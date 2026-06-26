@@ -16,7 +16,7 @@ name: Configure LiteLLM — triage-model alias (NVIDIA primary + OpenAI fallback
 # container env automatically for the native gpt- model space.
 #
 # Run order:
-#   1.  Verify litellm-staging health (https://litellm-staging.inatechshell.ca)
+#   1.  Verify litellm-staging health (sslip.io — GHA runners can't use custom domain)
 #   2.  Verify NVIDIA_API_KEY + OPENAI_API_KEY key names are in Coolify config
 #   3.  Purge all stale model registrations
 #   4.  Register NVIDIA NIM under "triage-model"              (id: nvidia-primary)
@@ -50,9 +50,11 @@ permissions:
 env:
   COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
   LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
-  # New alias the code will eventually use
+  # GHA runners cannot resolve litellm-staging.inatechshell.ca — use sslip.io instead.
+  # If curl times out (exit 28), the Coolify server IP changed; update this value
+  # by running: dig +short coolify.inatechshell.ca
+  LITELLM_SSLIP_IP: "187.124.76.235"
   TRIAGE_ALIAS: "triage-model"
-  # Legacy alias hardcoded in ticket-triage.ts:71 — keep registered until code ships
   LEGACY_ALIAS: "meta/llama-3.3-70b-instruct"
 
 jobs:
@@ -80,10 +82,11 @@ jobs:
             exit 1
           fi
 
-          # Use the public custom domain — stable across server IP changes.
-          # The old sslip.io URL hardcoded the server IP (187.124.76.235) and
-          # broke with exit code 28 (curl timeout) when the IP changed.
-          LITELLM_URL="https://litellm-staging.inatechshell.ca"
+          # sslip.io: encodes the server IP so GHA runners can reach LiteLLM.
+          # The custom domain (litellm-staging.inatechshell.ca) does not resolve
+          # from GHA runners. If this times out after a server IP change, update
+          # the IP below and in LITELLM_SSLIP_IP env var, then re-run.
+          LITELLM_URL="http://${LITELLM_UUID}.${LITELLM_SSLIP_IP}.sslip.io"
           echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
           echo "litellm-staging URL: $LITELLM_URL"
 
