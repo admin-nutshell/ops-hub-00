@@ -16,7 +16,7 @@ name: Configure LiteLLM — triage-model alias (NVIDIA primary + OpenAI fallback
 # container env automatically for the native gpt- model space.
 #
 # Run order:
-#   1.  Verify litellm-staging health + resolve sslip.io URL
+#   1.  Verify litellm-staging health (https://litellm-staging.inatechshell.ca)
 #   2.  Verify NVIDIA_API_KEY + OPENAI_API_KEY key names are in Coolify config
 #   3.  Purge all stale model registrations
 #   4.  Register NVIDIA NIM under "triage-model"              (id: nvidia-primary)
@@ -57,14 +57,14 @@ env:
 
 jobs:
   configure-triage-model:
-    name: Register triage-model (NVIDIA NIM primary)
+    name: Register triage-model (NVIDIA primary + OpenAI fallback)
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
       LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
 
     steps:
-      # ── 1. Health check + resolve sslip.io URL ───────────────────────────────
+      # ── 1. Health check ──────────────────────────────────────────────────────
       - name: Verify litellm-staging health
         id: health
         run: |
@@ -80,12 +80,14 @@ jobs:
             exit 1
           fi
 
-          # sslip.io resolves from GitHub Actions runners; custom domain may not
-          LITELLM_URL="http://${LITELLM_UUID}.187.124.76.235.sslip.io"
+          # Use the public custom domain — stable across server IP changes.
+          # The old sslip.io URL hardcoded the server IP (187.124.76.235) and
+          # broke with exit code 28 (curl timeout) when the IP changed.
+          LITELLM_URL="https://litellm-staging.inatechshell.ca"
           echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
           echo "litellm-staging URL: $LITELLM_URL"
 
-          HEALTH=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
+          HEALTH=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" \
             "$LITELLM_URL/health/readiness" || echo "000")
           echo "Health check: HTTP $HEALTH"
           if [ "$HEALTH" != "200" ]; then
