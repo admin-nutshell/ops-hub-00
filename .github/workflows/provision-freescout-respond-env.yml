@@ -132,7 +132,7 @@ jobs:
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$UUID/envs" \
-            -d "$(jq -n --arg k "FREESCOUT_DB_URL" --arg v "$DB_URL" '{key:$k,value:$v,is_secret:true}')")
+            -d "$(jq -n --arg k "FREESCOUT_DB_URL" --arg v "$DB_URL" '{key:$k,value:$v}')")
           echo "POST FREESCOUT_DB_URL → HTTP $HTTP"
           if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
             echo "ERROR: failed to set FREESCOUT_DB_URL (HTTP $HTTP)"
