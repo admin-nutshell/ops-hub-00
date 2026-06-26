@@ -211,6 +211,37 @@ export async function triageOneTicket(
   };
 }
 
+// Event-driven handler. Exported so unit tests can invoke it directly with a
+// mock step (the Inngest Function object's handler is not callable on its own).
+//
+// Activation wire (T-22 → T-23): when triage actually classifies a ticket
+// (state advances new → triaged), we emit ops-hub/ticket.respond so the
+// respondTicket function (T-23) drafts a reply. The event payload deliberately
+// uses { ticket_id, project_id, tenant_id } — the snake_case shape consumed by
+// respondTicket's RespondEventData and already established by the poller's
+// ticket.triage events. project_id/tenant_id are required downstream to set the
+// transaction-local RLS GUCs; a ticketId-only payload would leave them undefined
+// and break the tenant-scoped read.
+export async function triageTicketHandler({ event, step }: InngestCtx): Promise<TriageResult> {
+  const { ticket_id, project_id, tenant_id } = event.data as TriageEventData;
+  const result = (await step.run("triage", () =>
+    triageOneTicket(getPool(), ticket_id, project_id, tenant_id)
+  )) as TriageResult;
+
+  // Only advance the pipeline on a real triage. A skipped result means the
+  // ticket was already past 'new' (e.g. sweepNewTickets re-emitting a ticket the
+  // poller already dispatched) — emitting ticket.respond again would produce a
+  // duplicate draft.
+  if (!("skipped" in result)) {
+    await step.sendEvent("dispatch-respond", {
+      name: "ops-hub/ticket.respond" as const,
+      data: { ticket_id, project_id, tenant_id },
+    });
+  }
+
+  return result;
+}
+
 // Event-driven: real-time triage when the poller dispatches ops-hub/ticket.triage.
 export const triageTicket = inngest.createFunction(
   {
@@ -218,12 +249,7 @@ export const triageTicket = inngest.createFunction(
     retries: 2,
     triggers: [{ event: "ops-hub/ticket.triage" }],
   },
-  async ({ event, step }: InngestCtx) => {
-    const { ticket_id, project_id, tenant_id } = event.data as TriageEventData;
-    return await step.run("triage", () =>
-      triageOneTicket(getPool(), ticket_id, project_id, tenant_id)
-    );
-  }
+  triageTicketHandler
 );
 
 // Cron sweep: catches tickets that existed before T-22 deployed (or missed events).

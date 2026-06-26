@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { classifyTicket, triageOneTicket } from "../ticket-triage";
+import { classifyTicket, triageOneTicket, triageTicketHandler } from "../ticket-triage";
+import type { TriageResult } from "../ticket-triage";
 
 /**
  * T-22 — ticket-triage unit tests.
@@ -265,5 +266,87 @@ describe("triageOneTicket", () => {
 
     const queryCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string][];
     expect(queryCalls.some(([q]) => q.includes("UPDATE tickets"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// triageTicketHandler — the Inngest function body (activation wire T-22 → T-23)
+//
+// These tests exercise the real handler with a mock step. step.run is stubbed to
+// return a controlled TriageResult (or reject) so we isolate the emit decision
+// from the DB/LLM logic already covered above.
+// ---------------------------------------------------------------------------
+
+type StepRunFn = (id: string, fn: () => Promise<unknown>) => Promise<unknown>;
+type StepSendEventFn = (id: string, events: unknown) => Promise<void>;
+
+// Build the minimal { event, step } context triageTicketHandler reads. step.run
+// is stubbed to yield a controlled result WITHOUT executing the real triage
+// callback — the DB/LLM path (triageOneTicket) is covered by its own tests
+// above, so here we isolate the handler's emit decision. The cast keeps the test
+// honest about the fields the handler actually uses without reconstructing
+// Inngest's full context type.
+function makeCtx(
+  data: { ticket_id: string; project_id: string; tenant_id: string },
+  runImpl: StepRunFn
+) {
+  const step = {
+    run: vi.fn(runImpl),
+    sendEvent: vi.fn<StepSendEventFn>().mockResolvedValue(undefined),
+  };
+  const ctx = { event: { data }, step } as unknown as Parameters<typeof triageTicketHandler>[0];
+  return { ctx, step };
+}
+
+describe("triageTicketHandler activation wire", () => {
+  const DATA = { ticket_id: "t1", project_id: "proj-1", tenant_id: "tenant-1" };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits ops-hub/ticket.respond with the full payload when triage succeeds", async () => {
+    const triaged: TriageResult = {
+      urgency: "high",
+      category: "auth",
+      routing: "engineering",
+      reasoning: "Login degraded",
+    };
+    const { ctx, step } = makeCtx(DATA, async () => triaged);
+
+    const result = await triageTicketHandler(ctx);
+
+    expect(result).toEqual(triaged);
+    expect(step.sendEvent).toHaveBeenCalledOnce();
+    const [stepId, event] = step.sendEvent.mock.calls[0] as [
+      string,
+      { name: string; data: Record<string, string> },
+    ];
+    expect(stepId).toBe("dispatch-respond");
+    expect(event.name).toBe("ops-hub/ticket.respond");
+    expect(event.data).toEqual({
+      ticket_id: "t1",
+      project_id: "proj-1",
+      tenant_id: "tenant-1",
+    });
+  });
+
+  it("does NOT emit when triage is skipped (already past 'new' — prevents duplicate respond)", async () => {
+    const skipped: TriageResult = { skipped: true, reason: "triaged" };
+    const { ctx, step } = makeCtx(DATA, async () => skipped);
+
+    const result = await triageTicketHandler(ctx);
+
+    expect(result).toEqual(skipped);
+    expect(step.sendEvent).not.toHaveBeenCalled();
+  });
+
+  it("does NOT emit when triage fails (error path — handler rejects, no event)", async () => {
+    const { ctx, step } = makeCtx(DATA, async () => {
+      throw new Error("LiteLLM 429");
+    });
+
+    await expect(triageTicketHandler(ctx)).rejects.toThrow("LiteLLM 429");
+    expect(step.sendEvent).not.toHaveBeenCalled();
   });
 });
