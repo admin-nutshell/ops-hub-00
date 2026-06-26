@@ -214,6 +214,34 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 ### Production Manager
 **🟢 ACTIVE (2026-06-25)**
 
+**2026-06-25 — LiteLLM triage-model configuration (fresh restart recovery)**
+
+Status: PR #158 open — https://github.com/admin-nutshell/ops-hub-00/pull/158
+Workflow: `.github/workflows/configure-litellm-triage-model.yml` (workflow_dispatch)
+
+litellm-staging restarted with fresh NVIDIA_API_KEY + OPENAI_API_KEY; model registry wiped.
+Workflow registers both providers under TWO aliases:
+  - `triage-model` (NVIDIA primary: id=nvidia-primary; OpenAI fallback: id=openai-fallback)
+  - `meta/llama-3.3-70b-instruct` (legacy safety net — keeps ticket-triage.ts working without a code change)
+Smoke tests both aliases. Reports which provider served each call (NVIDIA expected; OpenAI acceptable).
+
+Routing note: two providers per alias form a LiteLLM load-balancing group, NOT a strict ordered chain.
+A failing provider gets cooled down and the other serves. HTTP 200 from alias = working; served provider logged.
+
+Required code change for Tech Lead (ticket T-22 follow-up):
+  `src/inngest/ticket-triage.ts`
+  - Line  71 (classifyTicket): model: "meta/llama-3.3-70b-instruct"
+    Replace: model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"
+  - Line 173 (LangFuse metadata): model: "meta/llama-3.3-70b-instruct"
+    Replace: model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"
+  Then set LITELLM_TRIAGE_MODEL=triage-model in ops-hub-app Coolify env vars.
+  Until that ships, legacy alias keeps the app functional.
+
+LITELLM_DEFAULT_MODEL env var: NOT read by ticket-triage.ts (model is hardcoded). Setting it in
+ops-hub-app Coolify is a no-op until the code change above ships.
+
+Monitoring window: 24 hours after workflow triggers.
+
 **2026-06-25 — P1 INCIDENT: LiteLLM provider swap (NVIDIA NIM → Anthropic Claude Haiku 4.5)**
 
 Status: WORKFLOW READY — blocked on ANTHROPIC_API_KEY availability (FQ-42).
