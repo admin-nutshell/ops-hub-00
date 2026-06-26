@@ -94,7 +94,7 @@ describe("draftResponse", () => {
       model: string;
       messages: Array<{ role: string; content: string }>;
     };
-    expect(sentBody.model).toBe("meta/llama-3.3-70b-instruct");
+    expect(sentBody.model).toBe(process.env.LITELLM_TRIAGE_MODEL ?? "triage-model");
 
     const system = sentBody.messages.find((m) => m.role === "system")!;
     const user = sentBody.messages.find((m) => m.role === "user")!;
