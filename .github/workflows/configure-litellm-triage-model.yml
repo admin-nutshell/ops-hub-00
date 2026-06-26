@@ -233,12 +233,17 @@ jobs:
       - name: Register OpenAI gpt-4o-mini — triage-model fallback
         id: reg-openai-triage
         run: |
+          # Use openai/ prefix + explicit api_base so LiteLLM resolves os.environ/ via the
+          # openai_compatible code path (same pattern as NVIDIA). Plain "gpt-4o-mini" without
+          # api_base passes the literal "os.environ/OPENAI_API_KEY" string to the OpenAI SDK
+          # directly, bypassing env resolution (observed in run #28209223649).
           PAYLOAD=$(jq -n \
             --arg alias "$TRIAGE_ALIAS" \
             '{
               model_name: $alias,
               litellm_params: {
-                model: "gpt-4o-mini",
+                model: "openai/gpt-4o-mini",
+                api_base: "https://api.openai.com/v1",
                 api_key: "os.environ/OPENAI_API_KEY"
               },
               model_info: {
@@ -314,7 +319,8 @@ jobs:
             '{
               model_name: $alias,
               litellm_params: {
-                model: "gpt-4o-mini",
+                model: "openai/gpt-4o-mini",
+                api_base: "https://api.openai.com/v1",
                 api_key: "os.environ/OPENAI_API_KEY"
               },
               model_info: {
@@ -555,10 +561,10 @@ jobs:
           echo " Aliases registered:"
           echo "   triage-model"
           echo "     nvidia-primary        : openai/meta/llama-3.3-70b-instruct + NVIDIA api_base"
-          echo "     openai-fallback       : gpt-4o-mini"
+          echo "     openai-fallback       : openai/gpt-4o-mini + OpenAI api_base"
           echo "   meta/llama-3.3-70b-instruct  (legacy safety net)"
           echo "     nvidia-legacy         : openai/meta/llama-3.3-70b-instruct + NVIDIA api_base"
-          echo "     openai-legacy-fallback: gpt-4o-mini"
+          echo "     openai-legacy-fallback: openai/gpt-4o-mini + OpenAI api_base"
           echo ""
           echo " Routing notes:"
           echo "   - Two providers per alias = load-balancing group (not strict ordered chain)"
