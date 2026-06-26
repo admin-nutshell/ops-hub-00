@@ -68,7 +68,7 @@ export async function classifyTicket(title: string, body: string | null): Promis
       Authorization: `Bearer ${litellmKey}`,
     },
     body: JSON.stringify({
-      model: "meta/llama-3.3-70b-instruct",
+      model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
       temperature: 0,
       max_tokens: 200,
       messages: [
@@ -169,7 +169,7 @@ export async function triageOneTicket(
   });
   const generation = trace?.generation({
     name: "classify-ticket",
-    model: "meta/llama-3.3-70b-instruct",
+    model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
     input: [{ role: "user", content: ticket.title }],
   });
 
