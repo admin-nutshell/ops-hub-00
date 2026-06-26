@@ -13,15 +13,16 @@
 
 ### What happened
 
-The Supabase public schema was reset a second time. FreeScout detected an empty DB at startup (02:45 UTC 2026-06-26) and re-ran all migrations, recreating the admin user as `info@inatechshell.ca`. This wiped:
-- The `ops_hub_app` GRANT on `conversations` and `threads`
-- Any mailbox OAuth token state stored in the DB
+The Supabase public schema was reset a second time. FreeScout detected an empty DB at startup (02:45 UTC 2026-06-26) and re-ran all migrations, recreating the admin user as `info@inatechshell.ca`. This wiped the `ops_hub_app` GRANT on `conversations` and `threads`.
 
-Confirmed via `diagnose-freescout-imap.yml` run #28215344117:
-- `conversations` = 0 rows
-- GRANT check = 0 rows (`ops_hub_app` has NO SELECT on either table)
-- FreeScout cron IS running (not the bottleneck)
-- `failed_jobs` = 0 rows (no Laravel failures)
+Confirmed via three workflow runs:
+- `diagnose-freescout-imap.yml` run #28215344117 (03:32 UTC): conversations = 0, GRANT = 0, cron IS running, no failed_jobs
+- `check-freescout-mailboxes.yml` run #28215633753 (03:41 UTC): GRANT still 0, no OAuth table (tokens stored in mailboxes.meta)
+- `check-freescout-mailboxes.yml` run #28215745025 (03:44 UTC): **mailbox IS configured** (1 row, id=1 "ITS Support", imap.gmail.com:993 SSL, created_at=02:48, updated_at=03:03 UTC). GRANT still 0.
+
+The mailbox was re-configured by the founder at 02:48 UTC and updated again at 03:03 UTC (likely OAuth re-authorization). The mailbox OAuth may already be connected.
+
+The only confirmed remaining blocker is the GRANT.
 
 ### Required founder actions (two steps — must both be done)
 
@@ -43,21 +44,16 @@ docker ps | grep sgnpza1r8jlq19f0dboqpzq6
 docker exec <CONTAINER_ID> php artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"
 ```
 
-#### Step 2: Verify and re-authorize Gmail OAuth in FreeScout UI
+#### Step 2: Verify Gmail OAuth connection in FreeScout UI
+
+The mailbox row IS in the DB (confirmed from DB query, updated_at=03:03 UTC). The OAuth connection may already be active.
 
 1. Go to: `https://freescout-staging.inatechshell.ca/mailboxes`
 2. Find "ITS Support" mailbox and click Edit
 3. Go to "Incoming Email" tab
-4. Confirm incoming server settings match:
-   - Protocol: IMAP
-   - Server: imap.gmail.com
-   - Port: 993
-   - Encryption: SSL
-   - Username: info@inatechshell.ca
-   - OAuth: Google (connected)
-5. Click "Test Connection" — confirm it says "Connection is successful"
-6. If OAuth is disconnected: click "Connect Google Account" and re-authorize
-7. Save the mailbox settings
+4. Click "Test Connection" — confirm it says "Connection is successful"
+5. If the test fails: click "Connect Google Account" and re-authorize the OAuth
+6. Save the mailbox settings if any changes were made
 
 #### Step 3 (optional — after steps 1+2): Manually trigger an email fetch
 
