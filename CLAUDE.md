@@ -21,7 +21,7 @@ An **app-agnostic, AI-native operations platform** that detects, triages, resolv
 | App runtime | Node.js 20 + TypeScript (pnpm) | Coolify — `ops-hub-staging.inatechshell.ca` |
 | Workflow orchestration | Inngest Cloud (free tier) | Cloud → synced at `/api/inngest` |
 | LLM routing | LiteLLM | Coolify — `litellm-staging.inatechshell.ca` |
-| LLM internal URL | `http://h12xz8887fxvbvjts2hac8if-055055304869:4000` | Docker network — use this, not sslip.io |
+| LLM internal URL | `http://h12xz8887fxvbvjts2hac8if-074411057216:4000` | Docker network — use this, not sslip.io. **Suffix changes on every LiteLLM redeploy** — check `docker ps \| grep h12xz8887fxvbvjts2hac8if` after each deploy. |
 | Observability | LangFuse Cloud (free tier) | Cloud |
 | Database | Supabase PostgreSQL | Project `yocoljutbiizdbfraapx` — Canada Central |
 | Secret store | Supabase Vault | Same project |
