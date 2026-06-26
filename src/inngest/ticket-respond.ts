@@ -61,7 +61,7 @@ export type FreeScoutDelivery = (conversationId: string, note: string) => Promis
 
 type InngestCtx = Parameters<Parameters<typeof inngest.createFunction>[1]>[0];
 
-const DRAFT_MODEL = "meta/llama-3.3-70b-instruct";
+const DRAFT_MODEL = process.env.LITELLM_TRIAGE_MODEL ?? "triage-model";
 
 // ---------------------------------------------------------------------------
 // Connection pools (lazy singletons; reused across invocations in a process)
