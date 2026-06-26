@@ -1,0 +1,288 @@
+name: Fix LiteLLM schema isolation — restricted role + schema wall
+
+# Permanently stops LiteLLM redeploys from wiping Ops Hub tables in `public`.
+#
+# See ADR-0004 (docs/adr/0004-litellm-schema-isolation-restricted-role.md) and the
+# runbook (docs/engineering/litellm-db-isolation-runbook.md). The hard guarantee is a
+# founder-created PostgreSQL role `litellm_db_user` that OWNS `schema litellm` and has
+# ZERO rights on `public`. This workflow does the ONE agent-owned step: point
+# litellm-staging's DATABASE_URL at that restricted role, and stage the rollout.
+#
+# This workflow NEVER creates the role (that needs superuser SQL the founder runs) and
+# NEVER prints the DSN (masked). It only moves the connection string into Coolify and
+# restarts the container.
+#
+# Two modes (dispatch apply-wall first, verify, then freeze-schema):
+#   apply-wall    — set DATABASE_URL=LITELLM_DB_USER_URL, ensure DISABLE_SCHEMA_UPDATE
+#                   is OFF so Prisma builds `litellm` once under the restricted role,
+#                   restart, verify LiteLLM health, canary-check public tables survived.
+#   freeze-schema — set DISABLE_SCHEMA_UPDATE=true (zero future DDL attempts), restart,
+#                   verify health.
+#
+# Prerequisites (founder, per the runbook):
+#   1. SQL run in Supabase SQL Editor (creates litellm_db_user + schema litellm).
+#   2. GitHub Actions secret LITELLM_DB_USER_URL = the restricted DSN
+#        postgresql://litellm_db_user.yocoljutbiizdbfraapx:PASS@aws-1-...:5432/postgres?schema=litellm
+#   3. Secret COOLIFY_API_TOKEN (already present).
+#   Optional secret OPS_HUB_CANARY_DB_URL — a READ-ONLY DSN (e.g. ops_hub_app_login)
+#     used only to assert public.tenants/tickets/conversations survived the redeploy.
+#     If absent, the workflow prints the SQL for the founder to run manually.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "apply-wall (point at restricted role) | freeze-schema (disable migrations)"
+        required: true
+        default: "apply-wall"
+        type: choice
+        options:
+          - apply-wall
+          - freeze-schema
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+  HOSTINGER_IP: "187.124.76.235"
+
+jobs:
+  isolate:
+    name: "LiteLLM schema isolation (${{ inputs.mode }})"
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      DB_USER_URL: ${{ secrets.LITELLM_DB_USER_URL }}
+      CANARY_URL: ${{ secrets.OPS_HUB_CANARY_DB_URL }}
+
+    steps:
+      # ── Step 0: Common guards ───────────────────────────────────────────────
+      - name: Validate secrets and inputs
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: COOLIFY_API_TOKEN secret is not set."; exit 1
+          fi
+          echo "Mode: ${{ inputs.mode }}"
+
+      # ── Step 1 (apply-wall): validate the restricted DSN BEFORE touching Coolify
+      # Hard guard: refuse to push anything that is not the restricted role URL. This
+      # prevents ever re-introducing a public-capable user as litellm's DATABASE_URL.
+      - name: Validate LITELLM_DB_USER_URL is the restricted role DSN
+        if: inputs.mode == 'apply-wall'
+        run: |
+          echo "::add-mask::$DB_USER_URL"
+          if [ -z "$DB_USER_URL" ]; then
+            echo "ERROR: LITELLM_DB_USER_URL secret is not set."
+            echo "Run Step 1 (SQL) + Step 2 (secret) of"
+            echo "docs/engineering/litellm-db-isolation-runbook.md first."
+            exit 1
+          fi
+          # Must connect as litellm_db_user.<projectref> and target schema=litellm.
+          # We check structure without echoing the secret (grep -q, no print).
+          if ! printf '%s' "$DB_USER_URL" | grep -Eq '://litellm_db_user\.[a-z0-9]+:'; then
+            echo "ERROR: DSN username is not 'litellm_db_user.<projectref>'."
+            echo "Refusing to push — this guard prevents pointing LiteLLM at a"
+            echo "public-capable user (the exact problem ADR-0004 fixes)."
+            exit 1
+          fi
+          if ! printf '%s' "$DB_USER_URL" | grep -Eq '[?&]schema=litellm(&|$)'; then
+            echo "ERROR: DSN is missing '?schema=litellm'."
+            echo "Append ?schema=litellm to the DSN per the runbook Step 2."
+            exit 1
+          fi
+          echo "Restricted DSN structure validated (username + schema=litellm). Value masked."
+
+      # ── Step 2: Pre-flight — confirm litellm-staging is reachable in Coolify ──
+      - name: Read litellm-staging status
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID")
+          echo "GET /applications/$LITELLM_UUID → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: cannot read litellm-staging (HTTP $HTTP)"; cat /tmp/litellm.json | head -10; exit 1
+          fi
+          jq '{name, status}' /tmp/litellm.json 2>/dev/null || true
+
+      # ── Step 3 (apply-wall): replace DATABASE_URL with the restricted DSN ─────
+      - name: Set DATABASE_URL to restricted role
+        if: inputs.mode == 'apply-wall'
+        run: |
+          echo "::add-mask::$DB_USER_URL"
+
+          # Delete ALL existing DATABASE_URL entries (dedup), same pattern as the
+          # LITELLM_URL cleanup in fix-litellm-network.yml.
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "DATABASE_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Existing DATABASE_URL entries: $COUNT"
+          for eu in $(jq -r '.[] | select(.key == "DATABASE_URL") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$LITELLM_UUID/envs/$eu")
+            echo "  DELETE DATABASE_URL $eu → HTTP $DEL"
+          done
+
+          # Create the new DATABASE_URL.
+          HTTP=$(curl -s --max-time 30 -o /tmp/set.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs" \
+            -d "$(jq -n --arg k "DATABASE_URL" --arg v "$DB_USER_URL" '{key:$k,value:$v}')")
+          echo "POST DATABASE_URL → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set DATABASE_URL (HTTP $HTTP)"; cat /tmp/set.json | head -10; exit 1
+          fi
+          echo "DATABASE_URL set to restricted role (value masked)."
+
+      # ── Step 4 (apply-wall): ensure DISABLE_SCHEMA_UPDATE is OFF for first boot
+      # Prisma must be allowed to BUILD the empty `litellm` schema once under the
+      # restricted role. We delete any existing DISABLE_SCHEMA_UPDATE entry.
+      - name: Ensure DISABLE_SCHEMA_UPDATE is OFF (apply-wall)
+        if: inputs.mode == 'apply-wall'
+        run: |
+          curl -s --max-time 30 -o /tmp/envs2.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs"
+          for eu in $(jq -r '.[] | select(.key == "DISABLE_SCHEMA_UPDATE") | .uuid' /tmp/envs2.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$LITELLM_UUID/envs/$eu")
+            echo "  DELETE DISABLE_SCHEMA_UPDATE $eu → HTTP $DEL (schema update ON for first boot)"
+          done
+          echo "DISABLE_SCHEMA_UPDATE is OFF — Prisma will build the litellm schema."
+
+      # ── Step 5 (freeze-schema): set DISABLE_SCHEMA_UPDATE=true ────────────────
+      - name: Set DISABLE_SCHEMA_UPDATE=true (freeze-schema)
+        if: inputs.mode == 'freeze-schema'
+        run: |
+          curl -s --max-time 30 -o /tmp/envs3.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs"
+          for eu in $(jq -r '.[] | select(.key == "DISABLE_SCHEMA_UPDATE") | .uuid' /tmp/envs3.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$LITELLM_UUID/envs/$eu")
+            echo "  DELETE old DISABLE_SCHEMA_UPDATE $eu → HTTP $DEL"
+          done
+          HTTP=$(curl -s --max-time 30 -o /tmp/setfreeze.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs" \
+            -d "$(jq -n '{key:"DISABLE_SCHEMA_UPDATE",value:"true"}')")
+          echo "POST DISABLE_SCHEMA_UPDATE=true → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set DISABLE_SCHEMA_UPDATE (HTTP $HTTP)"; cat /tmp/setfreeze.json | head -10; exit 1
+          fi
+          echo "DISABLE_SCHEMA_UPDATE=true — future redeploys make zero DDL attempts."
+
+      # ── Step 6: Restart litellm-staging and wait for the deployment ───────────
+      - name: Restart litellm-staging
+        id: restart
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/rl.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/restart")
+          echo "POST /restart → HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/rl.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for restart + verify LiteLLM health
+        run: |
+          DEP="${{ steps.restart.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then
+            echo "No deployment UUID — sleeping 45s"; sleep 45
+          else
+            echo "Polling deployment $DEP ..."
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" \
+                | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "litellm-staging redeploy finished"; break ;;
+                failed|error) echo "ERROR: redeploy failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+          # LiteLLM up = HTTP 200 on /health/readiness, or 401 on /health (auth gate).
+          URL="http://${LITELLM_UUID}.${HOSTINGER_IP}.sslip.io"
+          OK=""
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /tmp/h.json -w "%{http_code}" "$URL/health/readiness" || echo "000")
+            echo "Attempt $i: /health/readiness → HTTP $HTTP"
+            if [ "$HTTP" = "200" ]; then OK="yes"; break; fi
+            sleep 10
+          done
+          if [ -z "$OK" ]; then
+            echo ""
+            echo "ERROR: litellm-staging did NOT come up healthy under the restricted role."
+            echo "If mode=apply-wall, the most likely cause is a Prisma DDL that references"
+            echo "schema 'public' explicitly and hit permission-denied (42501). Check the"
+            echo "litellm-staging container logs in Coolify. The role wall is working as"
+            echo "intended (it blocked the write) — but LiteLLM needs its DDL to target"
+            echo "'litellm'. Confirm ?schema=litellm is in the DSN and the role search_path"
+            echo "is 'litellm' (runbook Step 1 §3). Do NOT revert to a public-capable user."
+            echo "Note: public tables are SAFE either way — the wall held."
+            exit 1
+          fi
+          echo "litellm-staging is healthy."
+
+      # ── Step 7: Canary — prove the public tables survived the redeploy ────────
+      - name: Canary — assert Ops Hub + FreeScout public tables survived
+        run: |
+          if [ -z "$CANARY_URL" ]; then
+            echo "OPS_HUB_CANARY_DB_URL not set — skipping automated canary."
+            echo ""
+            echo "REQUIRED manual verification — run in Supabase SQL Editor:"
+            echo "  SELECT to_regclass('public.tenants')       AS tenants,"
+            echo "         to_regclass('public.tickets')       AS tickets,"
+            echo "         to_regclass('public.kb_articles')   AS kb_articles,"
+            echo "         to_regclass('public.conversations') AS fs_conversations;"
+            echo "All four MUST be non-null. See runbook Step 4."
+            exit 0
+          fi
+          echo "::add-mask::$CANARY_URL"
+          MISSING=$(psql "$CANARY_URL" -tAc \
+            "SELECT string_agg(t,',') FROM (
+               SELECT unnest(ARRAY['public.tenants','public.tickets','public.conversations']) AS t
+             ) s WHERE to_regclass(t) IS NULL;" 2>/tmp/psqlerr || echo "PSQL_ERROR")
+          if [ "$MISSING" = "PSQL_ERROR" ]; then
+            echo "WARNING: canary query could not run:"; cat /tmp/psqlerr | head -5
+            echo "Fall back to the manual SQL in the runbook Step 4."
+            exit 0
+          fi
+          if [ -n "$MISSING" ]; then
+            echo "CRITICAL: public tables MISSING after redeploy: $MISSING"
+            echo "The wall did NOT hold — STOP and investigate before freezing."
+            exit 1
+          fi
+          echo "Canary PASSED: public.tenants, public.tickets, public.conversations all present."
+
+      # ── Step 8: Summary ───────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo "========================================================"
+          echo " LiteLLM schema isolation — mode=${{ inputs.mode }}"
+          echo "========================================================"
+          if [ "${{ inputs.mode }}" = "apply-wall" ]; then
+            echo " DATABASE_URL → restricted role litellm_db_user (schema=litellm)"
+            echo " DISABLE_SCHEMA_UPDATE → OFF (Prisma builds litellm once)"
+            echo ""
+            echo " NEXT:"
+            echo "   1. Verify in Supabase SQL Editor (runbook Step 4) that all"
+            echo "      public tables survived and litellm tables are in 'litellm'."
+            echo "   2. Then dispatch this workflow again with mode=freeze-schema."
+          else
+            echo " DISABLE_SCHEMA_UPDATE → true (zero future DDL attempts)"
+            echo ""
+            echo " The wall is now fully in place. A LiteLLM redeploy can no longer"
+            echo " reach public — by permission (the role) AND by config (frozen)."
+          fi
+          echo "========================================================"

@@ -124,8 +124,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **BLOCKED on FQ-39 (2026-06-25).** Code complete and merged to main. `triageTicket` + `sweepNewTickets` deployed. LITELLM_URL set to internal URL `http://h12xz8887fxvbvjts2hac8if-055055304869:4000` (HTTP 401 = alive). FreeScout tables recreated (DB reset recovery done). GRANT re-issued. **Blocker: Gmail mailbox not reconnected after DB reset — FreeScout has 0 conversations. pollFreeScout polls successfully but ingests nothing. Waiting on FQ-39 (founder reconnects mailbox in FreeScout UI).** | Jul 14 |
-| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22 | 🟢 **CODE COMPLETE (2026-06-25) — PR `feat/t23-ticket-respond`.** `src/inngest/ticket-respond.ts` (`respondTicket` on `ops-hub/ticket.respond`) registered in `src/index.ts`. Drafts reply via LiteLLM; delivers as internal FreeScout NOTE behind a mockable, config-gated seam; state → `responded`; LangFuse trace `ticket-respond`. 11 unit tests green; lint/typecheck/test pass. Migration `20260625000000_t23_responded_state.sql` adds `'responded'` to the state enum. ADR-0003 records the write-back decision. **Delivery dormant until `FREESCOUT_DB_URL` + `FREESCOUT_BOT_USER_ID` are provisioned (flagged below).** No REST API — direct DB write as `freescout_user`. | Jul 16 |
+| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ✅ **Done (2026-06-26).** `triageTicket` (event-driven) + `sweepNewTickets` (cron */5) deployed. **Activation wire added:** on successful triage, emits `ops-hub/ticket.respond` with `{ ticket_id, project_id, tenant_id }` so T-23 `respondTicket` picks it up; skipped/failed triage emits nothing. GRANT + ALTER DEFAULT PRIVILEGES applied permanently via artisan tinker (2026-06-26). ticket-triage: Completed confirmed in Inngest dashboard. | Jul 14 |
+| T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22 | 🟢 **CODE COMPLETE (2026-06-25).** `src/inngest/ticket-respond.ts` (`respondTicket` on `ops-hub/ticket.respond`) registered in `src/index.ts`. Drafts reply via LiteLLM; delivers as internal FreeScout NOTE; state → `responded`; LangFuse trace `ticket-respond`. **Delivery dormant until `FREESCOUT_DB_URL` + `FREESCOUT_BOT_USER_ID` are provisioned in Coolify ops-hub-app.** | Jul 16 |
 
 ### Track C — Testing + Evals
 
@@ -197,8 +197,12 @@ Migration `supabase/migrations/20260625000000_t23_responded_state.sql` adds `'re
 
 **✅ T-21 DONE (2026-06-23).** `pollFreeScout` cron verified end-to-end: two tickets confirmed in Supabase (`freescout_conversation_id: 6 + 7`), dedup working. FQ-31/33/34 resolved. PR #140 merged.
 
-**⏳ T-22 IN PROGRESS (2026-06-23) — branch `feat/t22-ticket-triage`.**
-`src/inngest/ticket-triage.ts`: two functions — `triageTicket` (event-driven on `ops-hub/ticket.triage`) and `sweepNewTickets` (cron `*/5 * * * *` to catch tickets predating T-22 deploy). Both registered in `src/index.ts`. 11 unit tests green. CI (lint, typecheck, test) all green locally. FQ-35 filed for LITELLM_URL + LITELLM_MASTER_KEY in Coolify — env-to-end triage is blocked until founder adds these.
+**✅ T-22 DONE (2026-06-25) — activation wire closed.**
+`src/inngest/ticket-triage.ts`: two functions — `triageTicket` (event-driven on `ops-hub/ticket.triage`) and `sweepNewTickets` (cron `*/5 * * * *` to catch tickets predating T-22 deploy). Both registered in `src/index.ts`. The triage handler was extracted to an exported `triageTicketHandler` (so the wire can be unit-tested directly) and now **emits `ops-hub/ticket.respond` on a successful triage** (state → `triaged`), passing `{ ticket_id, project_id, tenant_id }` so T-23 `respondTicket` picks it up. The emit is guarded: a `skipped` result (ticket already past `new`, e.g. `sweepNewTickets` re-emitting one the poller already dispatched) or a thrown error emits nothing — preventing a duplicate respond. 14 unit tests green (3 new: success emits / skipped no-emit / error no-emit). lint + typecheck + test pass.
+
+  - **Payload-shape deviation from the task text (deliberate):** the task said emit `{ ticketId: ticket.id }`, but `respondTicket` (frozen on `feat/t23-ticket-respond`, "do not modify") destructures `event.data` as `RespondEventData = { ticket_id, project_id, tenant_id }` and feeds `project_id`/`tenant_id` into the transaction-local RLS GUCs. A `ticketId`-only payload delivers `undefined` for all three → broken tenant-scoped read → chain still broken. The snake_case three-field shape also matches the poller's existing `ticket.triage` events (codebase-wide event convention). Emitting the contract shape is the only payload that actually closes the chain.
+  - **E2E still pending T-23 merge.** T-23 `respondTicket` is on `origin/feat/t23-ticket-respond`, NOT on `main`. This PR emits an event with no consumer on `main` (harmless — compiles, no `EventSchemas`, tests pass). Full `new → triaged → responded` E2E validation requires T-23 merged first — PM to sequence (T-24 depends on both).
+  - FQ-35 (LITELLM_URL + LITELLM_MASTER_KEY in Coolify ops-hub-app) governs live triage execution; unaffected by this wire.
 
 **🟢 T-11 RUNBOOK READY (2026-06-20) — founder-run path chosen; agents never hold service_role key.**
 Decision: rather than provide agents a `DATABASE_URL`, the founder applies the two migrations themselves using a copy-paste runbook → `docs/engineering/t11-migration-runbook.md`. Runbook gates migration 2 (`20260618120100_enable_rls_policies.sql`) behind Security Lead sign-off, uses per-file `psql -f` (NOT `supabase db push`, which would apply both migrations at once and bypass the gate), and includes PowerShell-native commands for the founder's Windows environment. **Security Lead sign-off recorded (2026-06-21, APPROVED WITH CONDITIONS, C1 applied — `authenticated` removed from `audit_log_insert`).** **Awaiting: founder execution — see FQ-15 in FOUNDER_QUEUE.md.** `ops_hub_app` login-role wiring follows in T-12.
@@ -226,7 +230,68 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 **Active.** T-06 (test plan) done. **T-19 in progress (2026-06-21):** first integration test `src/integration/ticket-state-machine.test.ts` written — project→tenant→ticket(`new`)→assert→update(`triaged`)→assert→teardown (reverse-FK). Vitest + `@supabase/supabase-js`. Self-skips when `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` absent so CI stays green without secrets. Connects via `service_role` (RLS bypass) as a stopgap — **must migrate to `ops_hub_app_login` once T-12 (Vault + login role) lands** (`// TODO T-12` in file). Reconciled the stale CI wiring: `pr-checks.yml` integration guard + `package.json test:integration` repointed `tests/integration` → `src/integration` (matches the spec'd test path). PR opened. Local `pnpm lint`/`typecheck`/`test`/`test:integration` all green; `--frozen-lockfile` verified after adding supabase-js.
 
 ### Production Manager
-**🟢 ACTIVE (2026-06-21)**
+**🟢 ACTIVE (2026-06-26)**
+
+**Full pipeline diagnostic — COMPLETE (2026-06-26, diagnose-freescout-imap.yml run #28215344117)**
+
+Investigation triggered by: emails sent to support@inatechshell.ca not appearing in FreeScout; Inngest shows incomplete workflows.
+
+Confirmed findings:
+1. ops-hub-app /health: HTTP 200 — healthy.
+2. FreeScout cron: RUNNING. Coolify logs confirm `[NOTICE] ** [scheduling] Starting cron` at 02:46 UTC.
+3. FreeScout ran fresh DB migrations at 02:45–02:47 UTC 2026-06-26. Log: `[WARN] ** [freescout] Empty database detected - migrating + creating admin user`. Admin recreated as `info@inatechshell.ca`. This is the SECOND Supabase reset recovery — all FreeScout table data + GRANTs were wiped.
+4. `ops_hub_app` GRANT on `conversations`/`threads`: **MISSING (0 rows confirmed)**. The GRANT issued during the first DB reset recovery was lost again.
+5. `conversations` table: EXISTS, 0 rows. FreeScout has not fetched any emails since the reset.
+6. `failed_jobs` table: 0 rows — no Laravel queue failures.
+7. Inngest incomplete workflows: root cause is 0 conversations → `pollFreeScout` polls successfully but finds nothing to dispatch.
+8. LiteLLM (OpenAI gpt-4o-mini): confirmed working — HTTP 200 (run #28211295785).
+
+Root cause chain: Supabase reset wiped FreeScout tables → FreeScout detected empty DB + re-migrated → mailbox OAuth connection needs re-authorization after re-migration → emails not fetched → conversations = 0 → pollFreeScout dispatches no `ticket.triage` events → Inngest pipeline stalls.
+
+Two required founder actions (FQ-41):
+- Re-issue GRANT: `docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') php artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"`
+- FreeScout UI: `https://freescout-staging.inatechshell.ca/mailboxes` → Edit "ITS Support" → Incoming Email → verify/re-authorize Google OAuth → Save + Test Connection
+
+Mailbox confirmed via check-freescout-mailboxes.yml runs #28215633753 and #28215745025: mailbox row EXISTS (id=1 "ITS Support", imap.gmail.com:993 SSL, created_at=02:48 UTC, updated_at=03:03 UTC). Founder already re-configured and likely re-authorized OAuth. The GRANT is the only confirmed remaining blocker.
+
+**triage-model alias configuration — BLOCKED ON FQ-40 (updated 2026-06-26, run #28210675694 — third 401).**
+
+Run #28210675694 was triggered after the user confirmed NVIDIA_API_KEY was "corrected" in Coolify
+and litellm-staging was fully redeployed. The 401 persists for the third time. OpenAI probe
+confirmed passing (HTTP 200) for the second time — OPENAI_API_KEY is live and valid.
+
+Confirmed from run #28210675694:
+- litellm-staging health: HTTP 200
+- Both NVIDIA_API_KEY and OPENAI_API_KEY key names present in Coolify env config: confirmed
+- Container redeployed (env injection working): confirmed — OPENAI probe HTTP 200
+- OPENAI_API_KEY valid and injected: confirmed — gpt-4o-mini response HTTP 200
+- NVIDIA model registrations succeeded: HTTP 200 on POST /model/new for both aliases
+- NVIDIA smoke test (triage-model): HTTP 401 "Authentication failed" from NVIDIA NIM
+- OpenAI fallback NOT registered (gate: NVIDIA smoke must pass — still not met)
+
+The "corrected" key value is still being rejected by NVIDIA NIM. The key value itself is incorrect
+or no longer valid at NVIDIA's side. FQ-40 updated. Two consecutive corrected-key deploys both fail
+— escalating urgency.
+
+Workflow committed for when NVIDIA resolves: `.github/workflows/register-litellm-openai-fallback.yml`
+
+Next actions:
+1. Founder: at https://build.nvidia.com — generate a fresh API key, copy the full value
+   character-for-character, update NVIDIA_API_KEY in Coolify → litellm-staging → Deploy (not restart)
+   Notify: "NVIDIA key regenerated and litellm-staging redeployed" → FQ-40
+2. Production Manager (on FQ-40 resolved): `gh workflow run configure-litellm-triage-model.yml --repo admin-nutshell/ops-hub-00`
+3. On NVIDIA pass: `gh workflow run register-litellm-openai-fallback.yml --repo admin-nutshell/ops-hub-00`
+4. Verify both NVIDIA and OpenAI final tests pass in run log
+5. Tech Lead (after both green): update `src/inngest/ticket-triage.ts` lines 71+173
+
+PRs merged (all on main):
+- PR #159: initial configure-litellm-triage-model.yml workflow
+- PR #160: NVIDIA `nvidia_nim/` prefix → `openai/` + NVIDIA api_base fix
+- PR #161: OpenAI `os.environ/` prefix fix attempt (openai/ + api_base)
+- PR #162: NVIDIA-only aliases + OpenAI probe diagnostic (current main)
+- FQ-40 (open): NVIDIA_API_KEY value rejected by NVIDIA NIM — three 401s across three runs
+
+**LiteLLM model re-registration — ✅ DONE (2026-06-25).** triageTicket was returning LiteLLM 400 "Invalid model name passed in model=meta/llama-3.3-70b-instruct". Root cause: STORE_MODEL_IN_DB registration wiped by full litellm-staging redeploys during T-22 network fixes (PRs #143–#145). Fix: PR #155 merged (5668ab73), `fix-litellm-model-registration.yml` run #28201769554 — all 9 steps green in 13s. POST /chat/completions HTTP 200, model response: "OK". Registration confirmed: model_id=48ea73ba-7c3c-4a88-a261-921558c3fc19, NVIDIA_API_KEY present on litellm-staging. LITELLM_DEFAULT_MODEL not set in ops-hub-app (triageTicket specifies model name explicitly). 24h monitoring window started. Rollback: POST /model/delete id=48ea73ba-7c3c-4a88-a261-921558c3fc19 (< 5 min).
 
 **T-08: LiteLLM — ✅ DONE (2026-06-23).** `litellm-staging` live at `https://litellm-staging.inatechshell.ca`. NVIDIA NIM model `meta/llama-3.3-70b-instruct` registered in LiteLLM DB (run #28043673055: POST /model/new HTTP 200, verified in /model/info: 1 entry). Root cause of 7+ hr 502: Traefik `loadbalancer.server.port=80` while LiteLLM listens on 4000. Fix: decoded base64 custom_labels, sed-replaced port refs, re-encoded, PATCHed + stop/start container recreation (PRs #119–#125). M1 criterion #4 complete. FQ-27 resolved.
 
