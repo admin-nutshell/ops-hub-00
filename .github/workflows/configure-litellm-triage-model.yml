@@ -192,12 +192,15 @@ jobs:
       - name: Register NVIDIA NIM — triage-model primary
         id: reg-nvidia-triage
         run: |
+          # Use openai/ prefix with NVIDIA api_base. NVIDIA NIM's API is OpenAI-compatible;
+          # the nvidia_nim/ prefix returns 401 in this env. Pattern confirmed working:
+          # run #28201769554 used openai/meta/llama-3.3-70b-instruct + NVIDIA api_base → HTTP 200.
           PAYLOAD=$(jq -n \
             --arg alias "$TRIAGE_ALIAS" \
             '{
               model_name: $alias,
               litellm_params: {
-                model: "nvidia_nim/meta/llama-3.3-70b-instruct",
+                model: "openai/meta/llama-3.3-70b-instruct",
                 api_base: "https://integrate.api.nvidia.com/v1",
                 api_key: "os.environ/NVIDIA_API_KEY"
               },
@@ -274,7 +277,7 @@ jobs:
             '{
               model_name: $alias,
               litellm_params: {
-                model: "nvidia_nim/meta/llama-3.3-70b-instruct",
+                model: "openai/meta/llama-3.3-70b-instruct",
                 api_base: "https://integrate.api.nvidia.com/v1",
                 api_key: "os.environ/NVIDIA_API_KEY"
               },
