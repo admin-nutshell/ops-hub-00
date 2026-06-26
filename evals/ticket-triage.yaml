@@ -1,0 +1,111 @@
+# evals/ticket-triage.yaml
+# Why this eval exists: ticket-triage is the first AI step in the pipeline
+# (src/inngest/ticket-triage.ts → classifyTicket). Its entire value is a CORRECT,
+# machine-parseable classification: a strict-JSON object whose `urgency` is one of
+# the closed enum {critical|high|normal|low}, plus a category and a routing team.
+# The downstream UPDATE writes `urgency` straight into a CHECK-constrained column,
+# so a regression here (wrong urgency, prose instead of JSON, an invented enum
+# value) silently mis-prioritises real tickets or corrupts the parse. We guard the
+# urgency boundaries the prompt itself defines and the JSON-only output contract.
+#
+# Enum note: the deployed contract emits {critical|high|normal|low}, NOT P1/P2/P3.
+# The T-25 brief's "P1/P2/P3" is shorthand; testing the literal enum is the only
+# faithful reading (ticket-triage.ts is out of scope to change). Mapping used here:
+#   P1/site-down → critical | P2/major-degradation → high | normal | low.
+#
+# Faithfulness: the system prompt below is copied verbatim from classifyTicket()'s
+# system message, and the prompt template reproduces its user-message data channel
+# (<ticket_title>/<ticket_body>). If that prompt changes, update this file in lockstep.
+#
+# CI: the Eval Gate runs `promptfoo validate` (schema-only, no live LLM / no API key).
+# Provider is anthropic:claude-sonnet-4-6 per CLAUDE.md and the existing 11 evals.
+# (Production routes this prompt through LiteLLM; the eval harness pins one model.)
+
+description: "ticket-triage — classify support tickets into the urgency/category/routing JSON contract"
+
+prompts:
+  - |
+    <ticket_title>{{ticket_title}}</ticket_title>
+    <ticket_body>{{ticket_body}}</ticket_body>
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      temperature: 0
+      system: |
+        Classify this support ticket. Respond ONLY with valid JSON — no markdown:
+        {"urgency":"critical"|"high"|"normal"|"low","category":"<topic>","routing":"<team>","reasoning":"<one sentence>"}
+
+        urgency critical: system down, data loss, security breach
+        urgency high: major degradation, multiple users blocked, no workaround
+        urgency normal: limited impact, workaround available
+        urgency low: minor or cosmetic, single user
+        If uncertain: urgency=normal, category=support, routing=support
+
+tests:
+  # (a) P1 — total outage. The unambiguous "system down" trigger → critical.
+  - description: "Site down / total outage classifies as urgency=critical with valid JSON"
+    vars:
+      ticket_title: "URGENT: entire app is down — nobody can log in"
+      ticket_body: "Production is completely unreachable for all of our users. The login page returns 503 and our whole team is blocked. This started 10 minutes ago. Please help immediately."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object (no markdown fences, no prose before/after) with the keys urgency, category, routing, and reasoning.
+          - Set "urgency" to exactly "critical" — this is a full system-down outage affecting all users, which is the prompt's defining example of critical.
+          - Use a category and routing that reflect an availability/outage incident (e.g. category like outage/availability/infrastructure; routing to an engineering/ops/incident team, NOT a billing or generic team).
+          - Provide a one-sentence "reasoning" that references the outage / total unavailability.
+          Fail if urgency is anything other than "critical", if the output is not valid JSON, or if any enum value outside {critical,high,normal,low} is used.
+        threshold: 0.8
+
+  # (b) P2 — major degradation, multiple users blocked, no workaround → high.
+  #     This also exercises the critical/high boundary (degraded, not fully down).
+  - description: "Major degradation blocking many users with no workaround classifies as urgency=high"
+    vars:
+      ticket_title: "Exports failing for everyone — 500 errors on every report"
+      ticket_body: "Since this morning, every attempt to export or download a report returns a 500 error for all of our 40 staff. The rest of the app loads, but reporting is core to our daily operations and there is no workaround. We need this fixed today."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to exactly "high": this is a major degradation blocking multiple users with no workaround, but the system is NOT fully down and there is no data loss or breach (so it is high, not critical).
+          - Route to an appropriate engineering/support team and give a category reflecting the failing reporting/export feature.
+          - Give a one-sentence reasoning consistent with major degradation + no workaround.
+          Fail if urgency is "critical" (over-escalation), "normal"/"low" (under-escalation), if the JSON is malformed, or if an out-of-enum value appears.
+        threshold: 0.8
+
+  # (c) Billing/account issue, single customer, workaround available → normal.
+  #     Tests that a "billing" topic is NOT auto-escalated; impact drives urgency.
+  - description: "Single-customer billing issue with a workaround classifies as urgency=normal"
+    vars:
+      ticket_title: "I was charged twice for this month's subscription"
+      ticket_body: "My credit card shows two charges for my monthly plan this month. My account still works fine and I can keep using the product — I just want the duplicate charge refunded. Can you sort this out?"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to exactly "normal": this is limited impact (one customer, the product still works = a workaround exists), so per the prompt it is normal — NOT critical/high. A billing topic must not be auto-escalated by subject alone.
+          - Use a billing/payments-oriented category and route to a billing/support team.
+          - Give a one-sentence reasoning consistent with a non-urgent billing correction.
+          Fail if urgency is "critical" or "high" (topic-driven over-escalation), if the JSON is malformed, or if an out-of-enum value appears.
+        threshold: 0.8
+
+  # (d) General/cosmetic question, single user, no impact → low. Covers the floor
+  #     of the enum and the normal/low boundary.
+  - description: "Minor cosmetic single-user question classifies as urgency=low"
+    vars:
+      ticket_title: "How do I change the colour of my avatar?"
+      ticket_body: "Just a quick question — I'd like to change the little colour swatch next to my display name in my profile. It's not causing me any problems, I just prefer a different colour. Thanks!"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to exactly "low": this is a minor, cosmetic, single-user preference with no impact, which is the prompt's definition of low.
+          - Use a sensible category (e.g. account/profile/how-to) and route to a general support team.
+          - Give a one-sentence reasoning consistent with a minor cosmetic request.
+          Fail if urgency is "critical" or "high" (gross over-escalation), if the JSON is malformed, or if an out-of-enum value appears.
+        threshold: 0.8

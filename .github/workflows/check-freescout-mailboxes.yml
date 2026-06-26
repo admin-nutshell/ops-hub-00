@@ -1,0 +1,66 @@
+name: Check FreeScout mailboxes table (one-shot)
+
+# Quick diagnostic: counts mailboxes and shows basic config.
+# Avoids column name assumptions — uses safe columns only.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      PGPASSWORD: ${{ secrets.FREESCOUT_DB_PASS }}
+    steps:
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client -q
+
+      - name: Check mailboxes table
+        run: |
+          echo "=== mailboxes count + basic fields ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT id, name, email, in_protocol, in_server, in_port,
+                       in_encryption, in_username, created_at, updated_at
+                FROM mailboxes ORDER BY id LIMIT 10;" \
+            2>&1 || echo "Query failed"
+
+          echo "=== mailboxes table columns (actual schema) ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT column_name, data_type FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='mailboxes'
+                ORDER BY ordinal_position;" \
+            2>&1
+
+          echo "=== oauth_integrations or similar OAuth table ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT table_name FROM information_schema.tables
+                WHERE table_schema='public' AND table_name ILIKE '%oauth%'
+                ORDER BY table_name;" \
+            2>&1
+
+          echo "=== ops_hub_app privileges on freescout tables ==="
+          psql \
+            -h aws-1-ca-central-1.pooler.supabase.com \
+            -p 5432 \
+            -U "freescout_user.yocoljutbiizdbfraapx" \
+            -d postgres \
+            -c "SELECT grantee, table_name, privilege_type
+                FROM information_schema.role_table_grants
+                WHERE table_schema = 'public'
+                  AND table_name IN ('conversations', 'threads')
+                ORDER BY table_name, grantee;" \
+            2>&1

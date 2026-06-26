@@ -1,0 +1,229 @@
+name: Diagnose FreeScout email fetch (one-shot)
+
+# Investigates why FreeScout is not fetching emails from the Gmail IMAP mailbox.
+# Checks:
+#   1. FreeScout container status (via Coolify API)
+#   2. Coolify application logs (any fetch errors)
+#   3. mailboxes table — is the mailbox configured?
+#   4. ops_hub_app GRANT status on conversations + threads
+#   5. conversations row count (confirms email fetch not working)
+#
+# After gathering findings, this workflow restarts FreeScout to ensure the
+# Laravel cron scheduler is running fresh, then prints specific action steps.
+#
+# Secrets required:
+#   COOLIFY_API_TOKEN   — Coolify admin API token
+#   FREESCOUT_DB_PASS   — freescout_user PostgreSQL password
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  FREESCOUT_UUID: "sgnpza1r8jlq19f0dboqpzq6"
+  DB_HOST: "aws-1-ca-central-1.pooler.supabase.com"
+  DB_PORT: "5432"
+  DB_USER: "freescout_user.yocoljutbiizdbfraapx"
+  DB_NAME: "postgres"
+
+jobs:
+  diagnose:
+    name: Diagnose FreeScout IMAP fetch failure
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      PGPASSWORD: ${{ secrets.FREESCOUT_DB_PASS }}
+
+    steps:
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client -q
+
+      # ── 1. FreeScout container status ─────────────────────────────────────────
+      - name: Check FreeScout container status (Coolify API)
+        run: |
+          echo "::add-mask::$TOKEN"
+          HTTP=$(curl -s --max-time 30 -o /tmp/fs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$FREESCOUT_UUID")
+          echo "GET /applications/$FREESCOUT_UUID -> HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            STATUS=$(jq -r '.status // "unknown"' /tmp/fs.json 2>/dev/null || true)
+            NAME=$(jq -r '.name // "unknown"' /tmp/fs.json 2>/dev/null || true)
+            IMAGE=$(jq -r '.docker_registry_image_name // "unknown"' /tmp/fs.json 2>/dev/null || true)
+            echo "Name  : $NAME"
+            echo "Status: $STATUS"
+            echo "Image : $IMAGE"
+          else
+            echo "WARNING: Could not fetch FreeScout app info (HTTP $HTTP)"
+            cat /tmp/fs.json 2>/dev/null | head -5 || true
+          fi
+
+          # Also check public URL
+          FS_HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
+            "https://freescout-staging.inatechshell.ca" || echo "000")
+          echo "FreeScout public URL (302 = normal login redirect): HTTP $FS_HTTP"
+
+      # ── 2. Coolify application logs (last 50 lines) ──────────────────────────
+      - name: Fetch Coolify logs for freescout-staging
+        run: |
+          echo "Attempting to fetch Coolify logs via API..."
+          LOG_HTTP=$(curl -s --max-time 30 -o /tmp/fs_logs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$FREESCOUT_UUID/logs" 2>/dev/null || echo "000")
+          echo "GET /applications/$FREESCOUT_UUID/logs -> HTTP $LOG_HTTP"
+
+          if [ "$LOG_HTTP" = "200" ]; then
+            echo "=== Last 50 log lines ==="
+            jq -r '.logs // .[]? // empty' /tmp/fs_logs.json 2>/dev/null | tail -50 || \
+              cat /tmp/fs_logs.json 2>/dev/null | tail -50 || true
+          else
+            echo "Coolify logs endpoint returned HTTP $LOG_HTTP (may not be supported)"
+            echo "Raw response:"
+            cat /tmp/fs_logs.json 2>/dev/null | head -5 || true
+          fi
+
+      # ── 3. mailboxes table — is the mailbox configured? ──────────────────────
+      - name: Check mailboxes table (OAuth config status)
+        run: |
+          echo "=== mailboxes table (sanitized — no credentials) ==="
+          psql \
+            -h "$DB_HOST" -p "$DB_PORT" \
+            -U "$DB_USER" -d "$DB_NAME" \
+            -c "SELECT id, name, email, in_protocol, in_server, in_port, in_ssl,
+                       in_imap_folders, imap_last_uid, status, is_enabled,
+                       created_at, updated_at
+                FROM mailboxes
+                ORDER BY id;" \
+            2>&1 || echo "WARNING: mailboxes table not accessible or does not exist"
+
+      # ── 4. GRANT status for ops_hub_app on conversations + threads ────────────
+      - name: Check ops_hub_app GRANT on conversations and threads
+        run: |
+          echo "=== Checking SELECT privilege for ops_hub_app on conversations ==="
+          psql \
+            -h "$DB_HOST" -p "$DB_PORT" \
+            -U "$DB_USER" -d "$DB_NAME" \
+            -c "SELECT grantee, table_name, privilege_type
+                FROM information_schema.role_table_grants
+                WHERE table_schema = 'public'
+                  AND table_name IN ('conversations', 'threads')
+                  AND grantee = 'ops_hub_app'
+                ORDER BY table_name, privilege_type;" \
+            2>&1
+
+          echo ""
+          echo "Expected: rows for ops_hub_app SELECT on conversations and threads"
+          echo "If no rows: GRANT was not (re-)issued after DB reset"
+
+      # ── 5. Conversations + threads row counts ─────────────────────────────────
+      - name: Check conversations and threads row counts
+        run: |
+          echo "=== Row counts ==="
+          psql \
+            -h "$DB_HOST" -p "$DB_PORT" \
+            -U "$DB_USER" -d "$DB_NAME" \
+            -c "SELECT
+                  (SELECT COUNT(*) FROM conversations) AS conversations_count,
+                  (SELECT COUNT(*) FROM threads)       AS threads_count;" \
+            2>&1
+
+      # ── 6. FreeScout jobs / failed_jobs table (scheduler queue) ─────────────
+      - name: Check FreeScout failed_jobs table
+        run: |
+          echo "=== failed_jobs table (last 5) ==="
+          psql \
+            -h "$DB_HOST" -p "$DB_PORT" \
+            -U "$DB_USER" -d "$DB_NAME" \
+            -c "SELECT id, connection, queue, substring(payload, 1, 120) AS payload_preview,
+                       failed_at
+                FROM failed_jobs
+                ORDER BY id DESC LIMIT 5;" \
+            2>&1 || echo "failed_jobs table not accessible or does not exist"
+
+      # ── 7. Restart FreeScout to ensure cron is fresh ─────────────────────────
+      - name: Restart FreeScout (ensures Laravel scheduler starts fresh)
+        id: restart
+        run: |
+          echo "Triggering FreeScout restart..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$FREESCOUT_UUID/restart")
+          echo "POST /restart -> HTTP $HTTP"
+          jq . /tmp/restart.json 2>/dev/null || cat /tmp/restart.json | head -5 || true
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/restart.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for FreeScout restart (max 3 min)
+        run: |
+          DEP="${{ steps.restart.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then
+            echo "No deployment UUID — sleeping 60s"
+            sleep 60
+          else
+            for i in $(seq 1 18); do
+              STATUS=$(curl -s --max-time 15 \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" \
+                | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Restart complete"; break ;;
+                failed|error) echo "WARNING: restart returned error status; continuing" ;;
+              esac
+              sleep 10
+            done
+          fi
+
+          # Verify public URL is still up after restart
+          for i in $(seq 1 12); do
+            FS_HTTP=$(curl -s --max-time 15 -o /dev/null -w "%{http_code}" \
+              "https://freescout-staging.inatechshell.ca" || echo "000")
+            echo "FreeScout HTTP $FS_HTTP (attempt $i)"
+            [ "$FS_HTTP" = "200" ] || [ "$FS_HTTP" = "302" ] && { echo "FreeScout is up"; break; }
+            [ "$i" = "12" ] && echo "WARNING: FreeScout may still be starting"
+            sleep 10
+          done
+
+      # ── 8. Summary + Action steps ────────────────────────────────────────────
+      - name: Summary and action steps
+        if: always()
+        run: |
+          echo "========================================================"
+          echo " FREESCOUT EMAIL FETCH DIAGNOSTIC SUMMARY"
+          echo "========================================================"
+          echo ""
+          echo " conversations table: exists (checked above)"
+          echo " Status:              see rows above — likely 0"
+          echo ""
+          echo " KEY: FreeScout emails (conversations) should appear within"
+          echo "      1-3 minutes of emails arriving at info@inatechshell.ca"
+          echo "      IF the Gmail IMAP connection is authenticated."
+          echo ""
+          echo " ── ACTION STEPS (founder) ──────────────────────────────"
+          echo ""
+          echo " If ops_hub_app GRANT is missing (step 4 showed no rows):"
+          echo "   SSH to VPS and run:"
+          echo "   docker exec \$(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') \\"
+          echo "     php artisan tinker --execute=\"DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');\""
+          echo ""
+          echo " If mailboxes table is empty or shows is_enabled=0:"
+          echo "   Go to https://freescout-staging.inatechshell.ca/mailboxes"
+          echo "   Verify mailbox 'ITS Support' exists and is enabled"
+          echo ""
+          echo " To verify Gmail OAuth is connected:"
+          echo "   1. Go to https://freescout-staging.inatechshell.ca/mailboxes"
+          echo "   2. Click 'Edit' on 'ITS Support'"
+          echo "   3. Click 'Incoming email' -> check OAuth is authorized"
+          echo "   4. Click 'Test Connection' to force an immediate fetch"
+          echo ""
+          echo " To manually trigger email fetch (after OAuth confirmed):"
+          echo "   SSH to VPS and run:"
+          echo "   docker exec \$(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') \\"
+          echo "     php artisan fetch:emails"
+          echo ""
+          echo " FreeScout was restarted in step 7 — if the cron was stopped,"
+          echo " it will now be running. Check again in 2-3 minutes."
+          echo "========================================================"
