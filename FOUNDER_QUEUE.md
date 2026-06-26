@@ -4,6 +4,85 @@
 
 ---
 
+## FQ-41 — FreeScout second DB reset recovery: GRANT + Gmail OAuth
+
+**Filed:** 2026-06-26
+**Filed by:** Production Manager
+**Blocks:** T-22 (ticket-triage live validation), full Inngest pipeline, M1 criterion #10 re-verification
+**Priority:** HIGH — pipeline is completely stalled at this blocker
+
+### What happened
+
+The Supabase public schema was reset a second time. FreeScout detected an empty DB at startup (02:45 UTC 2026-06-26) and re-ran all migrations, recreating the admin user as `info@inatechshell.ca`. This wiped:
+- The `ops_hub_app` GRANT on `conversations` and `threads`
+- Any mailbox OAuth token state stored in the DB
+
+Confirmed via `diagnose-freescout-imap.yml` run #28215344117:
+- `conversations` = 0 rows
+- GRANT check = 0 rows (`ops_hub_app` has NO SELECT on either table)
+- FreeScout cron IS running (not the bottleneck)
+- `failed_jobs` = 0 rows (no Laravel failures)
+
+### Required founder actions (two steps — must both be done)
+
+#### Step 1: Re-issue the GRANT (via SSH to Coolify VPS)
+
+Run this command on the VPS hosting the Coolify FreeScout container:
+
+```bash
+docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') \
+  php artisan tinker \
+  --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"
+```
+
+Expected output: `=> true`
+
+If the container name lookup fails, get the container ID directly:
+```bash
+docker ps | grep sgnpza1r8jlq19f0dboqpzq6
+docker exec <CONTAINER_ID> php artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"
+```
+
+#### Step 2: Verify and re-authorize Gmail OAuth in FreeScout UI
+
+1. Go to: `https://freescout-staging.inatechshell.ca/mailboxes`
+2. Find "ITS Support" mailbox and click Edit
+3. Go to "Incoming Email" tab
+4. Confirm incoming server settings match:
+   - Protocol: IMAP
+   - Server: imap.gmail.com
+   - Port: 993
+   - Encryption: SSL
+   - Username: info@inatechshell.ca
+   - OAuth: Google (connected)
+5. Click "Test Connection" — confirm it says "Connection is successful"
+6. If OAuth is disconnected: click "Connect Google Account" and re-authorize
+7. Save the mailbox settings
+
+#### Step 3 (optional — after steps 1+2): Manually trigger an email fetch
+
+To verify emails start appearing without waiting for the cron:
+```bash
+docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') \
+  php artisan fetch:emails
+```
+
+### After resolution
+
+Notify Production Manager: "GRANT re-issued + Gmail OAuth reconnected in FreeScout"
+
+Production Manager will:
+1. Run `discover-freescout-schema.yml` to confirm conversations rows are appearing
+2. Verify `pollFreeScout` is dispatching `ticket.triage` events in Inngest
+3. Close FQ-41 and update T-22 status
+4. Trigger `sweepNewTickets` sweep if conversations exist but are missed by the cron window
+
+### Note on recurrence
+
+This is the second time the GRANT has been lost to a DB reset. The GRANT is session-persistent in Supabase (not a migration) — it survives restarts but NOT schema resets. If schema resets continue, consider adding the GRANT to a FreeScout startup script or using a Supabase migration to make it permanent. Filed for PM + Tech Lead awareness.
+
+---
+
 ## FQ-40 — NVIDIA_API_KEY value rejected by NVIDIA NIM (401 Unauthorized)
 
 **Filed:** 2026-06-26

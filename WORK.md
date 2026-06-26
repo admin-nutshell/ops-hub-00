@@ -124,7 +124,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **BLOCKED on FQ-39 (2026-06-25).** Code complete and merged to main. `triageTicket` + `sweepNewTickets` deployed. LITELLM_URL set to internal URL `http://h12xz8887fxvbvjts2hac8if-055055304869:4000` (HTTP 401 = alive). FreeScout tables recreated (DB reset recovery done). GRANT re-issued. **Blocker: Gmail mailbox not reconnected after DB reset — FreeScout has 0 conversations. pollFreeScout polls successfully but ingests nothing. Waiting on FQ-39 (founder reconnects mailbox in FreeScout UI).** | Jul 14 |
+| T-22: Build `ticket-triage` Inngest function | Tech Lead | T-21, T-08 ✅ | ⏳ **BLOCKED on FQ-41 (2026-06-26 — second DB reset recovery).** Code complete and merged to main. `triageTicket` + `sweepNewTickets` deployed. LITELLM_URL set to internal URL `http://h12xz8887fxvbvjts2hac8if-055055304869:4000`. FreeScout re-migrated from empty DB at 02:45 UTC 2026-06-26 (second Supabase reset wiped all FreeScout tables + GRANTs). Confirmed via diagnose-freescout-imap.yml run #28215344117: cron IS running, conversations = 0, GRANT = 0. **Two required founder actions (FQ-41): (1) re-issue `ops_hub_app` GRANT via docker exec, (2) verify/re-authorize Gmail OAuth in FreeScout UI mailbox settings.** | Jul 14 |
 | T-23: Build `ticket-respond` Inngest function | Tech Lead | T-22 | 🟢 **CODE COMPLETE (2026-06-25) — PR `feat/t23-ticket-respond`.** `src/inngest/ticket-respond.ts` (`respondTicket` on `ops-hub/ticket.respond`) registered in `src/index.ts`. Drafts reply via LiteLLM; delivers as internal FreeScout NOTE behind a mockable, config-gated seam; state → `responded`; LangFuse trace `ticket-respond`. 11 unit tests green; lint/typecheck/test pass. Migration `20260625000000_t23_responded_state.sql` adds `'responded'` to the state enum. ADR-0003 records the write-back decision. **Delivery dormant until `FREESCOUT_DB_URL` + `FREESCOUT_BOT_USER_ID` are provisioned (flagged below).** No REST API — direct DB write as `freescout_user`. | Jul 16 |
 
 ### Track C — Testing + Evals
@@ -227,6 +227,28 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 
 ### Production Manager
 **🟢 ACTIVE (2026-06-26)**
+
+**Full pipeline diagnostic — COMPLETE (2026-06-26, diagnose-freescout-imap.yml run #28215344117)**
+
+Investigation triggered by: emails sent to support@inatechshell.ca not appearing in FreeScout; Inngest shows incomplete workflows.
+
+Confirmed findings:
+1. ops-hub-app /health: HTTP 200 — healthy.
+2. FreeScout cron: RUNNING. Coolify logs confirm `[NOTICE] ** [scheduling] Starting cron` at 02:46 UTC.
+3. FreeScout ran fresh DB migrations at 02:45–02:47 UTC 2026-06-26. Log: `[WARN] ** [freescout] Empty database detected - migrating + creating admin user`. Admin recreated as `info@inatechshell.ca`. This is the SECOND Supabase reset recovery — all FreeScout table data + GRANTs were wiped.
+4. `ops_hub_app` GRANT on `conversations`/`threads`: **MISSING (0 rows confirmed)**. The GRANT issued during the first DB reset recovery was lost again.
+5. `conversations` table: EXISTS, 0 rows. FreeScout has not fetched any emails since the reset.
+6. `failed_jobs` table: 0 rows — no Laravel queue failures.
+7. Inngest incomplete workflows: root cause is 0 conversations → `pollFreeScout` polls successfully but finds nothing to dispatch.
+8. LiteLLM (OpenAI gpt-4o-mini): confirmed working — HTTP 200 (run #28211295785).
+
+Root cause chain: Supabase reset wiped FreeScout tables → FreeScout detected empty DB + re-migrated → mailbox OAuth connection needs re-authorization after re-migration → emails not fetched → conversations = 0 → pollFreeScout dispatches no `ticket.triage` events → Inngest pipeline stalls.
+
+Two required founder actions (FQ-41):
+- Re-issue GRANT: `docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') php artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"`
+- FreeScout UI: `https://freescout-staging.inatechshell.ca/mailboxes` → Edit "ITS Support" → Incoming Email → verify/re-authorize Google OAuth → Save + Test Connection
+
+Also checking mailboxes table (check-freescout-mailboxes.yml, PR #167) to confirm whether the mailbox row survived the reset or needs full re-entry.
 
 **triage-model alias configuration — BLOCKED ON FQ-40 (updated 2026-06-26, run #28210675694 — third 401).**
 

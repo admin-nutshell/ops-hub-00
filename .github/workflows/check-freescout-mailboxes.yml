@@ -26,7 +26,7 @@ jobs:
             -U "freescout_user.yocoljutbiizdbfraapx" \
             -d postgres \
             -c "SELECT id, name, email, in_protocol, in_server, in_port,
-                       is_enabled, status, imap_last_uid, created_at, updated_at
+                       in_encryption, in_username, created_at, updated_at
                 FROM mailboxes ORDER BY id LIMIT 10;" \
             2>&1 || echo "Query failed"
 
