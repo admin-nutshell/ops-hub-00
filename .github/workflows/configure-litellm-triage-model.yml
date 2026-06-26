@@ -152,8 +152,10 @@ jobs:
           echo "Both API keys confirmed present in container env"
 
       # ── 3. Purge all stale model registrations ───────────────────────────────
-      # Defensive — a fresh restart should have an empty registry. If stale entries
+      # Defensive — a fresh restart often has an empty registry. If stale entries
       # exist, delete them to prevent duplicate alias conflicts.
+      # NOTE: LiteLLM returns HTTP 500 (not 200 with empty list) when no models
+      # are registered yet — treat that as "empty registry, nothing to purge."
       - name: Purge stale model registrations
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/model_info_pre.json -w "%{http_code}" \
@@ -161,9 +163,17 @@ jobs:
             -H "Accept: application/json" \
             "$LITELLM_BASE/model/info")
           echo "GET /model/info -> HTTP $HTTP"
+
+          if [ "$HTTP" = "500" ]; then
+            MSG=$(jq -r '.detail.error // .detail // empty' /tmp/model_info_pre.json 2>/dev/null || true)
+            echo "HTTP 500 — LiteLLM registry is empty (no models loaded): $MSG"
+            echo "Nothing to purge — proceeding to registration."
+            exit 0
+          fi
+
           if [ "$HTTP" != "200" ]; then
-            echo "ERROR: /model/info HTTP $HTTP"
-            cat /tmp/model_info_pre.json 2>/dev/null | head -5 || true
+            echo "ERROR: /model/info HTTP $HTTP (unexpected)"
+            cat /tmp/model_info_pre.json 2>/dev/null | head -10 || true
             exit 1
           fi
 
@@ -359,6 +369,11 @@ jobs:
             -H "Accept: application/json" \
             "$LITELLM_BASE/model/info")
           echo "GET /model/info -> HTTP $HTTP"
+          if [ "$HTTP" = "500" ]; then
+            echo "ERROR: /model/info still returns 500 — no models were registered"
+            cat /tmp/model_info_post.json 2>/dev/null | head -10 || true
+            exit 1
+          fi
           if [ "$HTTP" != "200" ]; then
             echo "ERROR: /model/info HTTP $HTTP"
             cat /tmp/model_info_post.json 2>/dev/null | head -5 || true
