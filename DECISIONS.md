@@ -689,3 +689,64 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Deploy plan: docs/deploys/2026-06-25-litellm-model-reregistration.md
   Founder approval: YES (in session 2026-06-25).
 ```
+
+### 2026-06-25 — LiteLLM DB isolation: restricted role + schema wall (permanent fix)
+
+```
+2026-06-25 [Tech Lead] LiteLLM redeploys repeatedly wiped Ops Hub tables in public
+  (tenants/tickets, 3× this session) because LiteLLM's Prisma startup DDL ran as a
+  public-capable DB user on the shared Supabase project. The prior `?schema=litellm`
+  param attempt failed: it routed Prisma's default schema but did not RESTRICT the
+  user — produced duplicate tables in both schemas and did not stop the wipes.
+
+  Decision: isolate LiteLLM behind a dedicated PostgreSQL role, not a connection
+  param or a behavioral flag → ADR-0004.
+    Option A (CHOSEN): litellm_db_user OWNS schema litellm, has ZERO rights on public
+      (non-superuser, non-BYPASSRLS, not owner of any public table, no CREATE on
+      public). PostgreSQL refuses DROP/ALTER/TRUNCATE on tables the role neither owns
+      nor has privilege on — so even `prisma migrate reset --force-reset` cannot
+      reach public; it 42501-fails instead. This is a permission boundary, immune to
+      LiteLLM version / Prisma flags / env-var renames / image updates. The literal
+      requirement ("a redeploy CANNOT destroy Ops Hub tables, regardless of migrations")
+      is satisfied only by A. $0, no second Supabase project (free-tier limit blocks E).
+    Option B (?schema= only): rejected — already tried, failed; kept as a functional
+      aid INSIDE A (backed by ALTER ROLE ... SET search_path = litellm).
+    Option C (DISABLE_SCHEMA_UPDATE=true): confirmed to exist in LiteLLM; rejected as
+      primary (behavioral flag, not a boundary; breaks empty-schema first boot).
+      Kept as belt-and-suspenders AFTER the schema exists + health verified.
+    Option D (do nothing): rejected. Option E (2nd Supabase project): rejected/blocked
+      by free-tier limit; revisit when Ops Hub leaves free tier.
+
+  Split of duties: role + schema creation is founder-run SQL (superuser; agents never
+  hold service_role per CLAUDE.md #3). The only agent-owned action is the Coolify
+  DATABASE_URL swap, via .github/workflows/fix-litellm-schema-isolation.yml.
+  Two modes, staged: apply-wall (point at restricted role, schema-update ON so Prisma
+  builds litellm once, restart, verify LiteLLM healthy + canary that public.tenants/
+  tickets/conversations survived) → verify → freeze-schema (DISABLE_SCHEMA_UPDATE=true).
+  Workflow refuses to run unless LITELLM_DB_USER_URL's user is litellm_db_user.<ref>
+  AND the URL contains schema=litellm — guard against re-pushing a privileged URL.
+
+  Founder actions required (runbook: docs/engineering/litellm-db-isolation-runbook.md):
+    FQ — run Step 1 SQL in Supabase SQL Editor; set GitHub secret LITELLM_DB_USER_URL.
+  Forbidden in the SQL: `REASSIGN OWNED BY postgres TO litellm_db_user` (would reassign
+  public.tenants/tickets too — the exact disaster). Orphan public LiteLLM-table cleanup
+  is deferred + separate (only data-loss-risky step; harmless once LiteLLM points away).
+  Secondary benefit (to confirm): with litellm schema external + migrations frozen,
+  STORE_MODEL_IN_DB model registrations should persist across redeploys, ending the
+  re-registration churn (DECISIONS.md 2026-06-25).
+  → ADR-0004
+
+2026-06-25 [Security Lead] ADR-0004 LiteLLM DB isolation: APPROVED WITH CONDITIONS.
+  The wall is airtight on the load-bearing point — DROP/ALTER on a table come only
+  from ownership or superuser (never grantable); litellm_db_user is non-superuser,
+  non-BYPASSRLS, owns no public table, so prisma migrate reset --force-reset can only
+  42501-fail against public. No secret leaks; no change to Ops Hub RLS/ops_hub_app
+  posture (slight improvement). Agent-owned, NOT a FOUNDER_QUEUE item.
+  Conditions folded into the runbook: C1 (blocking, gates founder SQL) — hard-stop
+  gate must verify rolsuper/createdb/createrole/bypassrls all false + force-set
+  least-privilege attrs on idempotent rerun; C2 — verification (e) table list
+  reconciled to core tables, canary is the real survival test; C3 — pre-DROP CASCADE
+  dependency check added. Production Manager clear to run apply-wall → verify →
+  freeze-schema once founder runs the C1-gated SQL; hold freeze until Step 4 canary
+  passes. → ADR-0004 §Security Lead Review
+```
