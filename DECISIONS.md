@@ -734,6 +734,19 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Secondary benefit (to confirm): with litellm schema external + migrations frozen,
   STORE_MODEL_IN_DB model registrations should persist across redeploys, ending the
   re-registration churn (DECISIONS.md 2026-06-25).
-  Pending: Security Lead sign-off on the DB privilege model (touches the shared
-  multi-app database). → ADR-0004
+  → ADR-0004
+
+2026-06-25 [Security Lead] ADR-0004 LiteLLM DB isolation: APPROVED WITH CONDITIONS.
+  The wall is airtight on the load-bearing point — DROP/ALTER on a table come only
+  from ownership or superuser (never grantable); litellm_db_user is non-superuser,
+  non-BYPASSRLS, owns no public table, so prisma migrate reset --force-reset can only
+  42501-fail against public. No secret leaks; no change to Ops Hub RLS/ops_hub_app
+  posture (slight improvement). Agent-owned, NOT a FOUNDER_QUEUE item.
+  Conditions folded into the runbook: C1 (blocking, gates founder SQL) — hard-stop
+  gate must verify rolsuper/createdb/createrole/bypassrls all false + force-set
+  least-privilege attrs on idempotent rerun; C2 — verification (e) table list
+  reconciled to core tables, canary is the real survival test; C3 — pre-DROP CASCADE
+  dependency check added. Production Manager clear to run apply-wall → verify →
+  freeze-schema once founder runs the C1-gated SQL; hold freeze until Step 4 canary
+  passes. → ADR-0004 §Security Lead Review
 ```

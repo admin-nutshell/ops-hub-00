@@ -177,3 +177,36 @@ database we already run. Passes the free-tier-first rule outright.
 - **Founder:** runs the one-time SQL (superuser) and sets the `LITELLM_DB_USER_URL`
   secret. Not a business decision — no FOUNDER_QUEUE item; this is an agent-owned
   technical fix with a founder-only execution step for the privileged SQL.
+
+---
+
+## Security Lead Review
+
+- **Reviewer:** Security Lead (AppSec)
+- **Date:** 2026-06-25
+- **Verdict:** **APPROVED WITH CONDITIONS.** The wall is airtight on the load-bearing
+  point: in PostgreSQL `DROP`/`ALTER` on a table come only from ownership or
+  superuser (never grantable), and `litellm_db_user` is non-superuser, non-BYPASSRLS,
+  and owns no `public` table — so even `prisma migrate reset --force-reset` can only
+  42501-fail against `public`. The REVOKEs and the `can_create_in_public` check are
+  belt; non-ownership + non-superuser is the wall. No secret leaks (placeholders in
+  SQL, masked DSN secret in the workflow, structure-only guard with no echo). No
+  change to Ops Hub RLS or `ops_hub_app` posture — a slight improvement (LiteLLM data
+  now confined to `litellm`). Concurs this is agent-owned, **not** a FOUNDER_QUEUE
+  item (3× wipes are a staging integrity event, not a security incident; the founder
+  SQL step is an execution constraint, not a business decision).
+- **Conditions (folded into the runbook):**
+  - **C1 (blocking, gates the founder SQL):** the role-attribute hard-stop gate must
+    check (a) — `rolsuper`/`rolcreatedb`/`rolcreaterole`/`rolbypassrls` all `f` —
+    before proceeding, and the idempotent path must `ALTER ROLE … NOSUPERUSER
+    NOCREATEDB NOCREATEROLE NOBYPASSRLS` so a pre-existing/elevated role is forced
+    back to least privilege. *Applied.*
+  - **C2 (correctness):** verification (e)'s table list disagreed with CLAUDE.md
+    (`audit_log`/`feature_flags` vs `ticket_events`/`agent_actions`); (e) is an
+    ownership confirmation, not the survival test — the Step 4 canary is. Reworded to
+    the core tables + note. *Applied.*
+  - **C3 (advisory):** added a pre-`DROP SCHEMA … CASCADE` dependency check for any
+    `public` object depending on a `litellm` object. *Applied.*
+- **Handoff:** Production Manager is clear to own `apply-wall` → verify → `freeze-schema`
+  once the founder has run/verified the SQL with the C1 gate; hold `freeze-schema`
+  until the Step 4 canary passes.

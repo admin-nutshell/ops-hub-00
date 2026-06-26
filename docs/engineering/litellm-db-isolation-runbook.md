@@ -66,10 +66,16 @@ DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'litellm_db_user') THEN
     CREATE ROLE litellm_db_user LOGIN PASSWORD '__REPLACE_WITH_STRONG_PASSWORD__';
-  ELSE
-    ALTER ROLE litellm_db_user LOGIN PASSWORD '__REPLACE_WITH_STRONG_PASSWORD__';
   END IF;
 END$$;
+
+-- Force-set the safe attribute set on EVERY run (idempotent). This guarantees that
+-- even a pre-existing or later-elevated role is brought back to least-privilege —
+-- a plain `ALTER ROLE ... LOGIN PASSWORD` would NOT strip SUPERUSER/BYPASSRLS.
+-- (Security Lead Condition 1.)
+ALTER ROLE litellm_db_user
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOREPLICATION
+  LOGIN PASSWORD '__REPLACE_WITH_STRONG_PASSWORD__';
 
 -- 2) Recreate the `litellm` schema OWNED BY the restricted role.
 --    The existing litellm.* tables (created by the earlier ?schema=litellm
@@ -79,6 +85,19 @@ END$$;
 --    DO NOT use `REASSIGN OWNED BY postgres TO litellm_db_user` — that would
 --    reassign EVERY postgres-owned object including public.tenants/public.tickets,
 --    i.e. it would hand LiteLLM the keys to the exact tables we are protecting.
+--
+--    Safety pre-check (Security Lead Condition 3): DROP SCHEMA ... CASCADE follows
+--    dependencies. Confirm NOTHING in `public` (a view, FK, etc.) depends on a
+--    `litellm` object before dropping. Expect 0 rows; if any appear, STOP and
+--    inspect — do not CASCADE-drop a dependency of a public object.
+SELECT DISTINCT dn.nspname AS dependent_schema, dc.relname AS dependent_object
+FROM pg_depend d
+JOIN pg_class dc ON dc.oid = d.objid
+JOIN pg_namespace dn ON dn.oid = dc.relnamespace
+JOIN pg_class rc ON rc.oid = d.refobjid
+JOIN pg_namespace rn ON rn.oid = rc.relnamespace
+WHERE rn.nspname = 'litellm' AND dn.nspname = 'public';
+
 DROP SCHEMA IF EXISTS litellm CASCADE;
 CREATE SCHEMA litellm AUTHORIZATION litellm_db_user;
 
@@ -128,25 +147,36 @@ SELECT has_schema_privilege('litellm_db_user', 'public', 'CREATE') AS can_create
 SELECT tablename FROM pg_tables
 WHERE schemaname = 'public' AND tableowner = 'litellm_db_user';
 
--- e) Ops Hub tables are present and owned by postgres (NOT by litellm_db_user).
+-- e) Core Ops Hub tables are present and owned by postgres (NOT by litellm_db_user).
+--    NOTE: this lists whatever exists — it does NOT assert a fixed table set, because
+--    CLAUDE.md and the applied migration disagree on the non-core table names
+--    (audit_log/feature_flags vs ticket_events/agent_actions). Reconcile that
+--    separately against the live schema. (e) is an OWNERSHIP confirmation, NOT the
+--    survival test — the real survival proof is Step 4's canary on tenants/tickets/
+--    kb_articles/conversations (names that exist regardless). (Security Lead Condition 2.)
 SELECT tablename, tableowner FROM pg_tables
 WHERE schemaname = 'public'
-  AND tablename IN ('tenants','projects','tickets','kb_articles','audit_log','feature_flags')
+  AND tablename IN ('tenants','projects','tickets','kb_articles')
 ORDER BY tablename;
 ```
 
 **Expected verification results**
 
-- (a) `rolcanlogin = t`; every other attribute `f`.
+- (a) `rolcanlogin = t`; **every other attribute (`rolsuper`, `rolcreatedb`,
+  `rolcreaterole`, `rolbypassrls`) MUST be `f`.** (Security Lead Condition 1 —
+  this is a hard gate.)
 - (b) `owner = litellm_db_user`.
 - (c) `can_create_in_public = f` on PG15 (Supabase). A `t` (PG14 default) is
   cosmetic only — see the note in the query; it is **not** a wall failure.
 - (d) zero rows.
-- (e) all 6 Ops Hub tables present, `tableowner = postgres` (or `supabase_admin`).
+- (e) the 4 core Ops Hub tables present, `tableowner = postgres` (or `supabase_admin`).
 
-If (b) is wrong, or (d)/(e) show `litellm_db_user` owning any `public` table,
-**stop** — the wall is not in place; do not proceed to Step 2. Check (c) alone does
-**not** gate the rollout.
+**Hard-stop gate — do not proceed to Step 2 if ANY of these is true:**
+- (a) shows `litellm_db_user` with `rolsuper`/`rolcreatedb`/`rolcreaterole`/`rolbypassrls = t`;
+- (b) owner is not `litellm_db_user`;
+- (d) or (e) show `litellm_db_user` owning any `public` table.
+
+Check (c) alone does **not** gate the rollout.
 
 ---
 
