@@ -226,9 +226,27 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 **Active.** T-06 (test plan) done. **T-19 in progress (2026-06-21):** first integration test `src/integration/ticket-state-machine.test.ts` written — project→tenant→ticket(`new`)→assert→update(`triaged`)→assert→teardown (reverse-FK). Vitest + `@supabase/supabase-js`. Self-skips when `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` absent so CI stays green without secrets. Connects via `service_role` (RLS bypass) as a stopgap — **must migrate to `ops_hub_app_login` once T-12 (Vault + login role) lands** (`// TODO T-12` in file). Reconciled the stale CI wiring: `pr-checks.yml` integration guard + `package.json test:integration` repointed `tests/integration` → `src/integration` (matches the spec'd test path). PR opened. Local `pnpm lint`/`typecheck`/`test`/`test:integration` all green; `--frozen-lockfile` verified after adding supabase-js.
 
 ### Production Manager
-**🟢 ACTIVE (2026-06-25)**
+**🟢 ACTIVE (2026-06-26)**
 
-**triage-model alias configuration — ⏳ PENDING MERGE (2026-06-25).** PR #158 open: https://github.com/admin-nutshell/ops-hub-00/pull/158. Workflow: `configure-litellm-triage-model.yml` (workflow_dispatch). Registers NVIDIA NIM + OpenAI gpt-4o-mini under both `triage-model` (new alias) and `meta/llama-3.3-70b-instruct` (legacy safety net — keeps ticket-triage.ts working until code change ships). To trigger after merge: `gh workflow run configure-litellm-triage-model.yml`. Supersedes PR #157 (swap to Anthropic Haiku) — NVIDIA key is now fresh and confirmed. PR #157 should be closed. Required code change for Tech Lead: `src/inngest/ticket-triage.ts` lines 71 + 173 — replace hardcoded `"meta/llama-3.3-70b-instruct"` with `process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"`, then set `LITELLM_TRIAGE_MODEL=triage-model` in ops-hub-app Coolify env vars.
+**triage-model alias configuration — BLOCKED ON FQ-40 (2026-06-26).**
+
+Status: NVIDIA NIM registrations are in LiteLLM DB (confirmed HTTP 200 on POST /model/new for both `triage-model` and `meta/llama-3.3-70b-instruct`). Smoke test fails with HTTP 401 "Authentication failed" from NVIDIA NIM. Root cause: litellm-staging was restarted (not redeployed) after NVIDIA_API_KEY was rotated. Coolify does not inject updated env vars on restart — only on full redeploy. Old NVIDIA key in the running container is expired/revoked.
+
+Diagnostic probe (run #28209902312, step 7): registered native `gpt-4o-mini` without api_key field → HTTP 200. This confirms:
+1. OPENAI_API_KEY IS in the running container (old key, still valid at OpenAI)
+2. NVIDIA_API_KEY is either absent or expired in the running container
+3. For OpenAI: fix is to register gpt-4o-mini WITHOUT api_key field (native auto-read). Ready to add once NVIDIA smoke tests pass.
+
+Next actions:
+1. Founder: redeploy litellm-staging via Coolify UI (NOT restart) → FQ-40
+2. Production Manager (on FQ-40 resolved): re-run `gh workflow run configure-litellm-triage-model.yml --ref main`
+3. Tech Lead (after smoke tests green): update `src/inngest/ticket-triage.ts` lines 71+173 — replace `"meta/llama-3.3-70b-instruct"` with `process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"` — set `LITELLM_TRIAGE_MODEL=triage-model` in ops-hub-app Coolify env
+
+PRs merged (all on main):
+- PR #159: initial configure-litellm-triage-model.yml workflow
+- PR #160: NVIDIA `nvidia_nim/` prefix → `openai/` + NVIDIA api_base fix
+- PR #161: OpenAI `os.environ/` prefix fix attempt (openai/ + api_base)
+- PR #162: NVIDIA-only aliases + OpenAI probe diagnostic (current main)
 
 **LiteLLM model re-registration — ✅ DONE (2026-06-25).** triageTicket was returning LiteLLM 400 "Invalid model name passed in model=meta/llama-3.3-70b-instruct". Root cause: STORE_MODEL_IN_DB registration wiped by full litellm-staging redeploys during T-22 network fixes (PRs #143–#145). Fix: PR #155 merged (5668ab73), `fix-litellm-model-registration.yml` run #28201769554 — all 9 steps green in 13s. POST /chat/completions HTTP 200, model response: "OK". Registration confirmed: model_id=48ea73ba-7c3c-4a88-a261-921558c3fc19, NVIDIA_API_KEY present on litellm-staging. LITELLM_DEFAULT_MODEL not set in ops-hub-app (triageTicket specifies model name explicitly). 24h monitoring window started. Rollback: POST /model/delete id=48ea73ba-7c3c-4a88-a261-921558c3fc19 (< 5 min).
 
