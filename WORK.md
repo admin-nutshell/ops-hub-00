@@ -228,25 +228,42 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 ### Production Manager
 **🟢 ACTIVE (2026-06-26)**
 
-**triage-model alias configuration — BLOCKED ON FQ-40 (2026-06-26).**
+**triage-model alias configuration — BLOCKED ON FQ-40 (updated 2026-06-26, run #28210675694 — third 401).**
 
-Status: NVIDIA NIM registrations are in LiteLLM DB (confirmed HTTP 200 on POST /model/new for both `triage-model` and `meta/llama-3.3-70b-instruct`). Smoke test fails with HTTP 401 "Authentication failed" from NVIDIA NIM. Root cause: litellm-staging was restarted (not redeployed) after NVIDIA_API_KEY was rotated. Coolify does not inject updated env vars on restart — only on full redeploy. Old NVIDIA key in the running container is expired/revoked.
+Run #28210675694 was triggered after the user confirmed NVIDIA_API_KEY was "corrected" in Coolify
+and litellm-staging was fully redeployed. The 401 persists for the third time. OpenAI probe
+confirmed passing (HTTP 200) for the second time — OPENAI_API_KEY is live and valid.
 
-Diagnostic probe (run #28209902312, step 7): registered native `gpt-4o-mini` without api_key field → HTTP 200. This confirms:
-1. OPENAI_API_KEY IS in the running container (old key, still valid at OpenAI)
-2. NVIDIA_API_KEY is either absent or expired in the running container
-3. For OpenAI: fix is to register gpt-4o-mini WITHOUT api_key field (native auto-read). Ready to add once NVIDIA smoke tests pass.
+Confirmed from run #28210675694:
+- litellm-staging health: HTTP 200
+- Both NVIDIA_API_KEY and OPENAI_API_KEY key names present in Coolify env config: confirmed
+- Container redeployed (env injection working): confirmed — OPENAI probe HTTP 200
+- OPENAI_API_KEY valid and injected: confirmed — gpt-4o-mini response HTTP 200
+- NVIDIA model registrations succeeded: HTTP 200 on POST /model/new for both aliases
+- NVIDIA smoke test (triage-model): HTTP 401 "Authentication failed" from NVIDIA NIM
+- OpenAI fallback NOT registered (gate: NVIDIA smoke must pass — still not met)
+
+The "corrected" key value is still being rejected by NVIDIA NIM. The key value itself is incorrect
+or no longer valid at NVIDIA's side. FQ-40 updated. Two consecutive corrected-key deploys both fail
+— escalating urgency.
+
+Workflow committed for when NVIDIA resolves: `.github/workflows/register-litellm-openai-fallback.yml`
 
 Next actions:
-1. Founder: redeploy litellm-staging via Coolify UI (NOT restart) → FQ-40
-2. Production Manager (on FQ-40 resolved): re-run `gh workflow run configure-litellm-triage-model.yml --ref main`
-3. Tech Lead (after smoke tests green): update `src/inngest/ticket-triage.ts` lines 71+173 — replace `"meta/llama-3.3-70b-instruct"` with `process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"` — set `LITELLM_TRIAGE_MODEL=triage-model` in ops-hub-app Coolify env
+1. Founder: at https://build.nvidia.com — generate a fresh API key, copy the full value
+   character-for-character, update NVIDIA_API_KEY in Coolify → litellm-staging → Deploy (not restart)
+   Notify: "NVIDIA key regenerated and litellm-staging redeployed" → FQ-40
+2. Production Manager (on FQ-40 resolved): `gh workflow run configure-litellm-triage-model.yml --repo admin-nutshell/ops-hub-00`
+3. On NVIDIA pass: `gh workflow run register-litellm-openai-fallback.yml --repo admin-nutshell/ops-hub-00`
+4. Verify both NVIDIA and OpenAI final tests pass in run log
+5. Tech Lead (after both green): update `src/inngest/ticket-triage.ts` lines 71+173
 
 PRs merged (all on main):
 - PR #159: initial configure-litellm-triage-model.yml workflow
 - PR #160: NVIDIA `nvidia_nim/` prefix → `openai/` + NVIDIA api_base fix
 - PR #161: OpenAI `os.environ/` prefix fix attempt (openai/ + api_base)
 - PR #162: NVIDIA-only aliases + OpenAI probe diagnostic (current main)
+- FQ-40 (open): NVIDIA_API_KEY value rejected by NVIDIA NIM — three 401s across three runs
 
 **LiteLLM model re-registration — ✅ DONE (2026-06-25).** triageTicket was returning LiteLLM 400 "Invalid model name passed in model=meta/llama-3.3-70b-instruct". Root cause: STORE_MODEL_IN_DB registration wiped by full litellm-staging redeploys during T-22 network fixes (PRs #143–#145). Fix: PR #155 merged (5668ab73), `fix-litellm-model-registration.yml` run #28201769554 — all 9 steps green in 13s. POST /chat/completions HTTP 200, model response: "OK". Registration confirmed: model_id=48ea73ba-7c3c-4a88-a261-921558c3fc19, NVIDIA_API_KEY present on litellm-staging. LITELLM_DEFAULT_MODEL not set in ops-hub-app (triageTicket specifies model name explicitly). 24h monitoring window started. Rollback: POST /model/delete id=48ea73ba-7c3c-4a88-a261-921558c3fc19 (< 5 min).
 

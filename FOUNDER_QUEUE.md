@@ -4,60 +4,84 @@
 
 ---
 
-## FQ-40 — litellm-staging REDEPLOY required (NVIDIA_API_KEY not in running container)
+## FQ-40 — NVIDIA_API_KEY value rejected by NVIDIA NIM (401 Unauthorized)
 
 **Filed:** 2026-06-26
+**Updated:** 2026-06-26 (third run #28210675694 — user confirmed key "corrected" + redeployed; still 401)
 **Filed by:** Production Manager
 **Blocks:** T-22 (ticket-triage live validation), LiteLLM triage-model smoke test
 
-### Symptom
+### Current symptom (runs #28210294811 and #28210675694)
 
-`configure-litellm-triage-model.yml` run #28209902312 failed at smoke test:
+`configure-litellm-triage-model.yml` run #28210675694 failed at smoke test.
+The user confirmed NVIDIA_API_KEY was "corrected" in Coolify and litellm-staging was fully redeployed
+before this run. The 401 persists:
 ```
 POST /chat/completions (model=triage-model) -> HTTP 401
-"Authentication failed" from NVIDIA NIM
+litellm.AuthenticationError: OpenAIException - Error code: 401
+{'status': 401, 'title': 'Unauthorized', 'detail': 'Authentication failed'}
+Received Model Group=triage-model
+Available Model Group Fallbacks=None
 ```
 
-### Root cause
+This is the third workflow run showing HTTP 401 from NVIDIA NIM (runs #28209902312,
+#28210294811, #28210675694).
 
-The container was **restarted** (not redeployed) after the fresh `NVIDIA_API_KEY` was set in
-Coolify. Coolify only injects environment variables on **redeploy** — a restart keeps the old
-process env.
+### What is confirmed working
 
-Diagnostic evidence from this workflow run:
-- OpenAI probe (native gpt-4o-mini, no api_key field) → HTTP 200: `OPENAI_API_KEY` IS in the
-  container. The old key predates the restart and is still valid at OpenAI.
-- NVIDIA smoke test (openai/meta/llama-3.3-70b-instruct + os.environ/NVIDIA_API_KEY) → HTTP 401
-  "Authentication failed": the old NVIDIA key in the container is expired/revoked, and the
-  fresh key was never injected because the container was only restarted, not redeployed.
+- litellm-staging container is up and reachable (health check passed)
+- Both `NVIDIA_API_KEY` and `OPENAI_API_KEY` key names are present in Coolify env config
+- Container was fully redeployed (env injection confirmed)
+- `OPENAI_API_KEY` is valid and injected: OpenAI probe (native gpt-4o-mini, no api_key field) → HTTP 200
+- LiteLLM model registration for `triage-model` alias → HTTP 200 (registration itself succeeds)
+
+### Root cause (updated)
+
+The `NVIDIA_API_KEY` value stored in Coolify is being **rejected by the NVIDIA NIM API** with
+HTTP 401. The previous hypothesis (restart vs redeploy) no longer applies — the full redeploy
+confirmed that OPENAI_API_KEY is injected and working.
+
+The NVIDIA_API_KEY is present in the running container (key name confirmed by Coolify API, and
+the redeploy would have injected it), but when LiteLLM sends it to
+`https://integrate.api.nvidia.com/v1` using `os.environ/NVIDIA_API_KEY`, NVIDIA returns 401.
+
+Possible causes (founder to verify):
+1. The key value was entered incorrectly in Coolify (truncated, extra whitespace, wrong copy)
+2. The key is valid but not activated for `meta/llama-3.3-70b-instruct` model access in NVIDIA NIM
+3. The key belongs to a different NVIDIA service (e.g., NIM Microservices vs integrate.api.nvidia.com)
+4. The key was revoked or expired at NVIDIA's side after being generated
 
 ### Required action (founder)
 
-1. Go to https://coolify.inatechshell.ca
-2. Navigate to ops-hub-staging project → litellm-staging
-3. Confirm NVIDIA_API_KEY (and OPENAI_API_KEY if also rotated) are set correctly in the
-   Environment Variables tab
-4. Click Deploy (full redeploy — NOT Restart) to rebuild the container and inject current vars
-5. Wait for litellm-staging to show Running status (~2–5 minutes)
-6. Notify Production Manager: "litellm-staging redeployed"
-
-Production Manager will re-run configure-litellm-triage-model.yml immediately after notification.
+1. Go to https://build.nvidia.com → API Keys and verify the key value character-for-character
+2. Confirm the key has access to the NIM catalog model `meta/llama-3.3-70b-instruct` at
+   `https://integrate.api.nvidia.com/v1`
+3. If the key is wrong: update `NVIDIA_API_KEY` in Coolify UI → litellm-staging → Environment
+   Variables, then click Deploy (full redeploy)
+4. If the key is correct but still fails: generate a fresh key at https://build.nvidia.com,
+   update Coolify, and redeploy
+5. Notify Production Manager: "NVIDIA key updated and litellm-staging redeployed"
 
 ### What NOT to do
 
-Do NOT click Restart — restart keeps the old container process and does not inject updated env vars.
+Do NOT click Restart after updating the key — only Deploy (full redeploy) injects updated env vars.
 
-### Why not automated
+### Additional confirmed data point (run #28210675694)
 
-Coolify API restart/redeploy causes a full image rebuild (10+ min outage). Per runbook policy,
-Production Manager does not initiate Coolify redeployments via API — only via UI. This protects
-against accidental outages during business hours.
+The OpenAI probe in step 7 passed (HTTP 200) in both run #28210294811 and #28210675694.
+This confirms `OPENAI_API_KEY` is live and valid in the running container. If NVIDIA cannot
+be resolved, OpenAI can serve as the sole provider temporarily.
+
+A ready-to-trigger workflow has been committed to unblock once NVIDIA is fixed:
+`.github/workflows/register-litellm-openai-fallback.yml`
 
 ### After resolution
 
-Production Manager action on receipt of "redeployed" notification:
-1. Run: gh workflow run configure-litellm-triage-model.yml --ref main
-2. Verify all smoke test steps pass (HTTP 200, NVIDIA NIM serving)
-3. Close FQ-40, update WORK.md T-22 status
+Production Manager action on receipt of notification:
+1. Run: `gh workflow run configure-litellm-triage-model.yml --repo admin-nutshell/ops-hub-00`
+2. Verify NVIDIA smoke test passes (HTTP 200)
+3. On NVIDIA pass: `gh workflow run register-litellm-openai-fallback.yml --repo admin-nutshell/ops-hub-00`
+4. Verify both NVIDIA and OpenAI final tests pass (HTTP 200 each)
+5. Close FQ-40, update WORK.md T-22 status
 
 ---
