@@ -1,39 +1,40 @@
-name: Configure LiteLLM — triage-model alias (NVIDIA NIM primary)
+name: Configure LiteLLM — triage-model alias (NVIDIA primary + OpenAI fallback)
 
-# Registers "triage-model" alias with NVIDIA NIM as the sole provider under
-# both the new "triage-model" alias AND the legacy "meta/llama-3.3-70b-instruct"
-# alias. OpenAI fallback is excluded until the OPENAI_API_KEY probe step confirms
-# that the key is live in the running container (see probe step below).
+# Registers "triage-model" and the legacy "meta/llama-3.3-70b-instruct" alias
+# under TWO providers:
+#   1. NVIDIA NIM (primary)  — openai/meta/llama-3.3-70b-instruct via NVIDIA api_base
+#   2. OpenAI gpt-4o-mini (fallback) — native LiteLLM OpenAI provider, no api_key
+#      field needed; LiteLLM reads OPENAI_API_KEY from env automatically.
 #
-# Background: OpenAI entries using "os.environ/OPENAI_API_KEY" return HTTP 401
-# with the literal reference string passed to OpenAI (runs #28209223649 and
-# #28209522067). Two hypotheses:
-#   A. OPENAI_API_KEY is absent from the running container (set in Coolify config
-#      after the last deploy — vars are injected only on redeploy, not restart).
-#   B. LiteLLM does not resolve os.environ/ on the native OpenAI provider path.
-# The probe step (step 8a) tests hypothesis A using native gpt-4o-mini with no
-# api_key (LiteLLM reads OPENAI_API_KEY from env automatically for native OpenAI).
-# Its result determines the next action (see step 8a inline docs).
+# LiteLLM load-balances across entries for the same alias. When NVIDIA returns
+# 4xx/5xx, LiteLLM retries the request against the OpenAI entry automatically.
+#
+# Background: os.environ/OPENAI_API_KEY passed as api_key= returns HTTP 401 with
+# the literal string (runs #28209223649 and #28209522067). Root cause: LiteLLM
+# does NOT resolve os.environ/ refs on the native OpenAI provider path. Fix:
+# register without the api_key field — LiteLLM reads OPENAI_API_KEY from the
+# container env automatically for the native gpt- model space.
 #
 # Run order:
 #   1.  Verify litellm-staging health + resolve sslip.io URL
 #   2.  Verify NVIDIA_API_KEY + OPENAI_API_KEY key names are in Coolify config
 #   3.  Purge all stale model registrations
-#   4.  Register NVIDIA NIM under "triage-model"         (id: nvidia-primary)
-#   5.  Register NVIDIA NIM under legacy alias           (id: nvidia-legacy)
-#   6.  Verify both aliases appear in /model/info (1 NVIDIA entry each)
-#   7.  Probe OpenAI — gpt-4o-mini, no api_key (non-blocking diagnostic)
-#   8.  Smoke test "triage-model" — assert HTTP 200, confirms NVIDIA routing
-#   9.  Smoke test legacy alias   — assert HTTP 200 (app code path)
-#  10.  Report LITELLM_DEFAULT_MODEL status in ops-hub-app env (informational)
+#   4.  Register NVIDIA NIM under "triage-model"              (id: nvidia-primary)
+#   5.  Register NVIDIA NIM under legacy alias                (id: nvidia-legacy)
+#   6.  Register OpenAI gpt-4o-mini under "triage-model"      (id: openai-fallback)    [continue-on-error]
+#   7.  Register OpenAI gpt-4o-mini under legacy alias        (id: openai-legacy-fallback) [continue-on-error]
+#   8.  Verify both aliases in /model/info (NVIDIA + OpenAI entries each)
+#   9.  Smoke test "triage-model" — assert HTTP 200
+#  10.  Smoke test legacy alias   — assert HTTP 200 (app code path)
+#  11.  Report LITELLM_TRIAGE_MODEL status in ops-hub-app env (informational)
 #
 # Prerequisites (GitHub Actions secrets):
 #   COOLIFY_API_TOKEN  — Coolify admin API token
 #   LITELLM_MASTER_KEY — LiteLLM admin key (must match Coolify env var)
 #
 # NVIDIA_API_KEY must be set in litellm-staging Coolify env vars.
-# OPENAI_API_KEY must be set AND the container must have been redeployed
-# after the var was added before OpenAI entries can be wired in.
+# OPENAI_API_KEY must be set AND the container must have been redeployed after
+# the var was added (Coolify injects vars on redeploy only, not restart).
 # This workflow never receives or logs raw API key values.
 #
 # Rollback:
@@ -271,7 +272,84 @@ jobs:
             exit 1
           fi
 
-      # ── 6. Verify both aliases appear in /model/info ─────────────────────────
+      # ── 6. Register OpenAI gpt-4o-mini fallback under triage-model ─────────────
+      # No api_key field — LiteLLM's native OpenAI provider reads OPENAI_API_KEY
+      # from the container env automatically. Passing os.environ/OPENAI_API_KEY as
+      # api_key= passes the literal string to the OpenAI SDK, which returns 401.
+      # continue-on-error so NVIDIA smoke tests still run if OPENAI_API_KEY is not
+      # yet injected (Coolify injects vars on redeploy, not restart).
+      - name: Register OpenAI gpt-4o-mini fallback — triage-model
+        id: reg-openai-triage
+        continue-on-error: true
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg alias "$TRIAGE_ALIAS" \
+            '{
+              model_name: $alias,
+              litellm_params: {
+                model: "gpt-4o-mini"
+              },
+              model_info: {
+                id: "openai-fallback",
+                description: "OpenAI gpt-4o-mini — triage-model fallback (2026-06-26)"
+              }
+            }')
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/reg_oai_triage.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/new" -d "$PAYLOAD")
+          echo "POST /model/new (openai-fallback) -> HTTP $HTTP"
+          jq . /tmp/reg_oai_triage.json 2>/dev/null || cat /tmp/reg_oai_triage.json | head -10 || true
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Registered: $TRIAGE_ALIAS -> OpenAI gpt-4o-mini (id: openai-fallback)"
+          elif [ "$HTTP" = "400" ]; then
+            MSG=$(jq -r '.error // .detail // .message // empty' /tmp/reg_oai_triage.json 2>/dev/null || true)
+            echo "HTTP 400 — model may already exist: $MSG — proceeding"
+          else
+            echo "WARNING: POST /model/new HTTP $HTTP — OpenAI fallback not registered for $TRIAGE_ALIAS"
+            echo "If OPENAI_API_KEY is missing from the running container, redeploy litellm-staging"
+            echo "from Coolify UI (not restart) so Coolify injects the var, then re-run this workflow."
+          fi
+
+      # ── 7. Register OpenAI gpt-4o-mini fallback under legacy alias ───────────
+      - name: Register OpenAI gpt-4o-mini fallback — legacy alias
+        id: reg-openai-legacy
+        continue-on-error: true
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg alias "$LEGACY_ALIAS" \
+            '{
+              model_name: $alias,
+              litellm_params: {
+                model: "gpt-4o-mini"
+              },
+              model_info: {
+                id: "openai-legacy-fallback",
+                description: "OpenAI gpt-4o-mini — legacy alias fallback (2026-06-26)"
+              }
+            }')
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/reg_oai_legacy.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/new" -d "$PAYLOAD")
+          echo "POST /model/new (openai-legacy-fallback) -> HTTP $HTTP"
+          jq . /tmp/reg_oai_legacy.json 2>/dev/null || cat /tmp/reg_oai_legacy.json | head -10 || true
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Registered: $LEGACY_ALIAS -> OpenAI gpt-4o-mini (id: openai-legacy-fallback)"
+          elif [ "$HTTP" = "400" ]; then
+            MSG=$(jq -r '.error // .detail // .message // empty' /tmp/reg_oai_legacy.json 2>/dev/null || true)
+            echo "HTTP 400 — model may already exist: $MSG — proceeding"
+          else
+            echo "WARNING: POST /model/new HTTP $HTTP — OpenAI fallback not registered for $LEGACY_ALIAS"
+          fi
+
+      # ── 8. Verify both aliases appear in /model/info ─────────────────────────
       - name: Verify model registrations in /model/info
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/model_info_post.json -w "%{http_code}" \
@@ -290,7 +368,7 @@ jobs:
           TRIAGE_COUNT=$(jq '[.data[] | select(.model_name == "'"$TRIAGE_ALIAS"'")] | length' \
             /tmp/model_info_post.json 2>/dev/null || echo 0)
           jq -r '.data[] | select(.model_name == "'"$TRIAGE_ALIAS"'") |
-            "  id=\(.model_info.id // "none")  model=\(.litellm_params.model // "?")  api_base=\(.litellm_params.api_base // "(none)")"' \
+            "  id=\(.model_info.id // "none")  model=\(.litellm_params.model // "?")  api_base=\(.litellm_params.api_base // "(native)")"' \
             /tmp/model_info_post.json 2>/dev/null || true
 
           echo ""
@@ -298,13 +376,13 @@ jobs:
           LEGACY_COUNT=$(jq '[.data[] | select(.model_name == "'"$LEGACY_ALIAS"'")] | length' \
             /tmp/model_info_post.json 2>/dev/null || echo 0)
           jq -r '.data[] | select(.model_name == "'"$LEGACY_ALIAS"'") |
-            "  id=\(.model_info.id // "none")  model=\(.litellm_params.model // "?")  api_base=\(.litellm_params.api_base // "(none)")"' \
+            "  id=\(.model_info.id // "none")  model=\(.litellm_params.model // "?")  api_base=\(.litellm_params.api_base // "(native)")"' \
             /tmp/model_info_post.json 2>/dev/null || true
 
           echo ""
           PASS=true
           if [ "$TRIAGE_COUNT" -ge 1 ]; then
-            echo "triage-model: $TRIAGE_COUNT entry/entries confirmed"
+            echo "triage-model: $TRIAGE_COUNT entry/entries confirmed (NVIDIA primary + OpenAI fallback if injected)"
           else
             echo "ERROR: triage-model has 0 entries (expected at least 1)"
             PASS=false
@@ -317,97 +395,9 @@ jobs:
           fi
           [ "$PASS" = "false" ] && exit 1 || true
 
-      # ── 7. Probe OpenAI key resolution (non-blocking diagnostic) ────────────
-      # Registers gpt-4o-mini WITHOUT api_key. LiteLLM's native OpenAI provider
-      # reads OPENAI_API_KEY from the container env automatically (no os.environ/
-      # reference needed — standard env var lookup).
-      #
-      # Result interpretation:
-      #   HTTP 200 → OPENAI_API_KEY IS in the running container. The os.environ/
-      #              reference syntax is the issue (LiteLLM may not resolve it on
-      #              the native OpenAI code path). Fix: re-add OpenAI entries to
-      #              both aliases WITHOUT the api_key field.
-      #   HTTP 401 → OPENAI_API_KEY is NOT in the running container. The Coolify
-      #              config shows the var (step 2 passes) but it was not injected
-      #              because the container was NOT redeployed after the var was
-      #              added (Coolify injects vars on redeploy, not restart).
-      #              Fix: Coolify UI → litellm-staging → Redeploy (full rebuild).
-      #              After redeploy, re-run this workflow. Escalate to FOUNDER_QUEUE
-      #              if OPENAI_API_KEY value is unknown.
-      #
-      # This step is non-blocking (continue-on-error: true). Its result informs
-      # the next action but does not block the NVIDIA smoke tests.
-      - name: Probe OpenAI key resolution (non-blocking diagnostic)
-        continue-on-error: true
-        run: |
-          PROBE_PAYLOAD=$(jq -n '{
-            model_name: "openai-probe",
-            litellm_params: {
-              model: "gpt-4o-mini"
-            },
-            model_info: {
-              id: "openai-probe",
-              description: "Diagnostic: native OpenAI, no api_key — reads OPENAI_API_KEY from env"
-            }
-          }')
-
-          PREG=$(curl -s --max-time 30 -o /tmp/probe_reg.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $LITELLM_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            "$LITELLM_BASE/model/new" -d "$PROBE_PAYLOAD")
-          echo "POST /model/new (openai-probe) -> HTTP $PREG"
-
-          PTEST=$(jq -n '{
-            model: "openai-probe",
-            max_tokens: 10,
-            temperature: 0,
-            messages: [{role: "user", content: "Say: ok"}]
-          }')
-
-          PHTTP=$(curl -s --max-time 30 -o /tmp/probe_result.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $LITELLM_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            "$LITELLM_BASE/chat/completions" -d "$PTEST")
-          echo "POST /chat/completions (model=openai-probe) -> HTTP $PHTTP"
-          jq . /tmp/probe_result.json 2>/dev/null || cat /tmp/probe_result.json | head -10 || true
-
-          echo ""
-          if [ "$PHTTP" = "200" ]; then
-            echo "OPENAI PROBE: PASS (HTTP 200)"
-            echo "OPENAI_API_KEY is present in the running container."
-            echo "Next action: re-add OpenAI entries to both aliases WITHOUT the api_key field"
-            echo "  (LiteLLM native OpenAI auto-reads OPENAI_API_KEY — no os.environ/ reference needed)"
-          else
-            echo "OPENAI PROBE: FAIL (HTTP $PHTTP)"
-            echo "DIAGNOSIS: OPENAI_API_KEY is likely absent from the running container process."
-            echo "The var exists in Coolify config (step 2 passed) but was not injected."
-            echo "Coolify only injects env vars on REDEPLOY, not on restart."
-            echo ""
-            echo "REQUIRED ACTION:"
-            echo "  1. Coolify UI -> litellm-staging -> Redeploy (full rebuild, not restart)"
-            echo "  2. Wait for Running status"
-            echo "  3. Re-run this workflow — the probe should pass after redeploy"
-            echo ""
-            echo "If OPENAI_API_KEY value is unknown, escalate to FOUNDER_QUEUE.md"
-          fi
-
-          # Clean up probe entry — it served its diagnostic purpose
-          PROBE_DEL=$(curl -s --max-time 30 -o /tmp/probe_del.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $LITELLM_KEY" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            "$LITELLM_BASE/model/delete" \
-            -d '{"id": "openai-probe"}')
-          echo "POST /model/delete (openai-probe) -> HTTP $PROBE_DEL"
-
-          # Exit 0 regardless — this step is diagnostic only
-          exit 0
-
-      # ── 8. Smoke test — triage-model alias ───────────────────────────────────
-      # Verifies the new alias is serving. Only NVIDIA NIM is registered under
-      # this alias, so HTTP 200 confirms NVIDIA is routing correctly.
+      # ── 9. Smoke test — triage-model alias ───────────────────────────────────
+      # Verifies the alias is serving. With NVIDIA primary + OpenAI fallback both
+      # registered, HTTP 200 confirms at least one provider is routing correctly.
       - name: Smoke test — POST /chat/completions (triage-model)
         id: smoke-triage
         run: |
@@ -441,13 +431,13 @@ jobs:
             # Determine which provider served based on model string in response
             case "$MODEL_FIELD" in
               *nvidia*|*llama*|*meta*)
-                echo "Served by         : NVIDIA NIM (expected)"
+                echo "Served by         : NVIDIA NIM (primary)"
                 ;;
               *gpt*|*openai*)
-                echo "Served by         : OpenAI gpt-4o-mini"
-                echo "NOTE: NVIDIA may be initialising — this is acceptable."
-                echo "      If NVIDIA is consistently bypassed, check litellm-staging"
-                echo "      container logs for NVIDIA_API_KEY errors."
+                echo "Served by         : OpenAI gpt-4o-mini (fallback)"
+                echo "NOTE: NVIDIA returned 4xx/5xx and LiteLLM fell back to OpenAI."
+                echo "      Check litellm-staging logs for NVIDIA_API_KEY errors if"
+                echo "      NVIDIA is the desired primary provider."
                 ;;
               *)
                 echo "Served by         : $MODEL_FIELD (unrecognised — check response above)"
@@ -466,8 +456,8 @@ jobs:
             exit 1
           fi
 
-      # ── 9. Smoke test — legacy alias (existing app code path) ────────────────
-      # Verifies ticket-triage.ts will not break after this workflow runs.
+      # ── 10. Smoke test — legacy alias (existing app code path) ──────────────
+      # Verifies the legacy alias is still live for any code still using it.
       - name: Smoke test — POST /chat/completions (legacy alias)
         id: smoke-legacy
         run: |
@@ -494,7 +484,6 @@ jobs:
             echo "Response content  : $CONTENT"
             echo "model field       : $MODEL_FIELD"
             echo "Legacy alias: WORKING (HTTP 200)"
-            echo "ticket-triage.ts will continue to function without code changes"
           else
             echo "ERROR: legacy alias smoke test failed (HTTP $HTTP)"
             jq . /tmp/completion_legacy.json 2>/dev/null || \
@@ -502,13 +491,10 @@ jobs:
             exit 1
           fi
 
-      # ── 10. Check LITELLM_DEFAULT_MODEL in ops-hub-app (informational) ───────
-      # ticket-triage.ts does NOT read this env var (model is hardcoded at line 71).
-      # This step is informational: confirms whether the var exists and what it is.
-      # Action required: Tech Lead must update ticket-triage.ts to read
-      #   process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"
-      # and then set LITELLM_TRIAGE_MODEL=triage-model in ops-hub-app Coolify env.
-      - name: Report LITELLM_DEFAULT_MODEL status in ops-hub-app
+      # ── 11. Report LITELLM_TRIAGE_MODEL status in ops-hub-app ──────────────────
+      # Informational: confirms whether LITELLM_TRIAGE_MODEL is set on ops-hub-app.
+      # If not set, run provision-litellm-triage-model-env.yml to add it.
+      - name: Report LITELLM_TRIAGE_MODEL status in ops-hub-app
         if: always()
         run: |
           APP_UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' \
@@ -528,75 +514,53 @@ jobs:
             exit 0
           fi
 
-          CURRENT_DEFAULT=$(jq -r \
-            '.[] | select(.key == "LITELLM_DEFAULT_MODEL") | .value' \
-            /tmp/app_envs.json 2>/dev/null || echo "")
           CURRENT_TRIAGE=$(jq -r \
             '.[] | select(.key == "LITELLM_TRIAGE_MODEL") | .value' \
             /tmp/app_envs.json 2>/dev/null || echo "")
 
           echo ""
           echo "=== ops-hub-app env var status ==="
-          if [ -n "$CURRENT_DEFAULT" ]; then
-            echo "LITELLM_DEFAULT_MODEL = $CURRENT_DEFAULT"
-          else
-            echo "LITELLM_DEFAULT_MODEL: not set"
-          fi
           if [ -n "$CURRENT_TRIAGE" ]; then
-            echo "LITELLM_TRIAGE_MODEL  = $CURRENT_TRIAGE"
+            echo "LITELLM_TRIAGE_MODEL = $CURRENT_TRIAGE"
+            echo "ticket-triage.ts and ticket-respond.ts will route to: $CURRENT_TRIAGE"
           else
-            echo "LITELLM_TRIAGE_MODEL  : not set"
+            echo "LITELLM_TRIAGE_MODEL: NOT SET"
+            echo ""
+            echo "Action required: run provision-litellm-triage-model-env.yml to set"
+            echo "  LITELLM_TRIAGE_MODEL=triage-model on ops-hub-app. Until then the app"
+            echo "  falls back to the default alias 'triage-model' from the ?? expression"
+            echo "  in ticket-triage.ts and ticket-respond.ts."
           fi
-          echo ""
-          echo "IMPORTANT: ticket-triage.ts does NOT read either of these vars."
-          echo "  Line 71 hardcodes: model: \"meta/llama-3.3-70b-instruct\""
-          echo "  Line 173 hardcodes: model: \"meta/llama-3.3-70b-instruct\" (LangFuse metadata)"
-          echo ""
-          echo "Required Tech Lead change (ticket T-22):"
-          echo "  1. In classifyTicket() (line 71), replace the literal string with:"
-          echo '       model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"'
-          echo "  2. In triageOneTicket() generation metadata (line 173), replace with:"
-          echo '       model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"'
-          echo "  3. Set LITELLM_TRIAGE_MODEL=triage-model in ops-hub-app Coolify env vars."
-          echo "  Until that change ships, the app calls the legacy alias and will keep"
-          echo "  working (legacy alias is live and serving from this workflow run)."
 
       # ── Summary ──────────────────────────────────────────────────────────────
       - name: Summary
         if: always()
         run: |
           echo "============================================================"
-          echo " LITELLM TRIAGE-MODEL CONFIGURATION — 2026-06-25"
+          echo " LITELLM TRIAGE-MODEL CONFIGURATION — 2026-06-26"
           echo "============================================================"
           echo ""
-          echo " Aliases registered (NVIDIA NIM only):"
+          echo " Aliases registered (NVIDIA primary + OpenAI fallback):"
           echo "   triage-model"
-          echo "     nvidia-primary : openai/meta/llama-3.3-70b-instruct + NVIDIA api_base"
+          echo "     nvidia-primary       : openai/meta/llama-3.3-70b-instruct + NVIDIA api_base"
+          echo "     openai-fallback      : gpt-4o-mini (native, no api_key — reads OPENAI_API_KEY from env)"
           echo "   meta/llama-3.3-70b-instruct  (legacy safety net)"
-          echo "     nvidia-legacy  : openai/meta/llama-3.3-70b-instruct + NVIDIA api_base"
+          echo "     nvidia-legacy        : openai/meta/llama-3.3-70b-instruct + NVIDIA api_base"
+          echo "     openai-legacy-fallback: gpt-4o-mini (native, no api_key)"
           echo ""
-          echo " OpenAI fallback: BLOCKED (see probe step above)"
-          echo "   os.environ/OPENAI_API_KEY passed as literal to OpenAI SDK (HTTP 401)"
-          echo "   in runs #28209223649 and #28209522067. Probe step determines root cause:"
-          echo "   HTTP 200 probe -> os.environ/ syntax issue, fix = omit api_key field"
-          echo "   HTTP 401 probe -> OPENAI_API_KEY absent from container, fix = redeploy"
+          echo " Routing: LiteLLM load-balances across entries for each alias."
+          echo "   NVIDIA 4xx/5xx → automatic retry against OpenAI gpt-4o-mini."
+          echo "   OpenAI entries require OPENAI_API_KEY in the running container"
+          echo "   (Coolify injects on redeploy only — if step 6/7 returned non-200,"
+          echo "   redeploy litellm-staging from Coolify UI and re-run this workflow)."
           echo ""
-          echo " App impact:"
-          echo "   - ticket-triage.ts continues to work (legacy alias is live, NVIDIA serving)"
-          echo "   - No app restart required"
-          echo ""
-          echo " Required code change (Tech Lead / T-22):"
-          echo "   src/inngest/ticket-triage.ts"
-          echo "   - Line  71: model: \"meta/llama-3.3-70b-instruct\""
-          echo '     Replace:  model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"'
-          echo "   - Line 173: model: \"meta/llama-3.3-70b-instruct\" (LangFuse metadata)"
-          echo '     Replace:  model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model"'
-          echo "   Then set LITELLM_TRIAGE_MODEL=triage-model in ops-hub-app Coolify env."
-          echo "   Until that change ships, the app calls the legacy alias and will keep"
-          echo "   working (legacy alias is live and serving NVIDIA NIM from this run)."
+          echo " App routing:"
+          echo "   ticket-triage.ts + ticket-respond.ts read LITELLM_TRIAGE_MODEL env var"
+          echo "   (default: 'triage-model'). See step 11 for current env var status."
           echo ""
           echo " Monitoring window: 24 hours"
           echo "   - Sentry: watch for LiteLLM 4xx/5xx errors"
-          echo "   - LangFuse: watch triage generation traces for NVIDIA provider anomalies"
+          echo "   - LangFuse: watch triage/respond generation traces — model field shows"
+          echo "     which provider served (NVIDIA vs OpenAI)"
           echo "   - UptimeRobot: litellm-staging uptime"
           echo "============================================================"
