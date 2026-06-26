@@ -131,7 +131,7 @@ jobs:
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$LITELLM_UUID/envs" \
-            -d "$(jq -n --arg k "DATABASE_URL" --arg v "$DB_USER_URL" '{key:$k,value:$v,is_build_time:false}')")
+            -d "$(jq -n --arg k "DATABASE_URL" --arg v "$DB_USER_URL" '{key:$k,value:$v}')")
           echo "POST DATABASE_URL → HTTP $HTTP"
           if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
             echo "ERROR: failed to set DATABASE_URL (HTTP $HTTP)"; cat /tmp/set.json | head -10; exit 1
@@ -172,7 +172,7 @@ jobs:
             -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$LITELLM_UUID/envs" \
-            -d "$(jq -n '{key:"DISABLE_SCHEMA_UPDATE",value:"true",is_build_time:false}')")
+            -d "$(jq -n '{key:"DISABLE_SCHEMA_UPDATE",value:"true"}')")
           echo "POST DISABLE_SCHEMA_UPDATE=true → HTTP $HTTP"
           if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
             echo "ERROR: failed to set DISABLE_SCHEMA_UPDATE (HTTP $HTTP)"; cat /tmp/setfreeze.json | head -10; exit 1

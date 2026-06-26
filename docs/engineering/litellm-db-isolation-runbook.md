@@ -116,7 +116,12 @@ FROM pg_roles WHERE rolname = 'litellm_db_user';
 SELECT nspname AS schema, pg_get_userbyid(nspowner) AS owner
 FROM pg_namespace WHERE nspname = 'litellm';   -- owner must be litellm_db_user
 
--- c) The role canNOT create in public (expect: f).
+-- c) CREATE-in-public check (clutter-prevention only — NOT the wall).
+--    On PG15 (Supabase) this is 'f'. The destroy-guarantee does NOT depend on it:
+--    even a role WITH create-in-public still cannot DROP/ALTER tables it does not own.
+--    So a 't' here means "LiteLLM could create stray tables in public" (cosmetic),
+--    NOT "the wall failed". The wall is checks (b)+(d)+(e): owns litellm, owns no
+--    public table. Do not abort on (c) alone.
 SELECT has_schema_privilege('litellm_db_user', 'public', 'CREATE') AS can_create_in_public;
 
 -- d) The role does NOT own any public table (expect: 0 rows).
@@ -134,12 +139,14 @@ ORDER BY tablename;
 
 - (a) `rolcanlogin = t`; every other attribute `f`.
 - (b) `owner = litellm_db_user`.
-- (c) `can_create_in_public = f`.
+- (c) `can_create_in_public = f` on PG15 (Supabase). A `t` (PG14 default) is
+  cosmetic only — see the note in the query; it is **not** a wall failure.
 - (d) zero rows.
 - (e) all 6 Ops Hub tables present, `tableowner = postgres` (or `supabase_admin`).
 
-If (c) returns `t` or (b) is wrong, **stop** — the wall is not in place; do not
-proceed to Step 2.
+If (b) is wrong, or (d)/(e) show `litellm_db_user` owning any `public` table,
+**stop** — the wall is not in place; do not proceed to Step 2. Check (c) alone does
+**not** gate the rollout.
 
 ---
 
