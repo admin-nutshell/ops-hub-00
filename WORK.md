@@ -35,7 +35,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | ✅ **Done (2026-06-22).** 11 eval cases (PR #65, T-16); `Eval Gate` CI job validates all 11 eval files on every PR (PR #75, T-17). |
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ✅ **Done (2026-06-23).** Sentry: error verified in Sentry dashboard; `SENTRY_DSN` in Coolify. UptimeRobot: 3 monitors active — ops-hub-staging health, litellm-staging health, TTS app health. FQ-17 resolved. |
 | 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | ✅ **Done (2026-06-23).** Email sent to `support@inatechshell.ca` → forwarded to `info@inatechshell.ca` (Google Workspace) → fetched by FreeScout via Google Workspace OAuth IMAP → ticket appeared in FreeScout inbox. Mailbox: ITS Support (info@inatechshell.ca). Admin: haytham@inatechshell.ca. **M1 COMPLETE — all 10 foundation criteria green.** |
-| 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🔒 Sprint 2 deliverable (T-21) — foundation complete; drill requires live ticket pipeline |
+| 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🟢 **UNBLOCKED (2026-06-27)** — pipeline fully operational; FQ-40 + FQ-41 both closed; pre-flight all green. Runbook: `docs/retros/sprint-2-incident-drill.md`. Next: send test email to `support@inatechshell.ca` and execute drill. |
 | 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Sprint 2 deliverable (T-22) — requires AI triage + response pipeline (Sprint 2 scope) |
 | 13 | First monthly founder briefing produced | PM | 🔗 Scheduled: July 31 |
 
@@ -138,7 +138,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-26: Synthetic incident drill + post-mortem (M1 criterion #11) | Prod Manager + Tech Lead | T-23 (full pipeline live) | Scripted ticket flows FreeScout → triaged → responded → resolved end-to-end; `docs/retros/sprint-2-incident-drill.md` authored (timeline, tool outputs, action items); **M1 #11 ✅** | Jul 17 |
+| T-26: Synthetic incident drill + post-mortem (M1 criterion #11) | Prod Manager + Tech Lead | T-23 (full pipeline live) | 🟢 **READY (2026-06-27)** — FQ-40 + FQ-41 closed; pipeline E2E validated (2026-06-26). Runbook at `docs/retros/sprint-2-incident-drill.md`. **Next action: send test email to `support@inatechshell.ca` and execute drill.** Scripted ticket flows FreeScout → triaged → responded → resolved end-to-end; post-mortem doc completed; **M1 #11 ✅** | Jul 17 |
 | T-27: DNC project onboarding + ticket flow (M1 criterion #12) | Solutions Architect | T-26 validated, T-04 ✅ | DNC Project Context schema instance committed; routing rules configured; real DNC ticket triaged + responded in FreeScout; **M1 #12 ✅** | Jul 18 |
 
 ### Milestone tail (non-blocking)
@@ -186,11 +186,12 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 **✅ T-23 DONE (2026-06-26) — merged to main.**
 `src/inngest/ticket-respond.ts` live: `respondTicket` + `respondOneTicket`/`draftResponse`/`postFreeScoutNote`. 11 unit tests merged (T-24 confirmed). Activation wire: `triageTicket` emits `ops-hub/ticket.respond` on successful triage → `respondTicket` picks it up. State machine: `new → triaged → responded`.
 
-**⏳ T-23 PENDING — production activation requires 3 ops actions (Production Manager):**
-1. Apply migration `supabase/migrations/20260625000000_t23_responded_state.sql` to staging via Supabase SQL Editor (adds `'responded'` to `tickets.state` CHECK — without it, the UPDATE throws a check-violation)
-2. Provision `FREESCOUT_DB_URL` (freescout_user DSN, needs INSERT on threads) in Coolify ops-hub-app
-3. Provision `FREESCOUT_BOT_USER_ID` (FreeScout user ID for the bot account) in Coolify ops-hub-app
-Until all 3 are set, `ticket-respond` is registered but dormant — tickets stay `triaged`, no data corruption.
+**✅ T-23 PRODUCTION ACTIVE (confirmed 2026-06-26 session):**
+All 3 ops actions confirmed done (2026-06-26):
+1. Migration `20260625000000_t23_responded_state.sql` applied to staging ✅
+2. `FREESCOUT_DB_URL` provisioned in Coolify ops-hub-app ✅
+3. `FREESCOUT_BOT_USER_ID=1` provisioned in Coolify ops-hub-app ✅
+Pipeline E2E validated: test ticket "Test 06 pipeline check - DB" → triaged → responded → FreeScout note visible in UI.
 
 **✅ Security refactoring — PR #175 merged to main (2026-06-27).**
 Two-pass audit complete. Changes: S-1/S-2 removed unauthenticated debug endpoints (`/debug/litellm-connectivity` + `/debug-sentry`); S-3 added `FREESCOUT_BOT_USER_ID` numeric validation; S-4 capped LiteLLM error body at 200 chars; deps: vitest 2→3 (5 CVEs resolved), prettier/sentry/inngest/typescript-eslint bumped; cleanups: `createLazyPool()` factory + `escapeXml`/`Urgency`/`URGENCIES` extracted to `utils.ts`; shared test helpers in `__tests__/helpers.ts`; `helloWorld` scaffold removed; `server.setTimeout(30_000)` added. Build clean, 140 tests passed.
@@ -238,29 +239,25 @@ No FOUNDER_QUEUE items raised for arch decisions — none are founder-owned per 
 **T-06 (test plan) done. T-19 done (2026-06-21):** first integration test `src/integration/ticket-state-machine.test.ts` written — project→tenant→ticket(`new`)→assert→update(`triaged`)→assert→teardown (reverse-FK). Vitest + `@supabase/supabase-js`. Self-skips when `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` absent so CI stays green without secrets. Connects via `service_role` (RLS bypass) as a stopgap — **must migrate to `ops_hub_app_login` once T-12 (Vault + login role) lands** (`// TODO T-12` in file). Reconciled the stale CI wiring: `pr-checks.yml` integration guard + `package.json test:integration` repointed `tests/integration` → `src/integration` (matches the spec'd test path). PR opened. Local `pnpm lint`/`typecheck`/`test`/`test:integration` all green; `--frozen-lockfile` verified after adding supabase-js.
 
 ### Production Manager
-**🟢 ACTIVE (2026-06-26)**
+**🟢 PIPELINE FULLY OPERATIONAL (2026-06-27)**
 
-**Full pipeline diagnostic — COMPLETE (2026-06-26, diagnose-freescout-imap.yml run #28215344117)**
+**✅ FQ-41 CLOSED (2026-06-27, diagnose-freescout-imap.yml run #28274619900)**
 
-Investigation triggered by: emails sent to support@inatechshell.ca not appearing in FreeScout; Inngest shows incomplete workflows.
+All blockers confirmed resolved:
+1. ops-hub-app `/health`: HTTP 200 ✅
+2. `ops_hub_app` GRANT on `conversations`/`threads`: **2 rows — SELECT on both** ✅
+3. FreeScout conversations: **3 rows**, threads: **8 rows** — email fetch active ✅
+4. `FREESCOUT_DB_URL` + `FREESCOUT_BOT_USER_ID=1`: provisioned in Coolify ✅ (confirmed 2026-06-26)
+5. T-23 migration (`responded` state): applied ✅ (confirmed 2026-06-26)
+6. LiteLLM `triage-model` (gpt-4o-mini): HTTP 200 ✅ (FQ-40 closed 2026-06-27)
+7. PR #175 (security refactor) + PR #176 (LiteLLM bypass): merged ✅
 
-Confirmed findings:
-1. ops-hub-app /health: HTTP 200 — healthy.
-2. FreeScout cron: RUNNING. Coolify logs confirm `[NOTICE] ** [scheduling] Starting cron` at 02:46 UTC.
-3. FreeScout ran fresh DB migrations at 02:45–02:47 UTC 2026-06-26. Log: `[WARN] ** [freescout] Empty database detected - migrating + creating admin user`. Admin recreated as `info@inatechshell.ca`. This is the SECOND Supabase reset recovery — all FreeScout table data + GRANTs were wiped.
-4. `ops_hub_app` GRANT on `conversations`/`threads`: **MISSING (0 rows confirmed)**. The GRANT issued during the first DB reset recovery was lost again.
-5. `conversations` table: EXISTS, 0 rows. FreeScout has not fetched any emails since the reset.
-6. `failed_jobs` table: 0 rows — no Laravel queue failures.
-7. Inngest incomplete workflows: root cause is 0 conversations → `pollFreeScout` polls successfully but finds nothing to dispatch.
-8. LiteLLM (OpenAI gpt-4o-mini): confirmed working — HTTP 200 (run #28211295785).
+**T-26 pre-flight: ALL GREEN — drill can proceed immediately.**
 
-Root cause chain: Supabase reset wiped FreeScout tables → FreeScout detected empty DB + re-migrated → mailbox OAuth connection needs re-authorization after re-migration → emails not fetched → conversations = 0 → pollFreeScout dispatches no `ticket.triage` events → Inngest pipeline stalls.
+FreeScout was restarted by the diagnostic run. `pollFreeScout` will pick up any queued conversations on the next cron tick.
 
-Two required founder actions (FQ-41):
-- Re-issue GRANT: `docker exec $(docker ps -qf 'name=sgnpza1r8jlq19f0dboqpzq6') php artisan tinker --execute="DB::statement('GRANT SELECT ON conversations, threads TO ops_hub_app');"`
-- FreeScout UI: `https://freescout-staging.inatechshell.ca/mailboxes` → Edit "ITS Support" → Incoming Email → verify/re-authorize Google OAuth → Save + Test Connection
-
-Mailbox confirmed via check-freescout-mailboxes.yml runs #28215633753 and #28215745025: mailbox row EXISTS (id=1 "ITS Support", imap.gmail.com:993 SSL, created_at=02:48 UTC, updated_at=03:03 UTC). Founder already re-configured and likely re-authorized OAuth. The GRANT is the only confirmed remaining blocker.
+**Prior diagnostic (2026-06-26, run #28215344117) — historical:**
+FreeScout DB was reset (02:45 UTC) wiping GRANTs and all data. At time of filing FQ-41, GRANT = 0 rows, conversations = 0. Both resolved by 2026-06-27.
 
 **✅ triage-model alias configuration — DONE via OpenAI bypass (2026-06-27, FQ-40 CLOSED).**
 NVIDIA 401 unresolvable after 3 attempts. Solution: `configure-litellm-openai-only.yml` (PR #176)
