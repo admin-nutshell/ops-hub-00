@@ -192,8 +192,11 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 3. Provision `FREESCOUT_BOT_USER_ID` (FreeScout user ID for the bot account) in Coolify ops-hub-app
 Until all 3 are set, `ticket-respond` is registered but dormant — tickets stay `triaged`, no data corruption.
 
-**🟢 Security refactoring — PR #175 open (2026-06-26), ready to merge.**
+**✅ Security refactoring — PR #175 merged to main (2026-06-27).**
 Two-pass audit complete. Changes: S-1/S-2 removed unauthenticated debug endpoints (`/debug/litellm-connectivity` + `/debug-sentry`); S-3 added `FREESCOUT_BOT_USER_ID` numeric validation; S-4 capped LiteLLM error body at 200 chars; deps: vitest 2→3 (5 CVEs resolved), prettier/sentry/inngest/typescript-eslint bumped; cleanups: `createLazyPool()` factory + `escapeXml`/`Urgency`/`URGENCIES` extracted to `utils.ts`; shared test helpers in `__tests__/helpers.ts`; `helloWorld` scaffold removed; `server.setTimeout(30_000)` added. Build clean, 140 tests passed.
+
+**✅ FQ-40 CLOSED — PR #176 merged + LiteLLM reconfigured (2026-06-27).**
+`configure-litellm-openai-only.yml` merged and triggered (run #28274212266). NVIDIA bypassed entirely; `gpt-4o-mini` registered as both `triage-model` and `meta/llama-3.3-70b-instruct` aliases. Both smoke tests HTTP 200. Ticket pipeline unblocked.
 
 **✅ T-21 DONE (2026-06-23).** `pollFreeScout` cron verified end-to-end: two tickets confirmed in Supabase (`freescout_conversation_id: 6 + 7`), dedup working. FQ-31/33/34 resolved. PR #140 merged.
 
@@ -259,42 +262,10 @@ Two required founder actions (FQ-41):
 
 Mailbox confirmed via check-freescout-mailboxes.yml runs #28215633753 and #28215745025: mailbox row EXISTS (id=1 "ITS Support", imap.gmail.com:993 SSL, created_at=02:48 UTC, updated_at=03:03 UTC). Founder already re-configured and likely re-authorized OAuth. The GRANT is the only confirmed remaining blocker.
 
-**triage-model alias configuration — BLOCKED ON FQ-40 (updated 2026-06-26, run #28210675694 — third 401).**
-
-Run #28210675694 was triggered after the user confirmed NVIDIA_API_KEY was "corrected" in Coolify
-and litellm-staging was fully redeployed. The 401 persists for the third time. OpenAI probe
-confirmed passing (HTTP 200) for the second time — OPENAI_API_KEY is live and valid.
-
-Confirmed from run #28210675694:
-- litellm-staging health: HTTP 200
-- Both NVIDIA_API_KEY and OPENAI_API_KEY key names present in Coolify env config: confirmed
-- Container redeployed (env injection working): confirmed — OPENAI probe HTTP 200
-- OPENAI_API_KEY valid and injected: confirmed — gpt-4o-mini response HTTP 200
-- NVIDIA model registrations succeeded: HTTP 200 on POST /model/new for both aliases
-- NVIDIA smoke test (triage-model): HTTP 401 "Authentication failed" from NVIDIA NIM
-- OpenAI fallback NOT registered (gate: NVIDIA smoke must pass — still not met)
-
-The "corrected" key value is still being rejected by NVIDIA NIM. The key value itself is incorrect
-or no longer valid at NVIDIA's side. FQ-40 updated. Two consecutive corrected-key deploys both fail
-— escalating urgency.
-
-Workflow committed for when NVIDIA resolves: `.github/workflows/register-litellm-openai-fallback.yml`
-
-Next actions:
-1. Founder: at https://build.nvidia.com — generate a fresh API key, copy the full value
-   character-for-character, update NVIDIA_API_KEY in Coolify → litellm-staging → Deploy (not restart)
-   Notify: "NVIDIA key regenerated and litellm-staging redeployed" → FQ-40
-2. Production Manager (on FQ-40 resolved): `gh workflow run configure-litellm-triage-model.yml --repo admin-nutshell/ops-hub-00`
-3. On NVIDIA pass: `gh workflow run register-litellm-openai-fallback.yml --repo admin-nutshell/ops-hub-00`
-4. Verify both NVIDIA and OpenAI final tests pass in run log
-5. Tech Lead (after both green): update `src/inngest/ticket-triage.ts` lines 71+173
-
-PRs merged (all on main):
-- PR #159: initial configure-litellm-triage-model.yml workflow
-- PR #160: NVIDIA `nvidia_nim/` prefix → `openai/` + NVIDIA api_base fix
-- PR #161: OpenAI `os.environ/` prefix fix attempt (openai/ + api_base)
-- PR #162: NVIDIA-only aliases + OpenAI probe diagnostic (current main)
-- FQ-40 (open): NVIDIA_API_KEY value rejected by NVIDIA NIM — three 401s across three runs
+**✅ triage-model alias configuration — DONE via OpenAI bypass (2026-06-27, FQ-40 CLOSED).**
+NVIDIA 401 unresolvable after 3 attempts. Solution: `configure-litellm-openai-only.yml` (PR #176)
+purges all existing registrations, registers gpt-4o-mini under both aliases. Run #28274212266: all
+9 steps green, both smoke tests HTTP 200. LiteLLM is now NVIDIA-free. triage-model → gpt-4o-mini.
 
 **LiteLLM model re-registration — ✅ DONE (2026-06-25).** triageTicket was returning LiteLLM 400 "Invalid model name passed in model=meta/llama-3.3-70b-instruct". Root cause: STORE_MODEL_IN_DB registration wiped by full litellm-staging redeploys during T-22 network fixes (PRs #143–#145). Fix: PR #155 merged (5668ab73), `fix-litellm-model-registration.yml` run #28201769554 — all 9 steps green in 13s. POST /chat/completions HTTP 200, model response: "OK". Registration confirmed: model_id=48ea73ba-7c3c-4a88-a261-921558c3fc19, NVIDIA_API_KEY present on litellm-staging. LITELLM_DEFAULT_MODEL not set in ops-hub-app (triageTicket specifies model name explicitly). 24h monitoring window started. Rollback: POST /model/delete id=48ea73ba-7c3c-4a88-a261-921558c3fc19 (< 5 min).
 

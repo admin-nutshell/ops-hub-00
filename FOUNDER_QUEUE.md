@@ -110,12 +110,21 @@ This has happened twice. Root cause: GRANTs on FreeScout-owned tables are lost w
 
 ---
 
-## FQ-40 — NVIDIA_API_KEY value rejected by NVIDIA NIM (401 Unauthorized)
+## ✅ FQ-40 — NVIDIA_API_KEY value rejected by NVIDIA NIM (401 Unauthorized) — RESOLVED 2026-06-27
 
 **Filed:** 2026-06-26
-**Updated:** 2026-06-26 (third run #28210675694 — user confirmed key "corrected" + redeployed; still 401)
+**Resolved:** 2026-06-27 — bypassed NVIDIA entirely; gpt-4o-mini is now the sole triage-model provider
 **Filed by:** Production Manager
-**Blocks:** T-22 (ticket-triage live validation), LiteLLM triage-model smoke test
+**Was blocking:** T-22 (ticket-triage live validation), LiteLLM triage-model smoke test
+
+**Resolution:** Created and merged PR #176 (`configure-litellm-openai-only.yml`), then triggered
+`configure-litellm-openai-only` workflow (run #28274212266). All 9 steps passed:
+- Purged all existing model registrations (NVIDIA aliases removed)
+- Registered `gpt-4o-mini` as `triage-model` alias → HTTP 200 smoke test ✅
+- Registered `gpt-4o-mini` as `meta/llama-3.3-70b-instruct` alias → HTTP 200 smoke test ✅
+NVIDIA not used. OPENAI_API_KEY confirmed working. No founder action required.
+
+**Original issue (archived for reference):**
 
 ### Current symptom (runs #28210294811 and #28210675694)
 
