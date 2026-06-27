@@ -49,6 +49,13 @@ type DraftInput = {
   routing: string;
 };
 
+export type DraftResult = {
+  text: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  resolvedModel?: string;
+};
+
 export type RespondResult =
   | { state: "responded"; conversation_id: string }
   | { skipped: true; reason: string };
@@ -102,7 +109,7 @@ const TONE: Record<Urgency, string> = {
  * Instructions live in the system message; untrusted ticket content lives in
  * the user message — the same injection-resistant split used by ticket-triage.
  */
-export async function draftResponse(input: DraftInput): Promise<string> {
+export async function draftResponse(input: DraftInput): Promise<DraftResult> {
   const litellmUrl = process.env.LITELLM_URL;
   const litellmKey = process.env.LITELLM_MASTER_KEY;
   if (!litellmUrl || !litellmKey) {
@@ -156,14 +163,21 @@ export async function draftResponse(input: DraftInput): Promise<string> {
   }
 
   const json = (await resp.json()) as {
+    model?: string;
     choices: Array<{ message: { content: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
-  const draft = json.choices?.[0]?.message?.content?.trim() ?? "";
-  if (!draft) {
+  const text = json.choices?.[0]?.message?.content?.trim() ?? "";
+  if (!text) {
     // Empty draft → throw so Inngest retries; never deliver an empty note.
     throw new Error("LiteLLM returned an empty draft");
   }
-  return draft;
+  return {
+    text,
+    promptTokens: json.usage?.prompt_tokens,
+    completionTokens: json.usage?.completion_tokens,
+    resolvedModel: json.model,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -288,9 +302,9 @@ export async function respondOneTicket(
     input: [{ role: "user", content: ticket.title }],
   });
 
-  let draft: string;
+  let result: DraftResult;
   try {
-    draft = await draftResponse({
+    result = await draftResponse({
       title: ticket.title,
       body: ticket.body,
       urgency,
@@ -302,7 +316,17 @@ export async function respondOneTicket(
     await langfuse?.flushAsync();
     throw err;
   }
-  generation?.end({ output: draft });
+  generation?.end({
+    output: result.text,
+    ...(result.resolvedModel && { model: result.resolvedModel }),
+    ...(result.promptTokens !== undefined && {
+      usage: {
+        promptTokens: result.promptTokens,
+        completionTokens: result.completionTokens ?? 0,
+        totalTokens: (result.promptTokens ?? 0) + (result.completionTokens ?? 0),
+      },
+    }),
+  });
   await langfuse?.flushAsync();
 
   // 3. Deliver the note to FreeScout. If this throws, the ticket stays 'triaged'.
@@ -310,7 +334,7 @@ export async function respondOneTicket(
   // them leaves a delivered note with state still 'triaged'; the retry re-drafts
   // and re-delivers (a duplicate note). Acceptable for the scaffold; dedup is a
   // documented follow-up (ADR-0003).
-  await deliver(conversationId, draft);
+  await deliver(conversationId, result.text);
 
   // 4. Advance state → 'responded'.
   const updateClient = await pool.connect();

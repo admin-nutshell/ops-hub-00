@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { draftResponse, respondOneTicket, type FreeScoutDelivery } from "../ticket-respond";
+import { draftResponse, respondOneTicket, type FreeScoutDelivery, type DraftResult } from "../ticket-respond";
 import { makeClient, makePool, mockFetchOk } from "./helpers";
 
 /**
@@ -49,14 +49,14 @@ describe("draftResponse", () => {
 
   it("returns the trimmed draft and POSTs the correct prompt shape", async () => {
     const fetchMock = mockFetchOk("  Hi there, sorry you hit this. We are on it.  ");
-    const draft = await draftResponse({
+    const result = await draftResponse({
       title: "Login broken",
       body: "Cannot login",
       urgency: "high",
       category: "auth",
       routing: "engineering",
     });
-    expect(draft).toBe("Hi there, sorry you hit this. We are on it.");
+    expect(result.text).toBe("Hi there, sorry you hit this. We are on it.");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -81,7 +81,7 @@ describe("draftResponse", () => {
 
   it("escapes XML-special characters so ticket content cannot break delimiters", async () => {
     const fetchMock = mockFetchOk("draft");
-    await draftResponse({
+    const _result = await draftResponse({
       title: "<script>alert(1)</script>",
       body: "a & b < c",
       urgency: "low",
