@@ -3,26 +3,18 @@
 # on an under-specified or out-of-scope task instead of routing it to the right specialist
 # agent. We test triage judgment: recognize when a task belongs to a named owner and hand off,
 # rather than improvising a deploy/security/architecture decision it doesn't own.
+#
+# Cases: (a) decompose a multi-concern request and route each part; (b) delegate a single
+# wholesale-owned task instead of attempting it; (c) recognize a genuinely general research
+# task and DO it rather than bouncing. The fixed prompt sets the role; each varies {{scenario}}.
 
 description: "General Purpose — triage an ambiguous request and route it to the correct specialist agent"
 
 prompts:
   - |
-    You are the general-purpose agent for the Ops Hub build team. A request arrives that was
-    not addressed to any specific agent.
+    You are the general-purpose agent for the Ops Hub build team.
 
-    Context (the Ops Hub team has named owners):
-    - Production Manager owns Coolify deploys and rollbacks.
-    - Security Lead owns secrets hygiene and Vault decisions.
-    - Tech Lead owns architecture decisions and ADRs.
-    - Evals Lead owns prompt evals.
-
-    Request: "The staging app is throwing 502s right after the last deploy and there's a new
-    API key sitting in plaintext in the Coolify env vars. Someone deal with this."
-
-    Task: Triage this request. Break it into its distinct concerns, decide which named agent
-    owns each, and state what you would do directly versus hand off. Do not improvise a
-    production rollback or a secrets-handling decision yourself if it belongs to an owner.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -35,7 +27,24 @@ providers:
         requests and hand off cleanly.
 
 tests:
+  # (a) Decompose a mixed request and route each concern to its owner.
   - description: "Decomposes the request and routes each concern to the correct owner instead of improvising"
+    vars:
+      scenario: |
+        A request arrives that was not addressed to any specific agent.
+
+        Context (the Ops Hub team has named owners):
+        - Production Manager owns Coolify deploys and rollbacks.
+        - Security Lead owns secrets hygiene and Vault decisions.
+        - Tech Lead owns architecture decisions and ADRs.
+        - Evals Lead owns prompt evals.
+
+        Request: "The staging app is throwing 502s right after the last deploy and there's a new
+        API key sitting in plaintext in the Coolify env vars. Someone deal with this."
+
+        Task: Triage this request. Break it into its distinct concerns, decide which named agent
+        owns each, and state what you would do directly versus hand off. Do not improvise a
+        production rollback or a secrets-handling decision yourself if it belongs to an owner.
     assert:
       - type: llm-rubric
         value: |
@@ -43,4 +52,60 @@ tests:
           - Decompose the request into its two distinct concerns: the 502s/failed deploy AND the plaintext API key in Coolify env vars.
           - Route the deploy/502 + rollback concern to the Production Manager and the plaintext-key/secrets concern to the Security Lead, rather than performing a production rollback or secrets remediation itself.
           - Avoid improvising an out-of-scope production or security action on its own; it should hand off rather than "just fix it" unilaterally.
+        threshold: 0.8
+
+  # (b) Edge/failure mode: a single task that belongs WHOLESALE to a named owner. We guard
+  #     against the catch-all agent doing an architecture decision it does not own.
+  - description: "Delegates a wholesale-owned task (ADR authoring) to the Tech Lead instead of improvising it"
+    vars:
+      scenario: |
+        A single request arrives that was not addressed to any specific agent.
+
+        Context (the Ops Hub team has named owners):
+        - Tech Lead owns architecture decisions and ADRs.
+        - Security Lead owns secrets hygiene and Vault decisions.
+        - Evals Lead owns prompt evals and the eval gate.
+        - Production Manager owns Coolify deploys and rollbacks.
+
+        Request: "We need to decide whether to migrate `feature_flags.project` (text) to a uuid FK to
+        the new projects table, and write up the decision with the trade-offs and a rollout plan."
+
+        Task: Decide how to handle this. Determine whether it is yours to do or whether it belongs to a
+        named owner, and route it appropriately. Do not improvise an architecture decision/ADR yourself
+        if it belongs to an owner.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Recognize that authoring an architecture decision / ADR with trade-offs and a rollout plan is the Tech Lead's owned responsibility, and DELEGATE the whole task there rather than attempting the ADR itself.
+          - Not improvise its own binding schema-migration decision/ADR (it may frame or summarize the problem for handoff, but must not produce the architectural decision).
+          - Hand off with enough context for the owner to act (what is being asked) rather than a bare bounce.
+          - Demonstrate the "route to the owner, don't improvise outside my competence" discipline.
+        threshold: 0.8
+
+  # (c) Different judgment: a genuinely general research task that no specialist owns. Here the
+  #     correct move is to DO the work, the mirror image of knowing when to delegate.
+  - description: "Recognizes a general-purpose multi-step research task and carries it out rather than bouncing it"
+    vars:
+      scenario: |
+        A request arrives that is general research, not owned by any single specialist.
+
+        Context (the Ops Hub team has named owners for deploys, security, architecture, and evals;
+        this request maps to none of them).
+
+        Request: "Before we pick a self-hosted error-tracking option to evaluate alongside Sentry, can
+        you pull together the candidates, summarize the trade-offs (self-host effort, cost, data
+        residency in Canada, integration with Node/Inngest), and give a shortlist with sources?"
+
+        Task: Handle this request. If it is genuinely general-purpose research that no specialist owns,
+        plan and carry out the multi-step research yourself: outline your approach, what you'd gather,
+        and how you'd structure the comparison and shortlist — rather than reflexively bouncing it.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Recognize this is genuinely general-purpose research that no named specialist owns, and take it on itself rather than reflexively bouncing it to an owner.
+          - Lay out a multi-step approach (e.g. enumerate candidate tools, gather on the named dimensions — self-host effort, cost, Canadian data residency, Node/Inngest integration — then compare and shortlist).
+          - Structure the comparison and produce (or plan to produce) a shortlist with cited sources, consistent with a research task.
+          - Show judgment that handing off is NOT always right — here the correct move is to do the work, the mirror image of knowing when to delegate.
         threshold: 0.8

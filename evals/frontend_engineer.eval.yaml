@@ -3,6 +3,10 @@
 # states (not just happy path), WCAG AA accessibility, and multi-tenant data scoping in the
 # UI. The failure mode is a "looks fine" happy-path-only component. We test that the design
 # response accounts for all states and accessibility.
+#
+# Cases: (a) design a ticket list with all states + a11y + tenant scoping; (b) catch a11y
+# issues in a teammate's component; (c) handle loading/error/not-found states (with the
+# tenant-isolation nuance) in a portal view. The fixed prompt sets the role; each varies {{scenario}}.
 
 description: "Frontend Engineer — design the ops dashboard ticket list with all states and accessibility"
 
@@ -10,15 +14,7 @@ prompts:
   - |
     You are the Frontend Engineer agent for the Ops Hub.
 
-    Context:
-    - Build the founder-facing ops dashboard "open tickets" list (React/Next.js + Tailwind).
-    - Data comes from a Supabase-backed API, scoped per tenant; the founder view aggregates
-      across tenants but tenants must only ever see their own tickets.
-    - Target: WCAG AA, responsive at 1280/1024/768.
-
-    Task: Describe how you would build this ticket-list surface. Cover the component states
-    you will implement, the accessibility measures, and how you ensure no cross-tenant data
-    is shown. Do not just describe the happy-path render.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -31,7 +27,19 @@ providers:
         multi-tenant data scoping so no cross-tenant data is ever visible.
 
 tests:
+  # (a) Design from scratch: all states, AA accessibility, tenant scoping.
   - description: "Covers loading/empty/error states, WCAG AA accessibility, and tenant scoping — not just happy path"
+    vars:
+      scenario: |
+        Context:
+        - Build the founder-facing ops dashboard "open tickets" list (React/Next.js + Tailwind).
+        - Data comes from a Supabase-backed API, scoped per tenant; the founder view aggregates
+          across tenants but tenants must only ever see their own tickets.
+        - Target: WCAG AA, responsive at 1280/1024/768.
+
+        Task: Describe how you would build this ticket-list surface. Cover the component states
+        you will implement, the accessibility measures, and how you ensure no cross-tenant data
+        is shown. Do not just describe the happy-path render.
     assert:
       - type: llm-rubric
         value: |
@@ -40,4 +48,58 @@ tests:
           - Address WCAG AA accessibility concretely (e.g. keyboard navigation, color contrast, screen-reader labels / ARIA), not just mention "accessible".
           - Address multi-tenant data scoping in the UI/data layer so tenants cannot see other tenants' tickets.
           - Treat responsiveness or usability as part of the deliverable rather than describing only a single desktop happy-path render.
+        threshold: 0.8
+
+  # (b) Edge/failure mode: review a component and catch concrete WCAG AA failures. We guard
+  #     against approving a "looks fine" but inaccessible component.
+  - description: "Identifies accessibility issues in a teammate's badge component and blocks until AA is met"
+    vars:
+      scenario: |
+        You are reviewing a teammate's new "ticket urgency" badge component before it merges.
+
+        Context (the implementation):
+        - Urgency is shown ONLY as a colored dot: red = critical, orange = high, green = normal, with
+          no text label and no other indicator.
+        - The dot is a <div> with an onClick that opens the ticket; there is no button/role, no
+          keyboard handler, and it is not focusable.
+        - The red/orange/green palette was picked for looks; contrast against the white card was not checked.
+        - Target is WCAG AA.
+
+        Task: Review this component for accessibility. Identify the specific WCAG AA issues and state
+        how each should be fixed before it can merge. Do not approve it as-is if it fails AA.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Identify color-only encoding as a WCAG AA failure (urgency conveyed by color alone, no text/shape/label) — it fails colorblind users — and require a non-color indicator (text label, icon, or aria-label).
+          - Identify the interaction/keyboard issues: a clickable <div> with no role/button semantics, not focusable, and no keyboard handler is not operable by keyboard or screen readers — require a real <button>/role, focusability, and keyboard activation.
+          - Flag the unverified color contrast against the card and require it to meet AA contrast ratios.
+          - Withhold approval until the AA issues are fixed rather than approving a "looks fine" component.
+        threshold: 0.8
+
+  # (c) Different surface: a tenant-portal detail view's data-loading behavior, including the
+  #     tenant-isolation nuance that a 404 must not reveal a ticket's existence.
+  - description: "Handles loading/error/not-found/empty states in a tenant portal view without leaking ticket existence"
+    vars:
+      scenario: |
+        You are building the tenant-facing ticket detail view in the portal.
+
+        Context:
+        - The view fetches a single ticket and its event timeline from a Supabase-backed API.
+        - The fetch can be slow, can fail (network/500), can return 404 (ticket not found or not owned
+          by this tenant), and can return an empty timeline.
+        - This is the tenant portal: a tenant must never see another tenant's ticket, and a 404 for a
+          ticket they don't own must not reveal that it exists.
+
+        Task: Describe how you would implement this view's data-loading behavior. Cover the loading,
+        error, not-found, and empty states explicitly, and how each is presented to the user — not just
+        the successful render.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Explicitly handle the loading state (e.g. skeleton/spinner) AND the error state (network/500) with a clear, recoverable presentation (e.g. retry), not just the happy render.
+          - Handle the not-found / 404 and empty-timeline cases distinctly (a found ticket with no events vs. a ticket that doesn't exist or isn't owned).
+          - Address the tenant-isolation/security nuance: a 404 for a ticket the tenant doesn't own must not confirm the ticket exists (no information leak across tenants), and the view must stay tenant-scoped.
+          - Treat the non-happy states as first-class deliverables with defined UX, consistent with "every surface ships loading, empty, and error states".
         threshold: 0.8
