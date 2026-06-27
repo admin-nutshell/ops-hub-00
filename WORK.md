@@ -35,7 +35,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 8 | At least 1 eval case per agent; eval gate enforced on PRs | Evals Lead | ✅ **Done (2026-06-22).** 11 eval cases (PR #65, T-16); `Eval Gate` CI job validates all 11 eval files on every PR (PR #75, T-17). |
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ✅ **Done (2026-06-23).** Sentry: error verified in Sentry dashboard; `SENTRY_DSN` in Coolify. UptimeRobot: 3 monitors active — ops-hub-staging health, litellm-staging health, TTS app health. FQ-17 resolved. |
 | 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | ✅ **Done (2026-06-23).** Email sent to `support@inatechshell.ca` → forwarded to `info@inatechshell.ca` (Google Workspace) → fetched by FreeScout via Google Workspace OAuth IMAP → ticket appeared in FreeScout inbox. Mailbox: ITS Support (info@inatechshell.ca). Admin: haytham@inatechshell.ca. **M1 COMPLETE — all 10 foundation criteria green.** |
-| 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | 🟢 **UNBLOCKED (2026-06-27)** — pipeline fully operational; FQ-40 + FQ-41 both closed; pre-flight all green. Runbook: `docs/retros/sprint-2-incident-drill.md`. Next: send test email to `support@inatechshell.ca` and execute drill. |
+| 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | ✅ **Done (2026-06-27).** "Silent Billing Failure" drill executed: email → FreeScout → Inngest triage → Inngest respond → Supabase `state=responded`. Confirmed by founder in FreeScout, Inngest, and Supabase. Post-mortem at `docs/retros/sprint-2-incident-drill.md`. |
 | 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Sprint 2 deliverable (T-22) — requires AI triage + response pipeline (Sprint 2 scope) |
 | 13 | First monthly founder briefing produced | PM | 🔗 Scheduled: July 31 |
 
@@ -138,8 +138,8 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-26: Synthetic incident drill + post-mortem (M1 criterion #11) | Prod Manager + Tech Lead | T-23 (full pipeline live) | 🟢 **READY (2026-06-27)** — FQ-40 + FQ-41 closed; pipeline E2E validated (2026-06-26). Runbook at `docs/retros/sprint-2-incident-drill.md`. **Next action: send test email to `support@inatechshell.ca` and execute drill.** Scripted ticket flows FreeScout → triaged → responded → resolved end-to-end; post-mortem doc completed; **M1 #11 ✅** | Jul 17 |
-| T-27: DNC project onboarding + ticket flow (M1 criterion #12) | Solutions Architect | T-26 validated, T-04 ✅ | DNC Project Context schema instance committed; routing rules configured; real DNC ticket triaged + responded in FreeScout; **M1 #12 ✅** | Jul 18 |
+| T-26: Synthetic incident drill + post-mortem (M1 criterion #11) | Prod Manager + Tech Lead | T-23 (full pipeline live) | ✅ **Done (2026-06-27).** "Silent Billing Failure" drill: email → FreeScout → triage → respond → `state=responded`. Confirmed by founder in FreeScout, Inngest, Supabase. Post-mortem: `docs/retros/sprint-2-incident-drill.md`. **M1 #11 ✅** | Jul 17 |
+| T-27: DNC project onboarding + ticket flow (M1 criterion #12) | Solutions Architect | T-26 validated, T-04 ✅ | 🟢 **CODE DONE (2026-06-27) — awaiting FQ-42 (founder: apply migration + 2 Coolify env vars).** Migration `20260627000000_t27_dnc_onboarding.sql` seeds TTS project + DNC tenant. `projects/tts/config.json` + `projects/tts/tenants/dnc.json` committed. Poller now reads `POLLING_PROJECT_ID`/`POLLING_TENANT_ID` from env (app-agnostic). FQ-29 resolved: DNC = Daily Needs Canada, first TTS tenant. | Jul 18 |
 
 ### Milestone tail (non-blocking)
 
