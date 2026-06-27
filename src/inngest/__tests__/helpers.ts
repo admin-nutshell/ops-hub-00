@@ -1,7 +1,7 @@
 import { vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 
-type QueryResponse = { rows: Record<string, unknown>[] };
+type QueryResponse = { rows: Record<string, unknown>[]; rowCount?: number | null };
 
 export function makeClient(queryResponses: QueryResponse[]): PoolClient {
   let callIndex = 0;
