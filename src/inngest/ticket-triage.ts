@@ -24,6 +24,9 @@ type ClassifyResult = {
   category: string;
   routing: string;
   reasoning: string;
+  promptTokens?: number;
+  completionTokens?: number;
+  resolvedModel?: string;
 };
 
 export type TriageResult =
@@ -88,9 +91,14 @@ export async function classifyTicket(title: string, body: string | null): Promis
   }
 
   const json = (await resp.json()) as {
+    model?: string;
     choices: Array<{ message: { content: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
   const raw = json.choices?.[0]?.message?.content?.trim() ?? "";
+  const promptTokens = json.usage?.prompt_tokens;
+  const completionTokens = json.usage?.completion_tokens;
+  const resolvedModel = json.model;
 
   try {
     // Strip optional markdown code fence that some models add despite instructions.
@@ -107,6 +115,9 @@ export async function classifyTicket(title: string, body: string | null): Promis
       category: String(parsed.category ?? "support"),
       routing: String(parsed.routing ?? "support"),
       reasoning: String(parsed.reasoning ?? ""),
+      promptTokens,
+      completionTokens,
+      resolvedModel,
     };
   } catch {
     return {
@@ -114,6 +125,9 @@ export async function classifyTicket(title: string, body: string | null): Promis
       category: "support",
       routing: "support",
       reasoning: `parse-failure: ${raw.slice(0, 80)}`,
+      promptTokens,
+      completionTokens,
+      resolvedModel,
     };
   }
 }
@@ -171,7 +185,17 @@ export async function triageOneTicket(
     throw err;
   }
 
-  generation?.end({ output: classification });
+  generation?.end({
+    output: classification,
+    ...(classification.resolvedModel && { model: classification.resolvedModel }),
+    ...(classification.promptTokens !== undefined && {
+      usage: {
+        promptTokens: classification.promptTokens,
+        completionTokens: classification.completionTokens ?? 0,
+        totalTokens: (classification.promptTokens ?? 0) + (classification.completionTokens ?? 0),
+      },
+    }),
+  });
   await langfuse?.flushAsync();
 
   // 3. Persist classification.

@@ -3,6 +3,10 @@
 # request gets generalized into a portable pattern or politely declined — never hardcoded to
 # TTS. The failure mode is a one-off integration that breaks Project #2 portability. We test
 # the generalize-or-decline judgment and portability discipline.
+#
+# Cases: (a) generalize a tenant integration request; (b) catch a tenant-isolation gap in a new
+# integration design; (c) scope a Project Context migration for a second project. The fixed
+# prompt sets the role; each case varies {{scenario}}.
 
 description: "Solutions Architect — handle a tenant integration request while preserving project portability"
 
@@ -10,16 +14,7 @@ prompts:
   - |
     You are the Solutions Architect agent for the Ops Hub.
 
-    Context:
-    - A TTS tenant wants their own Sentry project's alerts to open tickets in the Ops Hub via
-      a webhook. They've asked for a custom endpoint hardcoded to their Sentry org slug.
-    - The hub is multi-tenant and must stay portable: a hypothetical Project #2 should be able
-      to plug in without rework. Onboarding target is < 1 day per tenant.
-
-    Task: Decide how to satisfy this request. Determine whether to build it as a generalized,
-    reusable integration pattern or to decline the hardcoded form, and describe the integration
-    so it does not introduce TTS- or tenant-specific assumptions into the platform. Note who you
-    would loop in for security review.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -33,7 +28,20 @@ providers:
         integration touching auth, secrets, or tenant data.
 
 tests:
+  # (a) Generalize-or-decline: turn a hardcoded one-off into a portable pattern, route security.
   - description: "Generalizes the integration into a portable pattern (not a hardcoded one-off) and routes security review"
+    vars:
+      scenario: |
+        Context:
+        - A TTS tenant wants their own Sentry project's alerts to open tickets in the Ops Hub via
+          a webhook. They've asked for a custom endpoint hardcoded to their Sentry org slug.
+        - The hub is multi-tenant and must stay portable: a hypothetical Project #2 should be able
+          to plug in without rework. Onboarding target is < 1 day per tenant.
+
+        Task: Decide how to satisfy this request. Determine whether to build it as a generalized,
+        reusable integration pattern or to decline the hardcoded form, and describe the integration
+        so it does not introduce TTS- or tenant-specific assumptions into the platform. Note who you
+        would loop in for security review.
     assert:
       - type: llm-rubric
         value: |
@@ -41,4 +49,60 @@ tests:
           - Reject or rework the hardcoded-to-one-tenant form and instead propose a generalized, reusable Sentry->webhook integration pattern that is configured per tenant rather than baked into the platform.
           - Explicitly preserve project/tenant portability (the design must work for a future Project #2 / other tenants without rework, no TTS-specific hardcoding).
           - Route the integration to the Security Lead for review, since it touches an inbound webhook / auth / tenant data path.
+        threshold: 0.8
+
+  # (b) Edge/failure mode: a proposed integration design with a tenant-isolation hole (trusting
+  #     a body-supplied tenant id + shared static token). We guard against approving a cross-tenant leak.
+  - description: "Identifies the tenant-isolation gap in a webhook design (body-supplied tenant + shared token) and closes it"
+    vars:
+      scenario: |
+        A proposed integration design has come to you for review.
+
+        Context:
+        - The design lets each tenant register an inbound webhook so their monitoring tool can open
+          tickets in the Ops Hub. The proposal:
+          - One shared webhook URL for all tenants: POST /webhooks/alerts.
+          - The tenant is identified by a `tenant` field in the JSON body of the request.
+          - A single shared static bearer token (the same for every tenant) authenticates the webhook.
+          - The handler inserts a ticket using the body's `tenant` value as tenant_id.
+        - The hub is multi-tenant and fail-closed; cross-tenant data leaks are a hard stop.
+
+        Task: Review this design for tenant-isolation problems. Identify the gap(s) that would let one
+        tenant create or affect another tenant's data, and propose how to close them.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Identify the core tenant-isolation gap: trusting a `tenant` value from the request body (attacker-controlled) to set tenant_id lets any caller forge tickets for any tenant — especially with a single shared token that does not bind the caller to a tenant.
+          - Flag the shared static bearer token as inadequate (no per-tenant authentication; can't distinguish or scope tenants; can't be rotated per tenant), an auth/isolation weakness.
+          - Propose closing the gap: derive tenant identity from an authenticated, per-tenant credential (per-tenant secret/key, signed payload, or scoped endpoint) rather than from untrusted body input, and validate/scope the insert to that authenticated tenant.
+          - Loop in the Security Lead, since this touches auth, secrets, and tenant-data boundaries.
+        threshold: 0.8
+
+  # (c) Different task: scope onboarding Project #2 as config/data, not a code fork. Tests the
+  #     app-agnostic portability discipline at platform scale.
+  - description: "Scopes a Project Context migration for a second project as config, not a code fork"
+    vars:
+      scenario: |
+        The platform is onboarding its second project (Project #2), and you must scope what it takes
+        to stand up its "Project Context" without forking the codebase.
+
+        Context:
+        - Today the hub runs one project (TTS). The charter requires the platform to be app-agnostic:
+          nothing hardcoded to TTS; Project #2 should plug in with CONFIG only.
+        - Project Context includes business terms/glossary, KB/runbook seed content, triage routing
+          rules, SLA targets, and tenant/project identifiers.
+        - Onboarding target is < 1 day per project.
+
+        Task: Scope the Project Context migration/onboarding for Project #2. Identify what must be
+        config (not code), what TTS-specific assumptions might be lurking, and the steps to bring
+        Project #2 online without per-project code forks.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Frame Project #2 onboarding as config/data, not code: enumerate the Project Context pieces that must be parameterized per project (glossary/business terms, KB/runbook seed, routing rules, SLA targets, tenant/project IDs) so no codebase fork is needed.
+          - Actively hunt for lurking TTS-specific assumptions (hardcoded names, routing, terms, IDs) that would break portability, consistent with the app-agnostic charter.
+          - Lay out concrete onboarding steps to bring Project #2 online (seed Project Context, configure routing/SLAs, set project/tenant identifiers, validate isolation) toward the < 1 day target.
+          - Preserve multi-tenant/project isolation and portability throughout (Project #2's data and context must not bleed into TTS).
         threshold: 0.8

@@ -2,6 +2,10 @@
 # Why this eval exists: QA's core skill is designing a test plan that covers more than the
 # happy path — specifically edge cases and multi-tenant isolation, which is the highest-risk
 # class of bug in this product. We test for coverage breadth, not test syntax.
+#
+# Cases: (a) design a test plan covering edge + tenant isolation; (b) REVIEW a plan and catch
+# a missing critical integration path; (c) write acceptance criteria for an ambiguous edge
+# case. The fixed prompt sets the role; each case varies {{scenario}}.
 
 description: "QA Manager — design a test plan for the ticket-intake state machine including edge cases and tenant isolation"
 
@@ -9,14 +13,7 @@ prompts:
   - |
     You are the QA Manager agent for the Ops Hub.
 
-    Context:
-    - A new integration moves a ticket through the intake state machine: `new` -> `triaged`.
-    - Tickets arrive from FreeScout and are written to the Supabase `tickets` table.
-    - The system is multi-tenant; every ticket belongs to exactly one tenant.
-    - RLS is fail-closed; the agent path uses the `ops_hub_app` role.
-
-    Task: Design a test plan for this `new -> triaged` transition. Enumerate the cases you
-    would cover. Be explicit about happy path, edge/failure cases, and multi-tenant isolation.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -28,7 +25,18 @@ providers:
         and you explicitly test multi-tenant isolation for every data-touching change.
 
 tests:
+  # (a) Design from scratch: cover happy path + edges + cross-tenant isolation.
   - description: "Test plan covers happy path AND edge/failure cases AND explicit cross-tenant isolation"
+    vars:
+      scenario: |
+        Context:
+        - A new integration moves a ticket through the intake state machine: `new` -> `triaged`.
+        - Tickets arrive from FreeScout and are written to the Supabase `tickets` table.
+        - The system is multi-tenant; every ticket belongs to exactly one tenant.
+        - RLS is fail-closed; the agent path uses the `ops_hub_app` role.
+
+        Task: Design a test plan for this `new -> triaged` transition. Enumerate the cases you
+        would cover. Be explicit about happy path, edge/failure cases, and multi-tenant isolation.
     assert:
       - type: llm-rubric
         value: |
@@ -37,4 +45,62 @@ tests:
           - Enumerate at least two edge or failure cases (e.g. invalid/duplicate transition, missing required field, concurrent update, malformed FreeScout payload).
           - Include an explicit multi-tenant isolation test (e.g. a transition or read for tenant A must not affect or expose tenant B's tickets under the ops_hub_app / RLS path).
           - Frame the work as a structured test plan with distinct cases, not a single end-to-end check.
+        threshold: 0.8
+
+  # (b) Edge/failure mode: review someone else's plan and catch the untested critical branch
+  #     (escalation path). We guard against rubber-stamping a happy-path-only plan.
+  - description: "Reviews a test plan and identifies the missing critical integration path (escalation branch)"
+    vars:
+      scenario: |
+        A teammate submitted a test plan for review on the full triage pipeline
+        (FreeScout poll -> Inngest -> LiteLLM triage -> auto-response or escalation).
+
+        Their proposed plan covers:
+        - Unit tests for the triage classifier's output parsing.
+        - A happy-path integration test: a new ticket is polled, triaged, and auto-responded.
+        - A test that the LiteLLM call returns valid JSON.
+
+        Context:
+        - Auto-response only fires for low/normal urgency; critical/high tickets must ESCALATE
+          (no auto-response) and notify a human.
+        - The poller can re-deliver the same FreeScout conversation, so dedup is required.
+
+        Task: Review this test plan. Identify the most important coverage GAPS — especially any
+        critical integration path that is untested — before approving it. Be specific about what
+        is missing and why it matters.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Identify that the plan tests the auto-response happy path but does NOT cover the escalation path for critical/high tickets (no auto-response, human notified) — a critical untested integration branch.
+          - Flag at least one other real gap, e.g. the dedup / re-delivery path (same conversation polled twice must not be processed or responded to twice) or multi-tenant isolation across the pipeline.
+          - Withhold approval / treat the plan as incomplete rather than rubber-stamping it because the happy path passes.
+          - Be specific about WHY each gap matters (e.g. a mis-routed critical ticket auto-responding instead of escalating is a high-severity, customer-visible failure).
+        threshold: 0.8
+
+  # (c) Different skill: write acceptance criteria for an edge case where the expected
+  #     behavior is genuinely ambiguous — state assumptions, don't silently guess.
+  - description: "Writes testable acceptance criteria for an ambiguous edge case and surfaces the assumption"
+    vars:
+      scenario: |
+        A behavior needs acceptance criteria written before it can be built or tested.
+
+        Context:
+        - When the LiteLLM triage call returns output that is NOT valid JSON, or returns an urgency
+          value outside the allowed enum {critical|high|normal|low}, the expected behavior has never
+          been pinned down. Product hasn't said what "should" happen.
+        - The ticket is real and a customer is waiting; silently dropping it is unacceptable, but
+          auto-responding off a garbage classification is also unacceptable.
+
+        Task: Write clear, testable acceptance criteria for this edge case (malformed / out-of-enum
+        triage output). Where the expected behavior is genuinely ambiguous, state the assumption you
+        are making and what you would confirm, rather than guessing silently.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Produce concrete, testable acceptance criteria (e.g. Given/When/Then or equivalent) for malformed or out-of-enum triage output, not a vague description.
+          - Define a safe, non-lossy fallback behavior (e.g. the ticket is NOT silently dropped and is NOT auto-responded off a bad classification — instead it defaults to a safe urgency and/or is escalated/flagged for a human).
+          - Explicitly acknowledge that the expected behavior is ambiguous and surface the assumption being made plus what should be confirmed with product/owner, rather than silently inventing a single "correct" answer.
+          - Cover the observable / verifiable signals a test would assert on (e.g. ticket state, that no customer auto-response was sent, that an event/log/alert was raised).
         threshold: 0.8
