@@ -193,6 +193,14 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-33: M3 scoping — DNC production path | Solutions Architect | T-27 ✅ | ✅ **Done (2026-06-27, PR #190).** `docs/planning/m3-dnc-production.md` — per-component delta (Supabase, FreeScout, LiteLLM, env vars, DNS), 5-phase migration runbook, 9-item go/no-go checklist, risk register. FQ-43 filed: two founder decisions needed (DNC email routing + real ticket volume confirmation) before August infra sprint. | Jul 7 |
 | T-34: M2 close verification | PM | T-29 ✅, T-30 ✅, T-31 ✅, T-32 ✅ | All 6 M2 checklist items green; M2 declared done in DECISIONS.md; M3 target window set | Jul 11 |
 
+### Track D — Platform Completion (capability-complete)
+
+*Directive: build the missing charter pillars so the platform fully implements detect → triage → respond → **resolve** → **document** with **SLA enforcement**.*
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-35: Ticket resolution path + SLA monitoring + KB auto-learn | Tech Lead | T-23 ✅ (ticket-respond live) | 🔲 **PR #192 open (2026-06-27).** Three new Inngest functions: `ticket-resolve.ts` (auto-resolve cron + event handler, emits `ticket.resolved`), `sla-monitor.ts` (breach detection cron, logs to `audit_log`, optional FreeScout note), `kb-learn.ts` (extracts KB article from resolved ticket via LiteLLM, inserts into `kb_articles`). 4 unit tests green. No migration required — all states/tables already exist. **Pending: PR CI + merge + Coolify deploy.** | Jul 4 |
+
 ---
 
 ## Blocked items
