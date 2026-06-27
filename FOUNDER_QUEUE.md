@@ -4,6 +4,81 @@
 
 ---
 
+## FQ-45 — ADR-0004 LiteLLM DB isolation: run Step 1 SQL + set GitHub secret
+
+**Filed:** 2026-06-27
+**Filed by:** Tech Lead
+**Needs:** Execution (SQL + GitHub Actions secret)
+**Blocking:** LiteLLM table wipe risk on every redeploy. Has wiped `public.tenants` / `public.tickets` 3× in staging. Agent-dispatched workflow (`fix-litellm-schema-isolation.yml`) is ready — blocked on Steps 1 + 2 below, which only `postgres` can run.
+**Full runbook:** `docs/engineering/litellm-db-isolation-runbook.md`
+
+**Context:** LiteLLM's Prisma startup runs DDL against the schema its DB user can reach. Because LiteLLM has been connecting as a `public`-capable user, it has wiped Ops Hub tables (tenants, tickets, etc.) 3 times. ADR-0004 solves this with a permission wall: a dedicated `litellm_db_user` role that owns the `litellm` schema and has zero access to `public`.
+
+**What needs to happen (2 founder steps, then agent dispatches):**
+
+**Step 1 — Run SQL in Supabase SQL Editor** (project `yocoljutbiizdbfraapx`, connected as `postgres`)
+
+> Generate a strong password first (e.g. run `openssl rand -base64 24`). Use it where you see `__REPLACE__`.
+
+Copy-paste from `docs/engineering/litellm-db-isolation-runbook.md` §Step 1 (the full SQL block). Key operations:
+1. `CREATE ROLE litellm_db_user LOGIN PASSWORD '__REPLACE__'` (with NOSUPERUSER NOBYPASSRLS)
+2. `DROP SCHEMA IF EXISTS litellm CASCADE; CREATE SCHEMA litellm AUTHORIZATION litellm_db_user`
+3. `ALTER ROLE litellm_db_user SET search_path = litellm`
+4. `REVOKE ALL ON SCHEMA public FROM litellm_db_user`
+
+**Step 2 — Set GitHub Actions secret** (repo: `admin-nutshell/ops-hub-00` → Settings → Secrets → Actions)
+
+Add secret `LITELLM_DB_USER_URL` with value:
+```
+postgresql://litellm_db_user.<project-id>:<password>@<supavisor-host>:6543/postgres?schema=litellm&pgbouncer=true
+```
+Replace `<project-id>` with `yocoljutbiizdbfraapx`, `<password>` with the one you generated, `<supavisor-host>` with the Supabase Transaction Mode pooler host (same host used in `OPS_HUB_APP_LOGIN_URL`, different port).
+
+**After Steps 1 + 2 are done:** Notify Tech Lead ("FQ-45 Steps 1+2 done"). Agent dispatches the GitHub Actions workflow `fix-litellm-schema-isolation.yml` with `mode=apply-wall`, then `mode=freeze-schema`. Full 6-step runbook at `docs/engineering/litellm-db-isolation-runbook.md`.
+
+**Options:**
+- **Do it now (Recommended)** — runs 15–30 min; eliminates the #1 ops risk (table wipe on next LiteLLM redeploy)
+- **Defer** — safe only if LiteLLM is not redeployed before this is applied
+
+**Recommendation:** Do it now. The next LiteLLM redeploy (routine or triggered by Coolify auto-update) will wipe staging tables again. The workflow is ready to dispatch the moment you confirm.
+
+**Deadline:** Before next LiteLLM redeploy — treat as **ASAP / high priority**
+
+---
+
+## FQ-44 — FREESCOUT_DB_URL: provision env var to activate draft delivery + SLA breach notes
+
+**Filed:** 2026-06-27
+**Filed by:** Tech Lead
+**Needs:** Infrastructure provisioning (2 env vars in Coolify)
+**Blocking:** Two capabilities that T-35 (PR #192) just built — but both need direct FreeScout DB access to post internal notes:
+1. `ticket-respond`: Inngest function that posts the AI-drafted reply as a FreeScout internal note. Currently **dormant** — the ticket state advances to `responded` but no note is posted to FreeScout. A human cannot see the draft.
+2. `sla-monitor`: Posts a ⚠️ SLA BREACH note to FreeScout conversations that exceed the 60-min response target. Without the env var, only the `audit_log` entry is created (not visible in FreeScout).
+
+**What needs to happen:**
+
+**Step 1 — Add `FREESCOUT_DB_URL` to Coolify ops-hub-app env vars**
+
+In Coolify → `ops-hub-app` → Environment Variables, add:
+```
+FREESCOUT_DB_URL = postgresql://freescout_user.yocoljutbiizdbfraapx:<freescout-db-password>@<supavisor-host>:5432/postgres
+```
+Use the same `DB_HOST`, `DB_USERNAME`, `DB_PASSWORD` values from the FreeScout Coolify service env vars to construct this. **Do NOT use the pooler port 6543** — FreeScout's raw DB user needs a direct connection (port 5432, Session Mode).
+
+> Security note: `freescout_user` has table-level ownership on `conversations` and `threads` only. ops_hub_app's write path is separate. This connection is used exclusively to INSERT into the `threads` table (internal notes).
+
+**Step 2 — Confirm `FREESCOUT_BOT_USER_ID=1` is already set**
+
+This should already be in Coolify from T-27. If not, add it. The bot user ID is the FreeScout admin user ID (haytham@inatechshell.ca → ID 1).
+
+**After setting both env vars:** Click Deploy (full redeploy, not Restart) in Coolify. Then notify Tech Lead: "FQ-44 done — FREESCOUT_DB_URL set". Agent will verify a test note appears in FreeScout.
+
+**Recommendation:** Do Step 1+2 and redeploy. Takes 5 minutes. Activates the AI draft delivery that's been dormant since T-23.
+
+**Deadline:** Non-blocking — but ticket-respond has been dormant since T-23 (June 25). This has been the only remaining gap in the respond capability.
+
+---
+
 ## FQ-43 — M3 production go-live: two decisions needed before August infrastructure work begins
 
 **Filed:** 2026-06-27  
