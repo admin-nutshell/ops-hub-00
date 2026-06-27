@@ -4,6 +4,40 @@
 
 ---
 
+## FQ-43 — M3 production go-live: two decisions needed before August infrastructure work begins
+
+**Filed:** 2026-06-27  
+**Filed by:** Solutions Architect (T-33 scoping)  
+**Needs:** Decision (A) + Authorization (B)  
+**Blocking:** M3 planning; infrastructure provisioning cannot start until (A) is decided  
+**Full scoping doc:** `docs/planning/m3-dnc-production.md`
+
+**Context:** T-27 proved the DNC pipeline on staging. M3 = DNC on production with real customer tickets. Before agents can begin the prod infrastructure build (target: mid-August), two founder decisions are required.
+
+**Item A — DNC support email address (Decision)**
+
+What email do real DNC customers send support tickets to?
+
+- **Option A (Recommended):** New DNC domain alias, e.g. `support@dailyneedscanada.ca` → prod FreeScout IMAP. Clean; DNC owns their support identity. Requires DNC to have/acquire a domain and configure MX or a Google Workspace alias.
+- **Option B:** `dnc@support.inatechshell.ca` (ITS subdomain alias) → prod FreeScout IMAP. Low-cost; no new domain needed. Adequate if DNC does not yet have its own domain.
+- **Option C (Not recommended):** Share `support@inatechshell.ca` between staging and prod FreeScout. Risk of emails landing in the wrong environment.
+
+**Item B — Do real DNC customers exist yet? (Information)**
+
+M3 is only meaningful if DNC has real customer ticket volume by end-August 2026. If DNC has no real customers yet, the M3 date slips — that's not a problem, just a planning input agents need to know.
+
+**Options:**
+- **Yes** — DNC has (or will have) real customers by August 2026 → proceed with full M3 prod build
+- **No / Not yet** — DNC is still pre-launch → M3 target date slips to when DNC goes live; agents will scope infrastructure work against that revised date
+
+**Recommendation:** Choose Option A or B for the email (A is cleaner at scale; B works fine for an early-stage tenant). If DNC is pre-launch, confirm expected launch date so agents can schedule the M3 infrastructure sprint accordingly.
+
+**Deadline:** Non-blocking on Sprint 3; needed before agents begin August infra work (target: decision by 2026-07-25 to give agents 1 week to scope the infra sprint).
+
+**After resolution:** Notify Solutions Architect with choices → agent will open the M3 infrastructure sprint and build the phase 1–5 runbook (see scoping doc §4).
+
+---
+
 ## ✅ FQ-42 — DNC onboarding: apply migration + update 2 Coolify env vars (T-27 / M1 #12) — RESOLVED 2026-06-27
 
 **Filed:** 2026-06-27
