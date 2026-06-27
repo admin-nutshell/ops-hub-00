@@ -50,11 +50,11 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | # | Criterion | Owner | Status |
 |---|---|---|---|
 | 1 | ≥ 5 non-drill tickets auto-processed end-to-end in production | Prod Manager | 🔲 In progress (4 confirmed: 2× T-21 smoke, T-26 drill, T-27 DNC test) |
-| 2 | Per-ticket LLM cost instrumented in LangFuse (enables < $1 USD visibility) | Data Engineer | 🔲 T-31 |
+| 2 | Per-ticket LLM cost instrumented in LangFuse (enables < $1 USD visibility) | Data Engineer | ✅ Done (2026-06-27) — PR #187 merged |
 | 3 | Inngest workflow run success rate ≥ 95% over ≥ 7 consecutive days | Prod Manager | 🔲 Tracking |
 | 4 | First monthly founder briefing delivered (M1 #13) | PM | 🔗 T-29, July 31 |
-| 5 | Sprint 2 retrospective authored | PM | 🔲 T-30 |
-| 6 | Eval coverage expanded to ≥ 3 cases per agent (11 agents) | Evals Lead | 🔲 T-32 |
+| 5 | Sprint 2 retrospective authored | PM | ✅ Done (2026-06-27) — `docs/retros/sprint-2.md`, PR #186 |
+| 6 | Eval coverage expanded to ≥ 3 cases per agent (11 agents) | Evals Lead | ✅ Done (2026-06-27) — PR #188 merged; 33 cases total (3/agent) |
 
 ---
 
@@ -176,13 +176,13 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-31: Per-ticket LLM cost instrumentation (LangFuse) | Data Engineer | T-22/T-23 ✅ | Each `ticket-triage` + `ticket-respond` Inngest run emits cost metadata to LangFuse; Data Engineer can query cost-per-ticket; < $1 USD target visible in dashboard | Jul 4 |
+| T-31: Per-ticket LLM cost instrumentation (LangFuse) | Data Engineer | T-22/T-23 ✅ | ✅ **Done (2026-06-27, PR #187).** `ticket-triage` + `ticket-respond` both extract `usage.prompt_tokens` / `usage.completion_tokens` / `model` from LiteLLM response and pass them to `generation.end({ usage, model })`. LangFuse auto-calculates cost at gpt-4o-mini pricing. Per-ticket cost visible in LangFuse dashboard. | Jul 4 |
 
 ### Track B — Eval Coverage
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-32: Expand agent evals to ≥ 3 cases per agent | Evals Lead | T-16 ✅ (1 case/agent baseline) | 11 agent `.eval.yaml` files each have ≥ 3 cases; Eval Gate passes; eval suite covers happy path + 2 edge cases per agent; progress toward Phase 2 gate of ≥ 5 | Jul 7 |
+| T-32: Expand agent evals to ≥ 3 cases per agent | Evals Lead | T-16 ✅ (1 case/agent baseline) | ✅ **Done (2026-06-27, PR #188).** All 11 agent `.eval.yaml` files expanded to 3 cases each (33 total). Prompts refactored to `{{scenario}}` template with per-test `vars`. Eval Gate green. Happy path + 2 edge cases per agent. M2 criterion #6 ✅ | Jul 7 |
 
 ### Track C — Documentation + Milestone Close
 
@@ -358,6 +358,8 @@ Remaining deploy order:
 **T-12 — done (PR #69 merged).** `ops_hub_app_login` login role + hardened `internal.get_secret()` accessor (V1–V5 conditions). Founder executes the secret migration per the runbook.
 
 ### Evals Lead
+**✅ T-32 DONE (2026-06-27, PR #188).** All 11 agent eval files expanded from 1 to 3 cases each (33 total). Prompts use `{{scenario}}` template with per-test `vars`. Eval Gate CI green. M2 criterion #6 ✅.
+
 **🟡 T-17 IN PROGRESS (2026-06-22) — eval gate CI wiring authored.**
 
 `Eval Gate` job added to `.github/workflows/pr-checks.yml`. Sprint 1 design = **structure-only validation, no live LLM calls**: the job loops over `evals/*.yaml` and runs `promptfoo validate -c <file>`, which checks each config against the promptfoo schema and exits non-zero on a malformed file (so a broken eval blocks merge). `promptfoo validate` is *intended* to be schema-only — no `anthropic:` provider or `llm-rubric` grader invocation, hence no API key — but **this has NOT been confirmed against these specific configs** (I could not run promptfoo in this sandbox). The first CI run on the PR is the verifier (see handoff step 4). If `validate` turns out to need a key, fall back to a plain YAML/JSON-schema lint of the eval files. promptfoo is run via `npx promptfoo@0.121` (NOT a project devDependency) deliberately, to keep the eval toolchain out of the app dependency closure so the other jobs' `pnpm install --frozen-lockfile` is unaffected. `PROMPTFOO_DISABLE_TELEMETRY: 1` set; no `|| true` / `continue-on-error` (exit semantics honest). package.json gains `eval` (full keyed run, for later) + `eval:validate` (the structure-only loop) scripts — scripts only, lockfile untouched.
@@ -388,6 +390,8 @@ Notifying: QA Manager + Evals Lead — new KB domain content available for eval/
 **Minimal Sprint 1 scope.** No frontend tasks until FreeScout wired and ticket flow established (Sprint 2 / M2 scope). Monitor for T-10 completion — will be needed to verify FreeScout UI before sign-off.
 
 ### Data Engineer
+**✅ T-31 DONE (2026-06-27, PR #187).** Per-ticket LLM cost instrumentation live. `ticket-triage` and `ticket-respond` both extract `usage.prompt_tokens`, `usage.completion_tokens`, and `model` from LiteLLM responses and pass them to `generation.end()`. LangFuse calculates cost using gpt-4o-mini pricing registry. M2 criterion #2 ✅.
+
 **✅ T-09 DONE (2026-06-22).** `health-check` trace verified in LangFuse Cloud US dashboard.
 
 `langfuse-node` v3 SDK wired (non-OTel — avoids double-provider conflict with Sentry OTel). `src/langfuse.ts`: null-guarded client, US endpoint default (`us.cloud.langfuse.com`), reads `LANGFUSE_BASEURL` → `LANGFUSE_HOST` → US default (PR #86 EU fix). `src/index.ts`: `void emitTrace("health-check")` on every `/health` request. `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` confirmed in Coolify staging env vars.
