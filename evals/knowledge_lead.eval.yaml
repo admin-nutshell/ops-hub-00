@@ -3,6 +3,10 @@
 # durable, findable artifact (KB article or runbook) with a root cause in its own words — not
 # a Sentry paste. The failure mode is a vague summary with no reusable runbook and no taxonomy
 # placement. We test artifact quality and root-cause articulation.
+#
+# Cases: (a) turn a resolved incident into a runbook; (b) judge that a KB article is stale and
+# must be updated/superseded; (c) route a known-symptom ticket to KB search before escalating.
+# The fixed prompt sets the role; each case varies {{scenario}}.
 
 description: "Knowledge Lead — turn a resolved incident into a runbook/KB artifact with root cause and taxonomy"
 
@@ -10,16 +14,7 @@ prompts:
   - |
     You are the Knowledge Lead agent for the Ops Hub.
 
-    Context:
-    - An incident just resolved: FreeScout deploys to Coolify staging were failing because the
-      Supabase session-pooler hostname was wrong, so the Laravel DB-readiness check timed out.
-      The fix switched the Docker image to nfrastack/freescout, added DB_SSL_MODE=require, and
-      corrected the pooler hostname.
-
-    Task: Produce the knowledge artifact this incident implies. Write a runbook entry (or KB
-    article) for this recurring failure mode: state the root cause in your own words, the
-    detection signal, the resolution steps, and where it should live in the KB taxonomy so it
-    is findable next time.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -32,7 +27,20 @@ providers:
         findable next time.
 
 tests:
+  # (a) The core artifact: a findable runbook with root cause, detection, resolution, placement.
   - description: "Produces a findable runbook/KB artifact with root cause in own words, detection, resolution, and placement"
+    vars:
+      scenario: |
+        Context:
+        - An incident just resolved: FreeScout deploys to Coolify staging were failing because the
+          Supabase session-pooler hostname was wrong, so the Laravel DB-readiness check timed out.
+          The fix switched the Docker image to nfrastack/freescout, added DB_SSL_MODE=require, and
+          corrected the pooler hostname.
+
+        Task: Produce the knowledge artifact this incident implies. Write a runbook entry (or KB
+        article) for this recurring failure mode: state the root cause in your own words, the
+        detection signal, the resolution steps, and where it should live in the KB taxonomy so it
+        is findable next time.
     assert:
       - type: llm-rubric
         value: |
@@ -41,4 +49,58 @@ tests:
           - State the root cause in plain explanatory language (the wrong Supabase session-pooler hostname caused the Laravel DB-readiness check to time out), not merely restate the error.
           - Include a detection signal (how you'd recognize this failure next time) and concrete resolution steps (image switch, DB_SSL_MODE=require, correct pooler hostname).
           - Indicate where the artifact should live / how it should be categorized or tagged so it is findable later.
+        threshold: 0.8
+
+  # (b) Edge/failure mode: a KB article that has gone stale. We guard against leaving a wrong
+  #     runbook in place (a wrong runbook is worse than none).
+  - description: "Determines a KB article is out of date and must be updated/superseded, not left as-is"
+    vars:
+      scenario: |
+        You are auditing the KB during a routine review.
+
+        Context:
+        - An existing KB runbook, "Deploying FreeScout to Coolify", instructs operators to use the
+          Docker image `thatwebagency/freescout` and an embedded MySQL container, and says nothing
+          about TLS to the database.
+        - Since that article was written, the project moved to the `nfrastack/freescout` image backed
+          by Supabase PostgreSQL, requiring DB_SSL_MODE=require and the correct session-pooler hostname.
+          Several recent incidents traced back to operators following the stale runbook.
+
+        Task: Assess this KB article. Determine whether it is still accurate, decide what must change,
+        and describe how you would update it (and prevent the stale version from misleading operators)
+        rather than leaving it as-is.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Determine the article is OUT OF DATE and must be updated — the image (thatwebagency/freescout -> nfrastack/freescout), the database (embedded MySQL -> Supabase PostgreSQL), and the missing TLS/pooler details are all stale and actively misleading.
+          - Specify the concrete corrections (correct image, Supabase Postgres, DB_SSL_MODE=require, correct session-pooler hostname).
+          - Address preventing the stale version from continuing to mislead (e.g. supersede/replace it, mark it deprecated, update the canonical entry, add a "last verified" date / changelog) rather than leaving a second contradictory copy.
+          - Treat accuracy and findability as load-bearing, consistent with the Knowledge Lead's discipline (a wrong runbook is worse than none).
+        threshold: 0.8
+
+  # (c) Different decision: route a known-symptom ticket to KB/RAG search before consuming
+  #     scarce human escalation capacity.
+  - description: "Routes a known-symptom ticket to KB/RAG search before escalating to a human"
+    vars:
+      scenario: |
+        A new support ticket has arrived and you must decide how knowledge gets applied.
+
+        Context:
+        - Ticket: "I'm getting 'session expired' errors every few minutes and keep getting logged out."
+        - The KB already contains a published article, "Fix: frequent session-expired logouts
+          (cookie / session-pooler config)", that resolves exactly this symptom with known steps.
+        - There is human-escalation capacity, but it is scarce and reserved for genuinely novel issues.
+
+        Task: Decide how to handle this ticket. Determine whether it should go to KB/RAG search first
+        or be escalated to a human, and explain how the KB should be used in the triage/response flow
+        before consuming scarce escalation capacity.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Route the ticket to KB / RAG search FIRST rather than escalating immediately, because a published article already resolves this exact symptom.
+          - Explain that a known, documented issue should be answered from the KB (auto-response or agent-assisted) and that escalation is reserved for genuinely novel problems — conserving scarce human capacity.
+          - Describe how the KB feeds the triage/response flow (e.g. semantic/RAG match on the symptom -> surface the article's steps -> escalate only if KB search yields no confident match).
+          - Avoid defaulting to human escalation for an already-solved problem.
         threshold: 0.8

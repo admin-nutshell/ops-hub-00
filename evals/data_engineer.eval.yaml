@@ -3,6 +3,10 @@
 # first and a number second, with proper tenant/project scoping and a clear source of truth.
 # The failure mode is a metric schema with no scoping dimensions or an ambiguous definition.
 # We test metric definition rigor and multi-tenant scoping.
+#
+# Cases: (a) define cost-per-ticket end to end; (b) catch a missing index that is slow at
+# scale; (c) design a per-tenant cost query over LangFuse data. The fixed prompt sets the
+# role; each case varies {{scenario}}.
 
 description: "Data Engineer — define a cost-per-ticket metric with source of truth and tenant/project scoping"
 
@@ -10,15 +14,7 @@ prompts:
   - |
     You are the Data Engineer agent for the Ops Hub.
 
-    Context:
-    - The Charter requires a "cost-per-ticket" metric on the ops dashboard.
-    - LLM calls are routed through LiteLLM, which emits per-call cost and is traced in LangFuse.
-    - Tickets live in the Supabase `tickets` table with tenant_id and project_id.
-    - The hub is multi-tenant; the founder sees all, tenants see only their own.
-
-    Task: Define the cost-per-ticket metric end to end. State the precise definition (numerator
-    and denominator), the source of truth for each input, the scoping dimensions the metrics
-    schema must carry, and how you would prevent cross-tenant leakage in the resulting views.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -31,7 +27,19 @@ providers:
         on every metric so multi-tenant isolation holds in every query and view.
 
 tests:
+  # (a) Define the metric: numerator/denominator, sources of truth, scoping, leak prevention.
   - description: "Gives a precise metric definition with named sources of truth and tenant/project scoping"
+    vars:
+      scenario: |
+        Context:
+        - The Charter requires a "cost-per-ticket" metric on the ops dashboard.
+        - LLM calls are routed through LiteLLM, which emits per-call cost and is traced in LangFuse.
+        - Tickets live in the Supabase `tickets` table with tenant_id and project_id.
+        - The hub is multi-tenant; the founder sees all, tenants see only their own.
+
+        Task: Define the cost-per-ticket metric end to end. State the precise definition (numerator
+        and denominator), the source of truth for each input, the scoping dimensions the metrics
+        schema must carry, and how you would prevent cross-tenant leakage in the resulting views.
     assert:
       - type: llm-rubric
         value: |
@@ -40,4 +48,62 @@ tests:
           - Name the source of truth for each input (LiteLLM/LangFuse for cost, the Supabase tickets table for ticket counts).
           - Specify that the metrics schema must carry tenant_id and project_id scoping dimensions.
           - Address preventing cross-tenant leakage in the resulting views/queries (e.g. RLS or per-tenant filtering so a tenant sees only their own cost).
+        threshold: 0.8
+
+  # (b) Edge/failure mode: a query that is correct but un-indexed and slow at scale. We guard
+  #     against shipping a per-page-load query with no supporting index.
+  - description: "Identifies the missing index that makes a tenant ticket-list query slow at scale and proposes the right one"
+    vars:
+      scenario: |
+        A dashboard query is being reviewed before it goes live.
+
+        Context:
+        - The ops dashboard runs this query on every page load to show a tenant's open tickets,
+          newest first:
+            SELECT * FROM tickets
+            WHERE tenant_id = $1 AND status IN ('new','triaged')
+            ORDER BY created_at DESC
+            LIMIT 50;
+        - `tickets` has a primary key on `id` and a foreign key on `tenant_id`, but no other indexes.
+        - At scale the table is expected to hold millions of rows across hundreds of tenants.
+
+        Task: Evaluate this query's performance at scale. Identify what will make it slow, propose the
+        specific index(es) needed, and note any multi-tenant or correctness considerations.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Identify that at scale this query will be slow because there is no index supporting the WHERE + ORDER BY — it will scan/sort large numbers of rows (an FK on tenant_id does not by itself create the needed composite index).
+          - Propose a specific, appropriate index, e.g. a composite index on (tenant_id, status, created_at DESC) or (tenant_id, created_at DESC) with a status predicate, so the filter and the ORDER BY ... LIMIT are served efficiently.
+          - Reason about the access pattern (tenant-scoped, status-filtered, ordered by created_at, limited) rather than vaguely "add an index".
+          - Note multi-tenant correctness/performance considerations (the leading tenant_id keeps the index tenant-scoped) and/or flag SELECT * as a minor concern.
+        threshold: 0.8
+
+  # (c) Different deliverable: a cost-tracking query over LangFuse observability data, scoped
+  #     per tenant and tied to the cost-per-ticket target.
+  - description: "Designs a per-tenant LLM cost query over LangFuse data, scoped and tied to the cost-per-ticket target"
+    vars:
+      scenario: |
+        The founder wants a per-tenant LLM cost breakdown for last month, sourced from observability
+        data.
+
+        Context:
+        - Every LLM call is traced in LangFuse with a per-call cost and metadata, and each trace
+          carries tenant_id and project_id (set when the pipeline invokes LiteLLM).
+        - LangFuse data is available as a queryable table/export (e.g. observations/generations with
+          cost, model, tenant_id, project_id, timestamp).
+        - Tenants must only see their own costs; the founder sees all. The charter target is
+          < $2 CAD per ticket.
+
+        Task: Design the query (and any scoping) that produces per-tenant LLM cost for a given month.
+        State the grouping, the source columns, how tenant/project scoping is enforced, and how this
+        feeds the cost-per-ticket target.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Design a concrete aggregation query over the LangFuse cost data (e.g. SUM(cost) GROUP BY tenant_id[, project_id] filtered to the month) that produces per-tenant LLM cost, naming the source columns it relies on (cost, tenant_id, project_id, timestamp/model).
+          - Enforce tenant/project scoping so a tenant sees only their own costs (e.g. WHERE tenant_id = $1 / RLS / per-tenant view), with the founder able to see all — no cross-tenant leakage.
+          - Connect the result to the cost-per-ticket target (divide LLM cost by ticket count per tenant, referencing the < $2 CAD/ticket goal) rather than producing a raw number with no definition.
+          - Treat the metric as a definition first (clear grouping, time window, source of truth) consistent with the Data Engineer's discipline.
         threshold: 0.8

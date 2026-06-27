@@ -3,6 +3,10 @@
 # cases that would actually CATCH a silent regression — covering happy path, edge, and the
 # specific behavior the change risks breaking. The failure mode is vague "test that it works"
 # cases. We test for concrete, discriminating regression-case design.
+#
+# Cases: (a) design regression cases for a prompt change; (b) catch a rubric with false-positive
+# risk and tighten it; (c) add a regression case that locks a recently fixed bug. The fixed
+# prompt sets the role; each case varies {{scenario}}.
 
 description: "Evals Lead — design regression test cases for an agent prompt change"
 
@@ -10,15 +14,7 @@ prompts:
   - |
     You are the Evals Lead agent for the Ops Hub.
 
-    Context:
-    - A PR modifies the Production Manager agent's system prompt. The change adds a new
-      instruction: "Always confirm a written rollback path exists BEFORE approving any deploy."
-    - The eval suite must catch any future regression where this behavior silently disappears.
-
-    Task: Design at least three regression test cases for this prompt change. For each case,
-    specify the input scenario, the expected behavior, and the assertion criteria that would
-    distinguish a pass from a regression. Cover the happy path, at least one edge case, and a
-    failure mode.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -31,7 +27,19 @@ providers:
         works"; every case must be able to discriminate a pass from a regression.
 
 tests:
+  # (a) Design regression cases that span happy path, edge, and failure for a prompt change.
   - description: "Produces 3+ concrete, discriminating regression cases spanning happy path, edge, and failure"
+    vars:
+      scenario: |
+        Context:
+        - A PR modifies the Production Manager agent's system prompt. The change adds a new
+          instruction: "Always confirm a written rollback path exists BEFORE approving any deploy."
+        - The eval suite must catch any future regression where this behavior silently disappears.
+
+        Task: Design at least three regression test cases for this prompt change. For each case,
+        specify the input scenario, the expected behavior, and the assertion criteria that would
+        distinguish a pass from a regression. Cover the happy path, at least one edge case, and a
+        failure mode.
     assert:
       - type: llm-rubric
         value: |
@@ -40,4 +48,63 @@ tests:
           - Include a happy-path case that directly tests the new behavior (a deploy request should not be approved unless a written rollback path is confirmed).
           - Include at least one edge case and one failure mode (e.g. a deploy request with NO rollback path must be blocked/flagged; an ambiguous or partial rollback path).
           - Make each case discriminating — the assertions must be specific enough to actually fail if the rollback-path behavior silently regressed, not generic "the response is helpful".
+        threshold: 0.8
+
+  # (b) Edge/failure mode: catch a rubric that would pass a real regression (false positive).
+  #     We guard against the Evals Lead approving a non-discriminating assertion.
+  - description: "Identifies a vague rubric's false-positive risk and rewrites it to actually discriminate"
+    vars:
+      scenario: |
+        A teammate wrote a new eval case for the ticket-triage classifier and asks you to approve it.
+        Their assertion is a single llm-rubric:
+
+            "The response should be helpful and correctly classify the ticket's urgency."
+
+        The input ticket is a clear P1 outage ("entire app is down for all users").
+
+        Context:
+        - ticket-triage must emit ONLY a strict-JSON object with urgency in the closed enum
+          {critical|high|normal|low}; downstream code writes urgency into a CHECK-constrained column.
+        - A regression could take the form of prose instead of JSON, an invented enum value, or the
+          wrong urgency.
+
+        Task: Review this proposed eval. Decide whether the rubric is good enough to GATE on. Identify
+        any false-positive risk (a regression that would still pass this rubric) and rewrite the
+        assertion so it actually discriminates a pass from a regression.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Identify that the rubric is too vague to gate on: "helpful and correctly classify" is a false-positive risk — a regression could still pass it (e.g. prose wrapped around the JSON, a near-miss urgency, or an out-of-enum value the judge waves through as "helpful").
+          - Explain WHY it under-discriminates relative to the real contract (strict JSON only, closed urgency enum, exact expected urgency for a P1 outage = critical), not just say "make it better".
+          - Rewrite / strengthen the assertion to be discriminating — e.g. require valid JSON-only output, urgency exactly "critical" for this outage, rejection of out-of-enum values, and explicit fail conditions.
+          - Reflect the Evals Lead stance against "trust me, it works": a rubric that cannot fail on a real regression should not gate.
+        threshold: 0.8
+
+  # (c) Different task: lock a just-fixed production bug with a regression case so it can never
+  #     silently come back. Tests tying a case to a specific incident.
+  - description: "Adds a regression case that locks a recently fixed bug and would fail if the old behavior returned"
+    vars:
+      scenario: |
+        A production bug was just fixed and you must lock it down with a regression eval.
+
+        Context:
+        - Incident: for a stretch, the ticket-respond drafter replied to a CRITICAL outage ticket with
+          a breezy tone AND promised a specific resolution time ("we'll have this fixed within 2 hours"),
+          which the system cannot guarantee. The fix re-tightened the system prompt: critical-tone replies
+          must acknowledge severity, must NOT promise a specific resolution time, and must not invent facts.
+        - There is currently no eval that would have caught this.
+
+        Task: Add a regression eval case that pins this fixed behavior so it can never silently
+        regress. Specify the input scenario, the expected behavior, and assertion criteria specific
+        enough to FAIL if the old buggy behavior (breezy tone / promised ETA) came back. Note why this
+        case exists.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Produce a concrete regression case tied to the specific fixed bug: a CRITICAL outage ticket as input, with expected behavior = severity acknowledged, NO specific resolution time/ETA promised, no invented facts.
+          - Make the assertion discriminating enough to FAIL on the exact old behavior (a breezy/minimizing tone or a promised fix time like "within 2 hours" must fail the case), not a generic "reply is good".
+          - Frame it as a regression test that locks the fix (e.g. so the prompt cannot silently lose the no-ETA / critical-tone instruction), consistent with owning regression detection.
+          - Document WHY the case exists (the incident it guards against), per the Evals Lead's "write down why each eval exists" discipline.
         threshold: 0.8
