@@ -4,11 +4,15 @@
 
 ---
 
-## FQ-42 — DNC onboarding: apply migration + update 2 Coolify env vars (T-27 / M1 #12)
+## ✅ FQ-42 — DNC onboarding: apply migration + update 2 Coolify env vars (T-27 / M1 #12) — RESOLVED 2026-06-27
 
 **Filed:** 2026-06-27
+**Resolved:** 2026-06-27 — Founder completed all 3 steps:
+  - Migration applied in Supabase SQL Editor (TTS project + DNC tenant seeded)
+  - `POLLING_PROJECT_ID` + `POLLING_TENANT_ID` set in Coolify ops-hub-app → redeployed
+  - DNC test email sent → confirmed end-to-end: FreeScout → triage → respond → `state=responded`, `tenant_id=00…0020` in Supabase
 **Filed by:** Tech Lead
-**Blocks:** T-27 (M1 criterion #12 — DNC tickets flowing through ops-hub)
+**Was blocking:** T-27 (M1 criterion #12 — DNC tickets flowing through ops-hub)
 **Priority:** HIGH — last step to close M1
 
 ### What was built
