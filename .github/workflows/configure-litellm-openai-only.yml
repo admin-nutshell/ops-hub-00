@@ -1,0 +1,286 @@
+name: Configure LiteLLM — OpenAI gpt-4o-mini as sole triage-model (FQ-40 bypass)
+
+# Temporary fix for FQ-40: NVIDIA_API_KEY has returned HTTP 401 on three consecutive
+# runs. OPENAI_API_KEY is confirmed live and working (HTTP 200 in every run).
+#
+# This workflow purges ALL existing model registrations and registers ONLY
+# gpt-4o-mini under both "triage-model" and the legacy "meta/llama-3.3-70b-instruct"
+# alias. No NVIDIA entry is added — removing any chance of 401 load-balanced hits.
+#
+# Run order:
+#   1. Verify litellm-staging health
+#   2. Purge all existing model registrations
+#   3. Register gpt-4o-mini under "triage-model"             (id: openai-primary)
+#   4. Register gpt-4o-mini under legacy alias               (id: openai-legacy-primary)
+#   5. Verify /model/info shows exactly 2 entries (one per alias)
+#   6. Smoke test "triage-model" — assert HTTP 200
+#   7. Smoke test legacy alias — assert HTTP 200
+#   8. Summary
+#
+# Rollback (restore NVIDIA + OpenAI dual-entry):
+#   Run configure-litellm-triage-model.yml after the NVIDIA key is fixed.
+#
+# Prerequisites (GitHub Actions secrets):
+#   LITELLM_MASTER_KEY — LiteLLM admin key (must match Coolify env var)
+#
+# OPENAI_API_KEY must be set in litellm-staging Coolify env vars AND the
+# container must have been redeployed (vars are injected on redeploy, not restart).
+# This workflow never receives or logs raw API key values.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+  LITELLM_SSLIP_IP: "187.124.76.235"
+  TRIAGE_ALIAS: "triage-model"
+  LEGACY_ALIAS: "meta/llama-3.3-70b-instruct"
+
+jobs:
+  configure-openai-only:
+    name: Register OpenAI gpt-4o-mini as sole triage-model provider
+    runs-on: ubuntu-latest
+    env:
+      LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+
+    steps:
+      # ── 1. Health check ───────────────────────────────────────────────────────
+      - name: Verify litellm-staging health
+        id: health
+        run: |
+          echo "::add-mask::$LITELLM_KEY"
+
+          # GHA runners cannot resolve litellm-staging.inatechshell.ca — sslip.io only.
+          LITELLM_URL="http://${LITELLM_UUID}.${LITELLM_SSLIP_IP}.sslip.io"
+          echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
+          echo "litellm-staging URL: $LITELLM_URL"
+
+          HEALTH=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
+            "$LITELLM_URL/health/readiness" || echo "000")
+          echo "Health check: HTTP $HEALTH"
+          if [ "$HEALTH" != "200" ]; then
+            echo "ERROR: litellm-staging not healthy (HTTP $HEALTH). Restart in Coolify UI."
+            exit 1
+          fi
+          echo "litellm-staging is healthy"
+
+      # ── 2. Purge all existing model registrations ─────────────────────────────
+      # Clean slate: removes any stale NVIDIA or partial OpenAI registrations so
+      # we are left with only the entries we add in steps 3–4.
+      - name: Purge all existing model registrations
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/model_info_pre.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/info")
+          echo "GET /model/info -> HTTP $HTTP"
+
+          if [ "$HTTP" != "200" ]; then
+            echo "WARNING: /model/info returned HTTP $HTTP — treating as empty, proceeding"
+          else
+            # Extract all model IDs and delete each one.
+            IDS=$(jq -r '.data[].model_info.id // empty' /tmp/model_info_pre.json 2>/dev/null || true)
+            if [ -z "$IDS" ]; then
+              echo "No existing model registrations to purge"
+            else
+              echo "Models to purge:"
+              echo "$IDS"
+              while IFS= read -r id; do
+                [ -z "$id" ] && continue
+                PDEL=$(curl -s --max-time 20 -o /tmp/del_${id}.json -w "%{http_code}" -X POST \
+                  -H "Authorization: Bearer $LITELLM_KEY" \
+                  -H "Content-Type: application/json" \
+                  "$LITELLM_BASE/model/delete" \
+                  -d "{\"id\": \"$id\"}")
+                echo "DELETE id=$id -> HTTP $PDEL"
+              done <<< "$IDS"
+              echo "Purge complete"
+            fi
+          fi
+
+      # ── 3. Register gpt-4o-mini under triage-model ───────────────────────────
+      # No api_key field — LiteLLM reads OPENAI_API_KEY from container env
+      # automatically for native gpt- model names. Passing os.environ/OPENAI_API_KEY
+      # returns HTTP 401 (run #28209223649) — do not add it.
+      - name: Register OpenAI gpt-4o-mini — triage-model (primary)
+        id: reg-triage
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg alias "$TRIAGE_ALIAS" \
+            '{
+              model_name: $alias,
+              litellm_params: {
+                model: "gpt-4o-mini"
+              },
+              model_info: {
+                id: "openai-primary",
+                description: "OpenAI gpt-4o-mini — triage-model primary (FQ-40 bypass)"
+              }
+            }')
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/reg_triage.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/new" -d "$PAYLOAD")
+          echo "POST /model/new (openai-primary) -> HTTP $HTTP"
+          jq . /tmp/reg_triage.json 2>/dev/null || cat /tmp/reg_triage.json | head -10 || true
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Registered: $TRIAGE_ALIAS -> gpt-4o-mini (id: openai-primary)"
+          else
+            echo "ERROR: registration failed (HTTP $HTTP)"
+            exit 1
+          fi
+
+      # ── 4. Register gpt-4o-mini under legacy alias ────────────────────────────
+      - name: Register OpenAI gpt-4o-mini — legacy alias (primary)
+        id: reg-legacy
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg alias "$LEGACY_ALIAS" \
+            '{
+              model_name: $alias,
+              litellm_params: {
+                model: "gpt-4o-mini"
+              },
+              model_info: {
+                id: "openai-legacy-primary",
+                description: "OpenAI gpt-4o-mini — legacy alias primary (FQ-40 bypass)"
+              }
+            }')
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/reg_legacy.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/new" -d "$PAYLOAD")
+          echo "POST /model/new (openai-legacy-primary) -> HTTP $HTTP"
+          jq . /tmp/reg_legacy.json 2>/dev/null || cat /tmp/reg_legacy.json | head -10 || true
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Registered: $LEGACY_ALIAS -> gpt-4o-mini (id: openai-legacy-primary)"
+          else
+            echo "ERROR: registration failed (HTTP $HTTP)"
+            exit 1
+          fi
+
+      # ── 5. Verify /model/info shows exactly 2 entries ─────────────────────────
+      - name: Verify model registrations (expect 1 entry per alias, both OpenAI)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/model_info_post.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/info")
+          echo "GET /model/info -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: /model/info HTTP $HTTP"
+            exit 1
+          fi
+
+          TOTAL=$(jq '.data | length' /tmp/model_info_post.json 2>/dev/null || echo 0)
+          echo ""
+          echo "Total model entries: $TOTAL (expected 2)"
+          echo ""
+          echo "=== All registered entries ==="
+          jq -r '.data[] |
+            "  alias=\(.model_name)  id=\(.model_info.id // "none")  model=\(.litellm_params.model // "?")"' \
+            /tmp/model_info_post.json 2>/dev/null || true
+
+          TRIAGE_COUNT=$(jq '[.data[] | select(.model_name == "'"$TRIAGE_ALIAS"'")] | length' \
+            /tmp/model_info_post.json 2>/dev/null || echo 0)
+          LEGACY_COUNT=$(jq '[.data[] | select(.model_name == "'"$LEGACY_ALIAS"'")] | length' \
+            /tmp/model_info_post.json 2>/dev/null || echo 0)
+
+          echo ""
+          PASS=true
+          [ "$TRIAGE_COUNT" -eq 1 ] && echo "triage-model: 1 entry (correct)" || \
+            { echo "ERROR: triage-model has $TRIAGE_COUNT entries (expected 1)"; PASS=false; }
+          [ "$LEGACY_COUNT" -eq 1 ] && echo "legacy alias: 1 entry (correct)" || \
+            { echo "ERROR: legacy alias has $LEGACY_COUNT entries (expected 1)"; PASS=false; }
+          [ "$PASS" = "false" ] && exit 1 || true
+
+      # ── 6. Smoke test — triage-model ─────────────────────────────────────────
+      - name: Smoke test — triage-model alias (assert HTTP 200)
+        run: |
+          TEST_PAYLOAD=$(jq -n --arg alias "$TRIAGE_ALIAS" '{
+            model: $alias,
+            max_tokens: 20,
+            temperature: 0,
+            messages: [{role: "user", content: "Reply with the single word: ok"}]
+          }')
+          HTTP=$(curl -s --max-time 60 -o /tmp/smoke_triage.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/chat/completions" -d "$TEST_PAYLOAD")
+          echo "POST /chat/completions (model=$TRIAGE_ALIAS) -> HTTP $HTTP"
+          jq . /tmp/smoke_triage.json 2>/dev/null || cat /tmp/smoke_triage.json | head -10 || true
+
+          if [ "$HTTP" = "200" ]; then
+            CONTENT=$(jq -r '.choices[0].message.content // empty' /tmp/smoke_triage.json 2>/dev/null || true)
+            MODEL=$(jq -r '.model // empty' /tmp/smoke_triage.json 2>/dev/null || true)
+            echo ""
+            echo "SMOKE TEST (triage-model): PASS"
+            echo "  content : $CONTENT"
+            echo "  model   : $MODEL"
+          else
+            echo "ERROR: smoke test failed (HTTP $HTTP)"
+            echo "Check OPENAI_API_KEY is set in litellm-staging Coolify env vars AND the"
+            echo "container was redeployed (not just restarted) after the key was added."
+            exit 1
+          fi
+
+      # ── 7. Smoke test — legacy alias ──────────────────────────────────────────
+      - name: Smoke test — legacy alias (assert HTTP 200)
+        run: |
+          TEST_PAYLOAD=$(jq -n --arg alias "$LEGACY_ALIAS" '{
+            model: $alias,
+            max_tokens: 20,
+            temperature: 0,
+            messages: [{role: "user", content: "Reply with the single word: ok"}]
+          }')
+          HTTP=$(curl -s --max-time 60 -o /tmp/smoke_legacy.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/chat/completions" -d "$TEST_PAYLOAD")
+          echo "POST /chat/completions (model=$LEGACY_ALIAS) -> HTTP $HTTP"
+          jq . /tmp/smoke_legacy.json 2>/dev/null || cat /tmp/smoke_legacy.json | head -10 || true
+
+          if [ "$HTTP" = "200" ]; then
+            CONTENT=$(jq -r '.choices[0].message.content // empty' /tmp/smoke_legacy.json 2>/dev/null || true)
+            MODEL=$(jq -r '.model // empty' /tmp/smoke_legacy.json 2>/dev/null || true)
+            echo ""
+            echo "SMOKE TEST (legacy alias): PASS"
+            echo "  content : $CONTENT"
+            echo "  model   : $MODEL"
+          else
+            echo "ERROR: smoke test failed (HTTP $HTTP)"
+            exit 1
+          fi
+
+      # ── 8. Summary ────────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo "============================================================"
+          echo " LITELLM — OpenAI-only configuration (FQ-40 bypass)"
+          echo "============================================================"
+          echo ""
+          echo " Current registrations (if all steps passed):"
+          echo "   triage-model"
+          echo "     openai-primary : gpt-4o-mini (native OpenAI, no api_key)"
+          echo "   meta/llama-3.3-70b-instruct  (legacy alias)"
+          echo "     openai-legacy-primary : gpt-4o-mini (native OpenAI, no api_key)"
+          echo ""
+          echo " All ticket-triage and ticket-respond calls now route to gpt-4o-mini."
+          echo " NVIDIA NIM is NOT in rotation — no 401 risk."
+          echo ""
+          echo " Rollback (restore NVIDIA + OpenAI dual-entry):"
+          echo "   Fix NVIDIA_API_KEY in Coolify → redeploy litellm-staging"
+          echo "   Then run configure-litellm-triage-model.yml"
+          echo "============================================================"
