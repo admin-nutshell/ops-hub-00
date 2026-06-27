@@ -190,7 +190,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 |---|---|---|---|---|
 | T-30: Sprint 2 retrospective doc | PM | Sprint 2 ✅ | `docs/retros/sprint-2.md` — same 7-section format as sprint-1.md; captures pipeline saga, LiteLLM OpenAI-only pivot, FreeScout GRANT saga, DNC onboarding; M2 preview section | Jun 30 |
 | T-29: First monthly founder briefing (M1 criterion #13) | PM | M1 #1–#12 ✅ | `docs/briefings/2026-07-31-m1-briefing.md` — Sprint 1+2 summary, M1 close confirmation, M2 status snapshot, open risks, next 30-day preview; filed in FOUNDER_QUEUE | Jul 31 |
-| T-33: M3 scoping — DNC production path | Solutions Architect | T-27 ✅ | `docs/planning/m3-dnc-production.md` — delta from staging to production DNC: which Coolify vars change, which Supabase tables need prod migration, go/no-go checklist; filed as FQ draft for founder | Jul 7 |
+| T-33: M3 scoping — DNC production path | Solutions Architect | T-27 ✅ | ✅ **Done (2026-06-27, PR #190).** `docs/planning/m3-dnc-production.md` — per-component delta (Supabase, FreeScout, LiteLLM, env vars, DNS), 5-phase migration runbook, 9-item go/no-go checklist, risk register. FQ-43 filed: two founder decisions needed (DNC email routing + real ticket volume confirmation) before August infra sprint. | Jul 7 |
 | T-34: M2 close verification | PM | T-29 ✅, T-30 ✅, T-31 ✅, T-32 ✅ | All 6 M2 checklist items green; M2 declared done in DECISIONS.md; M3 target window set | Jul 11 |
 
 ---
@@ -402,6 +402,8 @@ Monitor monthly event count against 50K free-tier ceiling (ADR-0002 §2 trigger 
 `scripts/provision-uptimerobot.sh` + `.github/workflows/provision-uptimerobot.yml` pushed and PR open. Monitors NOT yet created — dispatch requires PR #73 merged to main (workflow_dispatch not dispatchable from feature branches until the workflow exists on the default branch). Post-merge step: `gh workflow run provision-uptimerobot.yml --repo admin-nutshell/ops-hub-00`. Verify by confirming 3× `"stat":"ok"` in the run log. Three monitors: ops-hub-app (staging), LiteLLM (staging), FreeScout (staging); check interval: 5 min. Alert contacts intentionally empty — UptimeRobot requires a pre-created contact ID; email routing to mai@leelaecospa.com is a follow-up (create contact in UptimeRobot dashboard, update script or configure via UI). Prod monitors and TTS monitors deferred to post-M1.
 
 ### Solutions Architect
+**✅ T-33 DONE (2026-06-27, PR #190).** M3 DNC production scoping complete. `docs/planning/m3-dnc-production.md` — full delta from staging (T-27) to production, 5-phase runbook, 9-gate go/no-go checklist. FQ-43 filed: founder needs to decide DNC email address and confirm customer volume before August infra sprint begins.
+
 **T-04 ✅ Done (2026-06-21, PR #64).** Project Context schema committed.
 
 **Sprint 2 — T-27: DNC project onboarding + ticket flow (M1 #12).** Assigned. Scope: instantiate DNC Project Context schema instance; configure routing rules in triage agent; verify a real DNC ticket flows from FreeScout → triage → respond → resolved. Depends on T-26 (pipeline validated). FQ-29 filed to confirm what "DNC" refers to (client project or ticket type) before T-27 scoping begins.
