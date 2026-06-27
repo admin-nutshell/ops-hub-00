@@ -4,12 +4,16 @@
 
 ---
 
-## FQ-41 — FreeScout second DB reset recovery: GRANT + Gmail OAuth
+## ✅ FQ-41 — FreeScout second DB reset recovery: GRANT + Gmail OAuth — RESOLVED 2026-06-27
 
 **Filed:** 2026-06-26
+**Resolved:** 2026-06-27 — `diagnose-freescout-imap.yml` run #28274619900 confirmed:
+  - `ops_hub_app` SELECT GRANT: ✅ 2 rows (conversations + threads)
+  - FreeScout conversations: 3 rows, threads: 8 rows — email fetch active
+  - ops-hub `/health`: HTTP 200
+  - **T-26 pre-flight: all items green — drill can proceed**
 **Filed by:** Production Manager
-**Blocks:** T-22 (ticket-triage live validation), full Inngest pipeline, M1 criterion #10 re-verification
-**Priority:** HIGH — pipeline is completely stalled at this blocker
+**Was blocking:** T-22 (ticket-triage live validation), full Inngest pipeline, M1 criterion #10 re-verification
 
 ### What happened
 
