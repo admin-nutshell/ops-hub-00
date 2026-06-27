@@ -164,6 +164,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 |---|---|---|---|---|
 | T-28: Sprint 1 retrospective doc | PM | Sprint 1 ✅ | ✅ **Done (2026-06-25).** `docs/retros/sprint-1.md` authored — 7 sections (summary, what worked, what didn't, incidents/resolutions, process changes, M1 status, open risks). Captures FreeScout 40+ PR saga, LiteLLM hostname discovery, branch-protection free-tier wall, T-23/T-24 worktree collision; codifies 6 Sprint 2 process changes (worktree isolation, env-var REPLACE-not-APPEND, sslip.io diagnostic-only). PR `docs/t28-sprint-1-retro`. | Jul 4 |
 | T-29: First monthly founder briefing (M1 criterion #13) | PM | All M1 criteria green | Briefing doc delivered to founder via FOUNDER_QUEUE — Sprint 1+2 summary, M2 preview, open risks | Jul 31 |
+| T-30: Sprint 2 retrospective doc | PM | Sprint 2 ✅ | ✅ **Done (2026-06-27).** `docs/retros/sprint-2.md` — 7 sections (summary, what worked, what didn't, incidents/resolutions, process changes, M1 status, open risks). Captures NVIDIA pivot, LiteLLM Prisma schema wipe (ADR-0004), FreeScout second GRANT loss, FQ-42 3-step DNC onboarding; codifies 5 Sprint 3 process changes. | Jun 30 |
 
 ---
 
