@@ -63,15 +63,23 @@ type InngestCtx = Parameters<Parameters<typeof inngest.createFunction>[1]>[0];
 // ---------------------------------------------------------------------------
 
 const _opsPool = createLazyPool("OPS_HUB_APP_LOGIN_URL");
-export function getPool(): Pool { return _opsPool.get(); }
-export function _resetPool(mock?: Pool): void { _opsPool.reset(mock); }
+export function getPool(): Pool {
+  return _opsPool.get();
+}
+export function _resetPool(mock?: Pool): void {
+  _opsPool.reset(mock);
+}
 
 // NEW env var — flagged to Production Manager + Security Lead, not yet in
 // Coolify (see WORK.md T-23 and ADR-0003). Absent today → delivery is
 // unavailable and the ticket stays 'triaged' (no state corruption).
 const _fsPool = createLazyPool("FREESCOUT_DB_URL");
-export function getFreeScoutPool(): Pool { return _fsPool.get(); }
-export function _resetFreeScoutPool(mock?: Pool): void { _fsPool.reset(mock); }
+export function getFreeScoutPool(): Pool {
+  return _fsPool.get();
+}
+export function _resetFreeScoutPool(mock?: Pool): void {
+  _fsPool.reset(mock);
+}
 
 // ---------------------------------------------------------------------------
 // Draft generation

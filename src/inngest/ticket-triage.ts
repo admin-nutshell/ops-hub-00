@@ -33,8 +33,12 @@ export type TriageResult =
 type InngestCtx = Parameters<Parameters<typeof inngest.createFunction>[1]>[0];
 
 const _opsPool = createLazyPool("OPS_HUB_APP_LOGIN_URL");
-export function getPool(): Pool { return _opsPool.get(); }
-export function _resetPool(mock?: Pool): void { _opsPool.reset(mock); }
+export function getPool(): Pool {
+  return _opsPool.get();
+}
+export function _resetPool(mock?: Pool): void {
+  _opsPool.reset(mock);
+}
 
 // Instructions go in the system message; untrusted ticket content goes in the user message.
 // This separation prevents ticket bodies from overriding classification instructions.

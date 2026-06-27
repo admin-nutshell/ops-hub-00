@@ -24,8 +24,12 @@ type PollResult = {
 };
 
 const _opsPool = createLazyPool("OPS_HUB_APP_LOGIN_URL");
-export function getPool(): Pool { return _opsPool.get(); }
-export function _resetPool(mock?: Pool): void { _opsPool.reset(mock); }
+export function getPool(): Pool {
+  return _opsPool.get();
+}
+export function _resetPool(mock?: Pool): void {
+  _opsPool.reset(mock);
+}
 
 export const pollFreeScout = inngest.createFunction(
   { id: "freescout-poll", retries: 2, triggers: [{ cron: "* * * * *" }] },
