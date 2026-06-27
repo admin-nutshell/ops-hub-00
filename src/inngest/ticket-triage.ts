@@ -2,8 +2,9 @@ import { Pool } from "pg";
 import { inngest } from "./client";
 import { STAGING_PROJECT_ID, STAGING_TENANT_ID } from "./freescout-poller";
 import { langfuse } from "../langfuse";
+import { createLazyPool, escapeXml, type Urgency, URGENCIES } from "./utils";
 
-type Urgency = "critical" | "high" | "normal" | "low";
+type SweepRow = { id: string; project_id: string; tenant_id: string };
 
 type TriageEventData = {
   ticket_id: string;
@@ -31,24 +32,12 @@ export type TriageResult =
 
 type InngestCtx = Parameters<Parameters<typeof inngest.createFunction>[1]>[0];
 
-const URGENCIES = new Set<string>(["critical", "high", "normal", "low"]);
-
-let _pool: Pool | null = null;
+const _opsPool = createLazyPool("OPS_HUB_APP_LOGIN_URL");
 export function getPool(): Pool {
-  if (!_pool) {
-    const url = process.env.OPS_HUB_APP_LOGIN_URL;
-    if (!url) throw new Error("OPS_HUB_APP_LOGIN_URL is not set");
-    _pool = new Pool({ connectionString: url, max: 2 });
-  }
-  return _pool;
+  return _opsPool.get();
 }
 export function _resetPool(mock?: Pool): void {
-  _pool = mock ?? null;
-}
-
-// Escape XML-special characters so ticket content cannot break the prompt delimiters.
-function escapeXml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  _opsPool.reset(mock);
 }
 
 // Instructions go in the system message; untrusted ticket content goes in the user message.
@@ -95,7 +84,7 @@ export async function classifyTicket(title: string, body: string | null): Promis
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`LiteLLM ${resp.status}: ${text}`);
+    throw new Error(`LiteLLM ${resp.status}: ${text.slice(0, 200)}`);
   }
 
   const json = (await resp.json()) as {
@@ -262,7 +251,6 @@ export const sweepNewTickets = inngest.createFunction(
     triggers: [{ cron: "*/5 * * * *" }],
   },
   async ({ step }: InngestCtx) => {
-    type SweepRow = { id: string; project_id: string; tenant_id: string };
     const tickets = (await step.run("find-new-tickets", async () => {
       const client = await getPool().connect();
       try {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool, PoolClient } from "pg";
 import { classifyTicket, triageOneTicket, triageTicketHandler } from "../ticket-triage";
 import type { TriageResult } from "../ticket-triage";
+import { makeClient, makePool, mockFetchOk } from "./helpers";
 
 /**
  * T-22 — ticket-triage unit tests.
@@ -12,42 +12,6 @@ import type { TriageResult } from "../ticket-triage";
  *
  * pg Pool is mocked; fetch is stubbed globally; no real DB or LLM calls.
  */
-
-// ---------------------------------------------------------------------------
-// Helpers — reused from freescout-poller test pattern
-// ---------------------------------------------------------------------------
-
-type QueryResponse = { rows: Record<string, unknown>[] };
-
-function makeClient(queryResponses: QueryResponse[]): PoolClient {
-  let callIndex = 0;
-  return {
-    query: vi.fn().mockImplementation(() => {
-      const resp = queryResponses[callIndex] ?? { rows: [] };
-      callIndex++;
-      return Promise.resolve(resp);
-    }),
-    release: vi.fn(),
-  } as unknown as PoolClient;
-}
-
-function makePool(client: PoolClient): Pool {
-  return {
-    connect: vi.fn().mockResolvedValue(client),
-  } as unknown as Pool;
-}
-
-function mockFetchOk(content: string) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        choices: [{ message: { content } }],
-      }),
-    })
-  );
-}
 
 // ---------------------------------------------------------------------------
 // classifyTicket
