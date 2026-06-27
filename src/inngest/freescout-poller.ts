@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { inngest } from "./client";
+import { createLazyPool } from "./utils";
 
 // Fixed staging UUIDs seeded in migration 20260623180000_t21_freescout_intake.sql.
 // Production will route by conversation mailbox → tenant; deferred to a future sprint.
@@ -22,22 +23,9 @@ type PollResult = {
   inserted: InsertedTicket[];
 };
 
-// Lazy singleton — created on first invocation, reused across cron runs in the
-// same Node process. max:2 because the cron is single-threaded by design.
-let _pool: Pool | null = null;
-export function getPool(): Pool {
-  if (!_pool) {
-    const url = process.env.OPS_HUB_APP_LOGIN_URL;
-    if (!url) throw new Error("OPS_HUB_APP_LOGIN_URL is not set");
-    _pool = new Pool({ connectionString: url, max: 2 });
-  }
-  return _pool;
-}
-
-// Exported for unit tests that need to inject a mock pool.
-export function _resetPool(mock?: Pool): void {
-  _pool = mock ?? null;
-}
+const _opsPool = createLazyPool("OPS_HUB_APP_LOGIN_URL");
+export function getPool(): Pool { return _opsPool.get(); }
+export function _resetPool(mock?: Pool): void { _opsPool.reset(mock); }
 
 export const pollFreeScout = inngest.createFunction(
   { id: "freescout-poll", retries: 2, triggers: [{ cron: "* * * * *" }] },

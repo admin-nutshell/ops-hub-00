@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool, PoolClient } from "pg";
+import { makeClient, makePool } from "./helpers";
 
 /**
  * T-21 — FreeScout poller unit tests.
@@ -10,30 +10,6 @@ import type { Pool, PoolClient } from "pg";
  *
  * The pg Pool is mocked; no real DB connection is made.
  */
-
-// ---------------------------------------------------------------------------
-// Helpers for building mock pg clients
-// ---------------------------------------------------------------------------
-
-type QueryResponse = { rows: Record<string, unknown>[] };
-
-function makeClient(queryResponses: QueryResponse[]): PoolClient {
-  let callIndex = 0;
-  return {
-    query: vi.fn().mockImplementation(() => {
-      const resp = queryResponses[callIndex] ?? { rows: [] };
-      callIndex++;
-      return Promise.resolve(resp);
-    }),
-    release: vi.fn(),
-  } as unknown as PoolClient;
-}
-
-function makePool(client: PoolClient): Pool {
-  return {
-    connect: vi.fn().mockResolvedValue(client),
-  } as unknown as Pool;
-}
 
 // ---------------------------------------------------------------------------
 // Tests

@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { inngest } from "./client";
 import { langfuse } from "../langfuse";
+import { createLazyPool, escapeXml, type Urgency, URGENCIES } from "./utils";
 
 /**
  * T-23 — ticket-respond.
@@ -22,10 +23,6 @@ import { langfuse } from "../langfuse";
  * internal-only and is NOT emailed to the customer. An unreviewed AI draft must
  * never auto-send. A human approves and sends from the FreeScout UI.
  */
-
-type Urgency = "critical" | "high" | "normal" | "low";
-
-const URGENCIES = new Set<string>(["critical", "high", "normal", "low"]);
 
 type RespondEventData = {
   ticket_id: string;
@@ -61,47 +58,20 @@ export type FreeScoutDelivery = (conversationId: string, note: string) => Promis
 
 type InngestCtx = Parameters<Parameters<typeof inngest.createFunction>[1]>[0];
 
-const DRAFT_MODEL = process.env.LITELLM_TRIAGE_MODEL ?? "triage-model";
-
 // ---------------------------------------------------------------------------
 // Connection pools (lazy singletons; reused across invocations in a process)
 // ---------------------------------------------------------------------------
 
-let _pool: Pool | null = null;
-export function getPool(): Pool {
-  if (!_pool) {
-    const url = process.env.OPS_HUB_APP_LOGIN_URL;
-    if (!url) throw new Error("OPS_HUB_APP_LOGIN_URL is not set");
-    _pool = new Pool({ connectionString: url, max: 2 });
-  }
-  return _pool;
-}
-export function _resetPool(mock?: Pool): void {
-  _pool = mock ?? null;
-}
+const _opsPool = createLazyPool("OPS_HUB_APP_LOGIN_URL");
+export function getPool(): Pool { return _opsPool.get(); }
+export function _resetPool(mock?: Pool): void { _opsPool.reset(mock); }
 
-let _fsPool: Pool | null = null;
-export function getFreeScoutPool(): Pool {
-  if (!_fsPool) {
-    // NEW env var — flagged to Production Manager + Security Lead, not yet in
-    // Coolify (see WORK.md T-23 and ADR-0003). Absent today → delivery is
-    // unavailable and the ticket stays 'triaged' (no state corruption).
-    const url = process.env.FREESCOUT_DB_URL;
-    if (!url) {
-      throw new Error("FREESCOUT_DB_URL is not configured — FreeScout note delivery unavailable");
-    }
-    _fsPool = new Pool({ connectionString: url, max: 2 });
-  }
-  return _fsPool;
-}
-export function _resetFreeScoutPool(mock?: Pool): void {
-  _fsPool = mock ?? null;
-}
-
-// Escape XML-special characters so ticket content cannot break prompt delimiters.
-function escapeXml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
+// NEW env var — flagged to Production Manager + Security Lead, not yet in
+// Coolify (see WORK.md T-23 and ADR-0003). Absent today → delivery is
+// unavailable and the ticket stays 'triaged' (no state corruption).
+const _fsPool = createLazyPool("FREESCOUT_DB_URL");
+export function getFreeScoutPool(): Pool { return _fsPool.get(); }
+export function _resetFreeScoutPool(mock?: Pool): void { _fsPool.reset(mock); }
 
 // ---------------------------------------------------------------------------
 // Draft generation
@@ -139,7 +109,7 @@ export async function draftResponse(input: DraftInput): Promise<string> {
       Authorization: `Bearer ${litellmKey}`,
     },
     body: JSON.stringify({
-      model: DRAFT_MODEL,
+      model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
       temperature: 0.3,
       max_tokens: 500,
       messages: [
@@ -174,7 +144,7 @@ export async function draftResponse(input: DraftInput): Promise<string> {
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`LiteLLM ${resp.status}: ${text}`);
+    throw new Error(`LiteLLM ${resp.status}: ${text.slice(0, 200)}`);
   }
 
   const json = (await resp.json()) as {
@@ -212,9 +182,13 @@ export async function draftResponse(input: DraftInput): Promise<string> {
  * none of these constants are under test.
  */
 export async function postFreeScoutNote(conversationId: string, note: string): Promise<void> {
-  const botUserId = process.env.FREESCOUT_BOT_USER_ID;
-  if (!botUserId) {
-    throw new Error("FREESCOUT_BOT_USER_ID is not configured — cannot attribute the note");
+  const botUserIdRaw = process.env.FREESCOUT_BOT_USER_ID;
+  if (!botUserIdRaw) {
+    throw new Error("FREESCOUT_BOT_USER_ID is not configured");
+  }
+  const botUserId = parseInt(botUserIdRaw, 10);
+  if (isNaN(botUserId)) {
+    throw new Error(`FREESCOUT_BOT_USER_ID must be a number, got: "${botUserIdRaw}"`);
   }
   const pool = getFreeScoutPool(); // throws if FREESCOUT_DB_URL is unset
   const client = await pool.connect();
@@ -302,7 +276,7 @@ export async function respondOneTicket(
   });
   const generation = trace?.generation({
     name: "draft-response",
-    model: DRAFT_MODEL,
+    model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
     input: [{ role: "user", content: ticket.title }],
   });
 

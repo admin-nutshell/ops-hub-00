@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Pool, PoolClient } from "pg";
 import { draftResponse, respondOneTicket, type FreeScoutDelivery } from "../ticket-respond";
+import { makeClient, makePool, mockFetchOk } from "./helpers";
 
 /**
  * T-23 — ticket-respond unit tests.
@@ -15,35 +15,6 @@ import { draftResponse, respondOneTicket, type FreeScoutDelivery } from "../tick
  * pg Pool is mocked; fetch is stubbed; FreeScout delivery is injected as a mock.
  * No real DB, LLM, or FreeScout calls.
  */
-
-type QueryResponse = { rows: Record<string, unknown>[] };
-
-function makeClient(queryResponses: QueryResponse[]): PoolClient {
-  let callIndex = 0;
-  return {
-    query: vi.fn().mockImplementation(() => {
-      const resp = queryResponses[callIndex] ?? { rows: [] };
-      callIndex++;
-      return Promise.resolve(resp);
-    }),
-    release: vi.fn(),
-  } as unknown as PoolClient;
-}
-
-function makePool(client: PoolClient): Pool {
-  return {
-    connect: vi.fn().mockResolvedValue(client),
-  } as unknown as Pool;
-}
-
-function mockFetchOk(content: string) {
-  const fetchMock = vi.fn().mockResolvedValue({
-    ok: true,
-    json: async () => ({ choices: [{ message: { content } }] }),
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
 
 // A triaged ticket row as returned by the SELECT in respondOneTicket.
 function triagedRow(overrides: Record<string, unknown> = {}) {
