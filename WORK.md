@@ -36,7 +36,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 9 | Sentry + UptimeRobot wired for Ops Hub and TTS | Production Manager | ✅ **Done (2026-06-23).** Sentry: error verified in Sentry dashboard; `SENTRY_DSN` in Coolify. UptimeRobot: 3 monitors active — ops-hub-staging health, litellm-staging health, TTS app health. FQ-17 resolved. |
 | 10 | At least 1 ticket flowed end-to-end: FreeScout → triage → fix → deploy → resolved | Full team | ✅ **Done (2026-06-23).** Email sent to `support@inatechshell.ca` → forwarded to `info@inatechshell.ca` (Google Workspace) → fetched by FreeScout via Google Workspace OAuth IMAP → ticket appeared in FreeScout inbox. Mailbox: ITS Support (info@inatechshell.ca). Admin: haytham@inatechshell.ca. **M1 COMPLETE — all 10 foundation criteria green.** |
 | 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | ✅ **Done (2026-06-27).** "Silent Billing Failure" drill executed: email → FreeScout → Inngest triage → Inngest respond → Supabase `state=responded`. Confirmed by founder in FreeScout, Inngest, and Supabase. Post-mortem at `docs/retros/sprint-2-incident-drill.md`. |
-| 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🔒 Sprint 2 deliverable (T-22) — requires AI triage + response pipeline (Sprint 2 scope) |
+| 12 | DNC tickets flowing through Ops Hub | Solutions Architect | 🟢 **CODE DONE (2026-06-27) — awaiting FQ-42.** Migration seeded TTS project + DNC tenant. Poller env-configurable. Founder must: apply migration in Supabase, set `POLLING_PROJECT_ID`/`POLLING_TENANT_ID` in Coolify, send DNC test email → confirm `tenant_id=00…0020` in Supabase. |
 | 13 | First monthly founder briefing produced | PM | 🔗 Scheduled: July 31 |
 
 ---
