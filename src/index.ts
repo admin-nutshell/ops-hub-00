@@ -5,13 +5,25 @@ import { inngest } from "./inngest/client";
 import { pollFreeScout } from "./inngest/freescout-poller";
 import { triageTicket, sweepNewTickets } from "./inngest/ticket-triage";
 import { respondTicket } from "./inngest/ticket-respond";
+import { resolveTicket, sweepRespondedTickets } from "./inngest/ticket-resolve";
+import { sweepSlaBreaches } from "./inngest/sla-monitor";
+import { learnFromTicket } from "./inngest/kb-learn";
 import { emitTrace } from "./langfuse";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
 const inngestHandler = serve({
   client: inngest,
-  functions: [pollFreeScout, triageTicket, sweepNewTickets, respondTicket],
+  functions: [
+    pollFreeScout,
+    triageTicket,
+    sweepNewTickets,
+    respondTicket,
+    resolveTicket,
+    sweepRespondedTickets,
+    sweepSlaBreaches,
+    learnFromTicket,
+  ],
 });
 
 export const server = http.createServer((req, res) => {
