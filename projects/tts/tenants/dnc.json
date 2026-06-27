@@ -1,0 +1,48 @@
+{
+  "$schema": "https://opshub.its/schemas/project-context/1.0.0.json",
+  "project_id": "00000000-0000-0000-0000-000000000002",
+  "tenant_id": "00000000-0000-0000-0000-000000000020",
+  "project_name": "Ticket Triage System",
+  "project_slug": "tts",
+  "metadata": {
+    "tenant_name": "Daily Needs Canada",
+    "tenant_slug": "dnc",
+    "description": "Canadian grocery and daily essentials e-commerce platform. Support tickets arrive via email at support@inatechshell.ca and are routed through FreeScout into the TTS triage pipeline.",
+    "tier": "growth",
+    "timezone": "America/Toronto",
+    "business_hours": "09:00-17:00 ET Mon-Fri",
+    "escalation_contact": "support@inatechshell.ca",
+    "environment": "staging"
+  },
+  "sla": {
+    "response_target_minutes": 60,
+    "escalation_threshold_urgency": "high",
+    "p1_response_minutes": 15,
+    "p2_response_minutes": 60,
+    "p3_response_minutes": 480
+  },
+  "routing": {
+    "critical": "engineering",
+    "high": "engineering",
+    "normal": "support",
+    "low": "support",
+    "categories": {
+      "billing": "finance",
+      "payments": "finance",
+      "delivery": "operations",
+      "product": "support",
+      "account": "support",
+      "infrastructure": "engineering"
+    }
+  },
+  "integrations": {
+    "freescout": {
+      "url": "https://freescout-staging.inatechshell.ca",
+      "mailbox": "support@inatechshell.ca"
+    },
+    "llm": {
+      "provider": "litellm",
+      "model_alias": "triage-model"
+    }
+  }
+}

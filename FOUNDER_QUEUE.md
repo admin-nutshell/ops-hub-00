@@ -4,6 +4,88 @@
 
 ---
 
+## FQ-42 — DNC onboarding: apply migration + update 2 Coolify env vars (T-27 / M1 #12)
+
+**Filed:** 2026-06-27
+**Filed by:** Tech Lead
+**Blocks:** T-27 (M1 criterion #12 — DNC tickets flowing through ops-hub)
+**Priority:** HIGH — last step to close M1
+
+### What was built
+
+- Migration `supabase/migrations/20260627000000_t27_dnc_onboarding.sql` seeds TTS project + DNC tenant
+- `projects/tts/config.json` + `projects/tts/tenants/dnc.json` — Project Context instance for DNC
+- `freescout-poller.ts` now reads project/tenant IDs from `POLLING_PROJECT_ID` / `POLLING_TENANT_ID` env vars (with fallback to dev placeholders) — proves app-agnostic design
+
+### Required founder actions (3 steps)
+
+#### Step 1 — Apply migration in Supabase SQL Editor
+
+Copy-paste this SQL into Supabase SQL Editor (project `yocoljutbiizdbfraapx`), run as postgres/service_role:
+
+```sql
+-- TTS project
+INSERT INTO projects (id, name, context_schema)
+VALUES (
+  '00000000-0000-0000-0000-000000000002',
+  'tts',
+  '{"product":"Ticket Triage System","slug":"tts","support_email":"support@inatechshell.ca"}'
+)
+ON CONFLICT (name) DO NOTHING;
+
+-- DNC tenant
+INSERT INTO tenants (id, project_id, name, tier, sla_config)
+VALUES (
+  '00000000-0000-0000-0000-000000000020',
+  '00000000-0000-0000-0000-000000000002',
+  'Daily Needs Canada',
+  'growth',
+  '{"response_target_minutes":60,"escalation_threshold":"high","timezone":"America/Toronto"}'
+)
+ON CONFLICT (id) DO NOTHING;
+```
+
+Expected: `INSERT 0 1` for each statement (or `INSERT 0 0` if already applied — both are OK).
+
+#### Step 2 — Update 2 env vars in Coolify
+
+Go to: Coolify → `ops-hub-app` → Environment Variables
+
+Add (or update) these two:
+
+| Key | Value |
+|---|---|
+| `POLLING_PROJECT_ID` | `00000000-0000-0000-0000-000000000002` |
+| `POLLING_TENANT_ID` | `00000000-0000-0000-0000-000000000020` |
+
+Then click **Deploy** (not Restart — full redeploy to inject env vars).
+
+#### Step 3 — Send a DNC test email + confirm
+
+Send an email to **support@inatechshell.ca** with any DNC-relevant subject (e.g. "DNC: order not delivered" or "DNC: payment failed"). Within 5 minutes:
+
+1. FreeScout: email appears in ITS Support inbox
+2. Inngest: `ticket-triage` run shows `tenant_id = 00000000-0000-0000-0000-000000000020`
+3. Supabase SQL Editor: verify
+
+```sql
+SELECT title, urgency, category, routing, state, tenant_id
+FROM tickets
+WHERE tenant_id = '00000000-0000-0000-0000-000000000020'
+ORDER BY created_at DESC
+LIMIT 1;
+```
+
+Expected: a row with `state = 'responded'`, `tenant_id = '00000000-0000-0000-0000-000000000020'`
+
+### After resolution
+
+Notify Tech Lead: "FQ-42 done — DNC tenant_id confirmed in Supabase"
+
+Tech Lead will close T-27 and mark M1 criterion #12 ✅.
+
+---
+
 ## ✅ FQ-41 — FreeScout second DB reset recovery: GRANT + Gmail OAuth — RESOLVED 2026-06-27
 
 **Filed:** 2026-06-26

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://opshub.its/schemas/project-context/1.0.0.json",
+  "project_id": "00000000-0000-0000-0000-000000000002",
+  "project_name": "Ticket Triage System",
+  "project_slug": "tts",
+  "metadata": {
+    "description": "ITS customer support ticket intake, AI triage, and auto-response system.",
+    "owner": "In a Tech-Shell (ITS)",
+    "support_email": "support@inatechshell.ca",
+    "freescout_url": "https://freescout-staging.inatechshell.ca",
+    "environment": "staging"
+  },
+  "integrations": {
+    "freescout": {
+      "url": "https://freescout-staging.inatechshell.ca",
+      "mailbox": "support@inatechshell.ca"
+    },
+    "llm": {
+      "provider": "litellm",
+      "model_alias": "triage-model"
+    },
+    "observability": {
+      "langfuse": "us.cloud.langfuse.com"
+    }
+  }
+}
