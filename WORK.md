@@ -6,16 +6,18 @@
 
 ## Current sprint
 
-**Sprint:** Sprint 2 — AI Triage Pipeline
-**Sprint goal:** Wire and validate the full AI ticket pipeline: Supabase direct polling → Inngest → LiteLLM triage → auto-response → Supabase state = resolved. Close M1 criteria #11 (incident drill + post-mortem) and #12 (DNC tickets flowing). Fully complete M1.
-**Sprint window:** July 7 – July 18, 2026 (2 weeks)
-**Target milestone:** M1 complete (criteria #11 + #12 + #13)
+**Sprint:** Sprint 3 — Agent Activation
+**Sprint goal:** Define and close M2 ("Agent Team Activated"); deliver T-29 monthly founder briefing (M1 #13); instrument per-ticket cost and latency; expand eval coverage to ≥ 3 cases/agent; scope M3 (DNC production path).
+**Sprint window:** June 27 – July 11, 2026 (2 weeks — corrected; Sprint 2 closed June 27, 10 days before its planned window opened)
+**Target milestone:** M2 — Agent Team Activated
 
-**Critical path:** T-21 Supabase polling cron → T-22 ticket-triage function → T-23 ticket-respond function → T-26 incident drill (#11) → T-27 DNC flow (#12)
+**Critical path:** T-31 cost instrumentation → T-32 eval expansion → T-29 briefing → T-34 M2 close
 
 ---
 
-*(Sprint 1 — Workspace + Foundation: June 23 – July 4, 2026 — ✅ COMPLETE. 20/20 tasks done. M1 criteria #1–#10 green. Sprint retro due: July 4, 2026 → `docs/retros/sprint-1.md`.)*
+*(Sprint 2 — AI Triage Pipeline: June 27, 2026 — ✅ COMPLETE. T-21–T-27 all done. M1 criteria #11 (incident drill) + #12 (DNC flow) closed. Pipeline live: FreeScout → Inngest → LiteLLM → Supabase. Sprint retro: T-30.)*
+
+*(Sprint 1 — Workspace + Foundation: June 23 – July 4, 2026 — ✅ COMPLETE. 20/20 tasks done. M1 criteria #1–#10 green. Sprint retro: `docs/retros/sprint-1.md`.)*
 
 ---
 
@@ -38,6 +40,21 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | 11 | First synthetic incident drill + post-mortem authored | Prod Manager + Tech Lead | ✅ **Done (2026-06-27).** "Silent Billing Failure" drill executed: email → FreeScout → Inngest triage → Inngest respond → Supabase `state=responded`. Confirmed by founder in FreeScout, Inngest, and Supabase. Post-mortem at `docs/retros/sprint-2-incident-drill.md`. |
 | 12 | DNC tickets flowing through Ops Hub | Solutions Architect | ✅ **Done (2026-06-27).** DNC test email → FreeScout → Inngest triage → Inngest respond → Supabase `state=responded`, `tenant_id=00…0020`. FQ-42 resolved. **M1 #12 ✅** |
 | 13 | First monthly founder briefing produced | PM | 🔗 Scheduled: July 31 |
+
+---
+
+## M2 checklist (Agent Team Activated)
+
+> `09_delivery.md` names M2 but does not list sub-criteria. These are defined here against Phase 1 KPIs. M2 closes when all are green and T-29 is delivered.
+
+| # | Criterion | Owner | Status |
+|---|---|---|---|
+| 1 | ≥ 5 non-drill tickets auto-processed end-to-end in production | Prod Manager | 🔲 In progress (4 confirmed: 2× T-21 smoke, T-26 drill, T-27 DNC test) |
+| 2 | Per-ticket LLM cost instrumented in LangFuse (enables < $1 USD visibility) | Data Engineer | 🔲 T-31 |
+| 3 | Inngest workflow run success rate ≥ 95% over ≥ 7 consecutive days | Prod Manager | 🔲 Tracking |
+| 4 | First monthly founder briefing delivered (M1 #13) | PM | 🔗 T-29, July 31 |
+| 5 | Sprint 2 retrospective authored | PM | 🔲 T-30 |
+| 6 | Eval coverage expanded to ≥ 3 cases per agent (11 agents) | Evals Lead | 🔲 T-32 |
 
 ---
 
@@ -148,6 +165,33 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | T-28: Sprint 1 retrospective doc | PM | Sprint 1 ✅ | ✅ **Done (2026-06-25).** `docs/retros/sprint-1.md` authored — 7 sections (summary, what worked, what didn't, incidents/resolutions, process changes, M1 status, open risks). Captures FreeScout 40+ PR saga, LiteLLM hostname discovery, branch-protection free-tier wall, T-23/T-24 worktree collision; codifies 6 Sprint 2 process changes (worktree isolation, env-var REPLACE-not-APPEND, sslip.io diagnostic-only). PR `docs/t28-sprint-1-retro`. | Jul 4 |
 | T-29: First monthly founder briefing (M1 criterion #13) | PM | All M1 criteria green | Briefing doc delivered to founder via FOUNDER_QUEUE — Sprint 1+2 summary, M2 preview, open risks | Jul 31 |
 | T-30: Sprint 2 retrospective doc | PM | Sprint 2 ✅ | ✅ **Done (2026-06-27).** `docs/retros/sprint-2.md` — 7 sections (summary, what worked, what didn't, incidents/resolutions, process changes, M1 status, open risks). Captures NVIDIA pivot, LiteLLM Prisma schema wipe (ADR-0004), FreeScout second GRANT loss, FQ-42 3-step DNC onboarding; codifies 5 Sprint 3 process changes. | Jun 30 |
+
+---
+
+## Sprint 3 tasks
+
+**Sprint 3: Agent Activation** — June 27 – July 11, 2026
+
+### Track A — Observability + Instrumentation
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-31: Per-ticket LLM cost instrumentation (LangFuse) | Data Engineer | T-22/T-23 ✅ | Each `ticket-triage` + `ticket-respond` Inngest run emits cost metadata to LangFuse; Data Engineer can query cost-per-ticket; < $1 USD target visible in dashboard | Jul 4 |
+
+### Track B — Eval Coverage
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-32: Expand agent evals to ≥ 3 cases per agent | Evals Lead | T-16 ✅ (1 case/agent baseline) | 11 agent `.eval.yaml` files each have ≥ 3 cases; Eval Gate passes; eval suite covers happy path + 2 edge cases per agent; progress toward Phase 2 gate of ≥ 5 | Jul 7 |
+
+### Track C — Documentation + Milestone Close
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-30: Sprint 2 retrospective doc | PM | Sprint 2 ✅ | `docs/retros/sprint-2.md` — same 7-section format as sprint-1.md; captures pipeline saga, LiteLLM OpenAI-only pivot, FreeScout GRANT saga, DNC onboarding; M2 preview section | Jun 30 |
+| T-29: First monthly founder briefing (M1 criterion #13) | PM | M1 #1–#12 ✅ | `docs/briefings/2026-07-31-m1-briefing.md` — Sprint 1+2 summary, M1 close confirmation, M2 status snapshot, open risks, next 30-day preview; filed in FOUNDER_QUEUE | Jul 31 |
+| T-33: M3 scoping — DNC production path | Solutions Architect | T-27 ✅ | `docs/planning/m3-dnc-production.md` — delta from staging to production DNC: which Coolify vars change, which Supabase tables need prod migration, go/no-go checklist; filed as FQ draft for founder | Jul 7 |
+| T-34: M2 close verification | PM | T-29 ✅, T-30 ✅, T-31 ✅, T-32 ✅ | All 6 M2 checklist items green; M2 declared done in DECISIONS.md; M3 target window set | Jul 11 |
 
 ---
 
