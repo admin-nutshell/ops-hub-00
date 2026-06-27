@@ -750,3 +750,31 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   freeze-schema once founder runs the C1-gated SQL; hold freeze until Step 4 canary
   passes. → ADR-0004 §Security Lead Review
 ```
+
+### 2026-06-27 — Sprint 2 close + Sprint 3 + M2 criteria definition
+
+```
+2026-06-27 [PM] Sprint 2 closed 2026-06-27 — 10 days before its planned window (July 7–18).
+  Calendar drift logged; Sprint 3 window corrected to June 27–July 11. Future sprint
+  windows will be set at actual start time, not planned time, to avoid divergence.
+
+2026-06-27 [PM] M2 ("Agent Team Activated") exit criteria defined — 09_delivery.md names
+  the milestone but lists no sub-criteria. Criteria derived from Phase 1 KPIs:
+    1. ≥ 5 non-drill tickets auto-processed end-to-end in production
+    2. Per-ticket LLM cost instrumented in LangFuse (< $1 USD target visible)
+    3. Inngest workflow run success rate ≥ 95% over ≥ 7 consecutive days
+    4. First monthly founder briefing delivered (M1 #13 / T-29)
+    5. Sprint 2 retrospective authored (T-30)
+    6. Eval coverage expanded to ≥ 3 cases per agent (T-32)
+  Tracked in WORK.md M2 checklist. M2 closes when T-34 verifies all 6 items green.
+
+2026-06-27 [PM] Sprint 3 planned: June 27–July 11, 2026. Goal: M2 close.
+  Tasks: T-30 (Sprint 2 retro), T-31 (cost instrumentation), T-32 (eval expansion),
+  T-33 (M3 scoping), T-29 (monthly briefing, July 31), T-34 (M2 close).
+  Critical path: T-31 → T-32 → T-29 → T-34.
+
+2026-06-27 [Solutions Architect] M1 #12 (DNC flow) scope clarification:
+  Staging test complete (T-27, FQ-42). M3 ("TTS Tenant #1 DNC live") = production
+  onboarding with real customer tickets and live SLA enforcement — different scope.
+  M3 target: end August 2026 per 09_delivery.md. T-33 will scope the delta.
+```
