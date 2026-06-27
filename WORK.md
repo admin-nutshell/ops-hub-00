@@ -139,7 +139,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-26: Synthetic incident drill + post-mortem (M1 criterion #11) | Prod Manager + Tech Lead | T-23 (full pipeline live) | ✅ **Done (2026-06-27).** "Silent Billing Failure" drill: email → FreeScout → triage → respond → `state=responded`. Confirmed by founder in FreeScout, Inngest, Supabase. Post-mortem: `docs/retros/sprint-2-incident-drill.md`. **M1 #11 ✅** | Jul 17 |
-| T-27: DNC project onboarding + ticket flow (M1 criterion #12) | Solutions Architect | T-26 validated, T-04 ✅ | DNC Project Context schema instance committed; routing rules configured; real DNC ticket triaged + responded in FreeScout; **M1 #12 ✅** | Jul 18 |
+| T-27: DNC project onboarding + ticket flow (M1 criterion #12) | Solutions Architect | T-26 validated, T-04 ✅ | 🟢 **CODE DONE (2026-06-27) — awaiting FQ-42 (founder: apply migration + 2 Coolify env vars).** Migration `20260627000000_t27_dnc_onboarding.sql` seeds TTS project + DNC tenant. `projects/tts/config.json` + `projects/tts/tenants/dnc.json` committed. Poller now reads `POLLING_PROJECT_ID`/`POLLING_TENANT_ID` from env (app-agnostic). FQ-29 resolved: DNC = Daily Needs Canada, first TTS tenant. | Jul 18 |
 
 ### Milestone tail (non-blocking)
 

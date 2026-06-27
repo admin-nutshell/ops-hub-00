@@ -2,10 +2,14 @@ import { Pool } from "pg";
 import { inngest } from "./client";
 import { createLazyPool } from "./utils";
 
-// Fixed staging UUIDs seeded in migration 20260623180000_t21_freescout_intake.sql.
-// Production will route by conversation mailbox → tenant; deferred to a future sprint.
-export const STAGING_PROJECT_ID = "00000000-0000-0000-0000-000000000001";
-export const STAGING_TENANT_ID = "00000000-0000-0000-0000-000000000010";
+// Project/tenant IDs read from env so the poller works with any project without code changes.
+// Defaults are the legacy dev-placeholder UUIDs (ops-hub project / staging-support tenant).
+// Production/DNC: set POLLING_PROJECT_ID + POLLING_TENANT_ID in Coolify ops-hub-app env vars.
+// Seeded values: tts=00…0002, dnc=00…0020 (migration 20260627000000_t27_dnc_onboarding.sql).
+export const STAGING_PROJECT_ID =
+  process.env.POLLING_PROJECT_ID ?? "00000000-0000-0000-0000-000000000001";
+export const STAGING_TENANT_ID =
+  process.env.POLLING_TENANT_ID ?? "00000000-0000-0000-0000-000000000010";
 
 // FreeScout status / state / thread-type constants (FreeScout v1.x Laravel source).
 // Verified against: freescout-help-desk/freescout database migrations.
