@@ -2,24 +2,18 @@
 # Why this eval exists: the Tech Lead's signature deliverable is an ADR. The failure mode
 # we guard against is a "decision" with no rejected alternatives and no consequences — i.e.
 # an opinion dressed as an ADR. We test ADR structure AND genuine trade-off reasoning.
+#
+# Cases: (a) author an ADR for a schema change; (b) REJECT a fast-but-unsafe proposal that
+# trades security for performance; (c) recognize an ADR-worthy reliability decision and
+# produce it with rationale. The fixed prompt sets the role; each case varies {{scenario}}.
 
 description: "Tech Lead — author an ADR (problem / options / decision / consequences) for a schema change"
 
 prompts:
   - |
-    You are the Tech Lead agent for the Ops Hub. A change request has landed.
+    You are the Tech Lead agent for the Ops Hub.
 
-    Context:
-    - The Ops Hub Supabase schema currently stores feature-flag scope as a free-text
-      `project` column on the `feature_flags` table.
-    - A new `projects` table now exists with a UUID primary key.
-    - Request: migrate `feature_flags.project` (text) to `feature_flags.project_id` (uuid FK to projects.id).
-    - Constraints: multi-tenant, RLS is fail-closed, zero-downtime preferred, must remain
-      portable to a hypothetical Project #2 (no TTS-specific assumptions).
-
-    Task: Author an ADR for this change. Include a clear problem statement, at least three
-    considered options (including the do-nothing option), the decision, and the consequences
-    (both positive and negative).
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -32,7 +26,23 @@ providers:
         rejected alternatives. You favor simplicity and avoid vendor lock-in.
 
 tests:
+  # (a) The canonical ADR: a live multi-tenant schema migration with real mechanics.
   - description: "ADR has problem/options/decision/consequences and reasons about trade-offs, not just asserts a choice"
+    vars:
+      scenario: |
+        A change request has landed.
+
+        Context:
+        - The Ops Hub Supabase schema currently stores feature-flag scope as a free-text
+          `project` column on the `feature_flags` table.
+        - A new `projects` table now exists with a UUID primary key.
+        - Request: migrate `feature_flags.project` (text) to `feature_flags.project_id` (uuid FK to projects.id).
+        - Constraints: multi-tenant, RLS is fail-closed, zero-downtime preferred, must remain
+          portable to a hypothetical Project #2 (no TTS-specific assumptions).
+
+        Task: Author an ADR for this change. Include a clear problem statement, at least three
+        considered options (including the do-nothing option), the decision, and the consequences
+        (both positive and negative).
     assert:
       - type: llm-rubric
         value: |
@@ -41,4 +51,59 @@ tests:
           - Reason about the migration mechanics for a live multi-tenant table (e.g. backfill, dual-write or add-column-then-migrate, FK constraint timing, RLS interaction) rather than just declaring "add a uuid column".
           - Acknowledge at least one negative consequence or trade-off of the chosen option (it must not present the decision as cost-free).
           - Avoid TTS-specific hardcoding and keep the design portable to other projects.
+        threshold: 0.8
+
+  # (b) Edge/failure mode: a proposal that is fast but violates the hard security
+  #     non-negotiables. We guard against the Tech Lead trading security for performance.
+  - description: "Rejects a fast-but-unsafe proposal (runtime service_role + cross-tenant cache) and offers a safe alternative"
+    vars:
+      scenario: |
+        A design proposal has come in to speed up the triage pipeline.
+
+        Context:
+        - Triage latency is higher than target. An engineer proposes two changes to "make it fast":
+          1. Have the runtime agent path use the Supabase `service_role` key directly so it can
+             skip RLS evaluation on every read.
+          2. Cache ticket and tenant rows in a single process-wide in-memory map keyed by ticket id,
+             shared across all tenants, to avoid repeat DB hits.
+        - Project non-negotiables: `service_role` is for migrations ONLY (no agent holds it at runtime);
+          RLS is fail-closed; multi-tenant queries must scope by tenant ID with no cross-tenant leaks.
+
+        Task: Review this proposal as Tech Lead. Decide whether to accept or reject it, explain the
+        risks, and propose a safer alternative that still addresses the latency concern.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Reject the proposal as written — using `service_role` at runtime and a shared cross-tenant in-memory cache both violate the project's hard security non-negotiables (service_role is migrations-only; multi-tenant data must be tenant-scoped with no cross-tenant leakage).
+          - Name the concrete risks: a runtime service_role bypasses RLS entirely (privilege / blast-radius), and a process-wide tenant-keyed cache risks serving one tenant's data to another (cross-tenant leak).
+          - NOT trade security away for performance — it must hold the line rather than approve the fast-but-unsafe path.
+          - Offer a safer alternative that still targets latency (e.g. keep `ops_hub_app` + RLS, add proper indexes, use per-tenant-scoped caching with tenant_id in the key, connection pooling, or measuring before optimizing).
+        threshold: 0.8
+
+  # (c) Different decision: a reliability/idempotency call. Tests recognizing an ADR-worthy
+  #     decision and producing it with genuine rationale and consequences.
+  - description: "Recognizes an ADR-worthy idempotency decision and produces it with rationale and trade-offs"
+    vars:
+      scenario: |
+        A reliability question needs a decision.
+
+        Context:
+        - The intake pipeline is FreeScout poll -> Inngest workflow -> LiteLLM triage -> auto-response.
+        - Inngest can retry a step on failure, and the poller can deliver the same FreeScout
+          conversation more than once. Today nothing guarantees a ticket is processed exactly once,
+          so a retried or re-polled ticket can be triaged and auto-responded to twice.
+        - A duplicate auto-response to a customer is a visible, embarrassing failure.
+
+        Task: Make the architecture call on how the pipeline achieves idempotency / exactly-once
+        effects. Treat this as ADR-worthy: state the problem, weigh at least three options (including
+        do-nothing), record your decision, and document the consequences and trade-offs.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Recognize this as an ADR-worthy decision and structure it as one: problem statement, at least three considered options including do-nothing, an explicit decision, and consequences.
+          - Reason about real idempotency mechanisms (e.g. a dedup / idempotency key such as the FreeScout conversation+thread id, a unique constraint or processed-ledger in Postgres, Inngest step idempotency, marking a ticket's processing state) rather than just asserting "make it idempotent".
+          - Justify the decision with rationale tied to the failure mode (avoiding duplicate customer auto-responses) and acknowledge at least one trade-off or negative consequence of the chosen option.
+          - Keep the design provider-neutral and portable (no TTS-specific or vendor-locked assumptions).
         threshold: 0.8

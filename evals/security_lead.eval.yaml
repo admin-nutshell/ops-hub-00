@@ -3,6 +3,10 @@
 # does a new value belong in Supabase Vault (a secret) or in Coolify env vars (non-secret
 # config)? The failure mode is waving through a credential into plaintext Coolify env. We
 # test that the agent classifies correctly AND justifies the boundary.
+#
+# Cases: (a) classify Vault-secret vs Coolify-config; (b) flag credential antipatterns in
+# code (secret in source, rejectUnauthorized:false, committed .env); (c) APPROVE a PR that
+# looks risky but is adequately controlled. The fixed prompt sets the role; each varies {{scenario}}.
 
 description: "Security Lead — classify a new env var as Vault secret vs. Coolify config and justify"
 
@@ -10,16 +14,7 @@ prompts:
   - |
     You are the Security Lead agent for the Ops Hub.
 
-    Context:
-    - A PR adds two new environment variables to the `ops-hub-app` deployment:
-      1. `OPENAI_API_KEY` — a live provider API key used by LiteLLM fallback.
-      2. `LITELLM_BASE_URL` — the internal staging URL of the self-hosted LiteLLM service.
-    - Project policy: all secrets live in Supabase Vault; zero keys in env files, git, or
-      Coolify env vars. Non-secret runtime config may live in Coolify env vars.
-
-    Task: For each of the two variables, decide whether it belongs in Supabase Vault or in
-    Coolify env vars, and explain the reasoning. Flag anything that would violate the
-    secrets-hygiene policy if merged as-is.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -32,7 +27,20 @@ providers:
         explain why, naming threats clearly without alarmism.
 
 tests:
+  # (a) The routing decision: secret -> Vault, non-secret -> Coolify, with justification.
   - description: "Routes the secret to Vault, the non-secret to Coolify, and justifies the boundary"
+    vars:
+      scenario: |
+        Context:
+        - A PR adds two new environment variables to the `ops-hub-app` deployment:
+          1. `OPENAI_API_KEY` — a live provider API key used by LiteLLM fallback.
+          2. `LITELLM_BASE_URL` — the internal staging URL of the self-hosted LiteLLM service.
+        - Project policy: all secrets live in Supabase Vault; zero keys in env files, git, or
+          Coolify env vars. Non-secret runtime config may live in Coolify env vars.
+
+        Task: For each of the two variables, decide whether it belongs in Supabase Vault or in
+        Coolify env vars, and explain the reasoning. Flag anything that would violate the
+        secrets-hygiene policy if merged as-is.
     assert:
       - type: llm-rubric
         value: |
@@ -40,4 +48,63 @@ tests:
           - Classify `OPENAI_API_KEY` as a secret that must live in Supabase Vault, and flag it as a policy violation if merged into Coolify env vars or committed.
           - Classify `LITELLM_BASE_URL` as non-secret runtime config that is acceptable in Coolify env vars (it is an internal URL, not a credential).
           - Justify the distinction in terms of the secrets-hygiene policy (credentials vs. non-sensitive config), not arbitrarily.
+        threshold: 0.8
+
+  # (b) Edge/failure mode: catch credential antipatterns in actual code. We guard against
+  #     waving through a secret-in-source / TLS-bypass / committed-.env PR.
+  - description: "Flags credential antipatterns in code (hardcoded secret, rejectUnauthorized:false, committed .env) and blocks"
+    vars:
+      scenario: |
+        A PR is up for security review. The diff adds an outbound call from the agent runtime to the
+        self-hosted LiteLLM service. The relevant code:
+
+            const res = await fetch(process.env.LITELLM_URL + "/chat/completions", {
+              method: "POST",
+              // cert on the internal host is self-signed, so:
+              agent: new https.Agent({ rejectUnauthorized: false }),
+              headers: { Authorization: "Bearer sk-litellm-9f3a...hardcoded..." },
+              body: JSON.stringify(payload),
+            });
+
+        Also in the same PR, a fallback OpenAI key was committed to `.env` and the `.env` file was
+        added to the repo "so deploys don't break".
+
+        Task: Review this PR for credential and secrets-hygiene problems. Identify every antipattern,
+        explain the threat, and state what must change before it can merge.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Flag the hardcoded LiteLLM bearer token in source as a credential antipattern (secret in code/git) that must move to Supabase Vault / runtime config and never be committed.
+          - Flag `rejectUnauthorized: false` as a hard-stop violation (disabling TLS verification) and reject it rather than accepting it because the cert is self-signed — name the MITM / interception threat and require a proper trust path.
+          - Flag the committed `.env` containing a live OpenAI key as a secret-in-git violation requiring removal AND key rotation (a committed secret is compromised), not just deletion.
+          - Block the PR / withhold approval until these are fixed, naming the threats clearly rather than waving it through.
+        threshold: 0.8
+
+  # (c) Different judgment: approve a PR that LOOKS risky but is adequately controlled.
+  #     We guard against reflexive blocking / alarmism.
+  - description: "Approves a safe-but-scary-looking PR (delimited untrusted input, ID-only logging, tenant-scoped query)"
+    vars:
+      scenario: |
+        A PR is up for review and at first glance looks alarming, but you must judge it on the
+        actual threat model, not on scary-looking surface.
+
+        The diff:
+        - Adds raw, customer-submitted ticket text directly into a prompt sent to LiteLLM — but it
+          wraps the text in <ticket_body>...</ticket_body> tags, and the system prompt already
+          instructs the model to treat <ticket_*> content as untrusted data, never as instructions.
+        - Logs the ticket id and tenant id (not the body, not PII) to Sentry for tracing.
+        - Uses the `ops_hub_app` role with a tenant-scoped query (WHERE tenant_id = $1).
+
+        Task: Review this PR. Decide whether it is actually safe to merge. Distinguish real
+        vulnerabilities from things that merely look risky, and approve it if the controls are
+        adequate rather than blocking reflexively.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Conclude the PR is acceptable to merge (approve), because the controls are adequate — it should NOT block reflexively just because customer text reaches a prompt.
+          - Correctly reason about prompt-injection: the untrusted ticket text is delimited in <ticket_body> tags with a system instruction to treat it as data not instructions, which is the right mitigation (it may suggest hardening, but that is not a blocker).
+          - Validate the safe signals: logging only ticket/tenant IDs (not PII/body) to Sentry is fine, and the tenant-scoped `ops_hub_app` query (WHERE tenant_id = $1) is the correct multi-tenant pattern.
+          - Demonstrate threat-model judgment (distinguish real risk from scary-looking-but-controlled) rather than alarmism, consistent with "block what is unsafe, explain why, no alarmism".
         threshold: 0.8

@@ -2,25 +2,18 @@
 # Why this eval exists: the PM's core value is turning a messy WORK.md status snapshot
 # into a correctly *prioritized*, dependency-aware sprint plan without inventing work or
 # silently dropping blockers. We test prioritization judgment, not formatting.
+#
+# Cases: (a) mixed blocked/unblocked board — sequence unblocked first; (b) EVERY task
+# blocked — escalate, don't invent filler; (c) mid-sprint scope change — surface the cost,
+# don't silently absorb it. The fixed prompt sets the role; each case varies {{scenario}}.
 
 description: "PM — produce a dependency-correct, prioritized sprint plan from a WORK.md status snapshot"
 
 prompts:
   - |
-    You are the PM agent for the Ops Hub build team. Below is the current state of Sprint 1.
+    You are the PM agent for the Ops Hub build team.
 
-    Context (from WORK.md):
-    - M1 goal: stand up Coolify + Supabase + Inngest + LangFuse + LiteLLM + FreeScout + CI eval gate.
-    - T-11 (Supabase migrations) is BLOCKED on Security Lead RLS sign-off + founder execution.
-    - T-12 (Vault), T-18 (RLS isolation test), and T-20 (KB init) all depend on T-11.
-    - T-16 (11 eval cases) has NO infra dependency and is unstarted.
-    - T-17 (wire eval gate into CI) depends on T-15 (done) and T-16.
-    - T-07 (Inngest) is deployed but blocked on founder provisioning signing keys (FQ-13).
-    - The sprint ends July 4. Two engineers' worth of agent capacity is available this week.
-
-    Task: Produce a prioritized plan for THIS WEEK. State the order of work, which tasks
-    can run in parallel, which are blocked and on whom, and what you would escalate to the
-    founder. Do not invent tasks that are not in the context.
+    {{scenario}}
 
 providers:
   - id: anthropic:claude-sonnet-4-6
@@ -33,7 +26,24 @@ providers:
         business-logic decisions to the founder.
 
 tests:
+  # (a) Mixed board: some work blocked, some not. Sequence unblocked first, name blockers.
   - description: "Plan respects dependencies, surfaces blockers with owners, and sequences unblocked work first"
+    vars:
+      scenario: |
+        Below is the current state of Sprint 1.
+
+        Context (from WORK.md):
+        - M1 goal: stand up Coolify + Supabase + Inngest + LangFuse + LiteLLM + FreeScout + CI eval gate.
+        - T-11 (Supabase migrations) is BLOCKED on Security Lead RLS sign-off + founder execution.
+        - T-12 (Vault), T-18 (RLS isolation test), and T-20 (KB init) all depend on T-11.
+        - T-16 (11 eval cases) has NO infra dependency and is unstarted.
+        - T-17 (wire eval gate into CI) depends on T-15 (done) and T-16.
+        - T-07 (Inngest) is deployed but blocked on founder provisioning signing keys (FQ-13).
+        - The sprint ends July 4. Two engineers' worth of agent capacity is available this week.
+
+        Task: Produce a prioritized plan for THIS WEEK. State the order of work, which tasks
+        can run in parallel, which are blocked and on whom, and what you would escalate to the
+        founder. Do not invent tasks that are not in the context.
     assert:
       - type: llm-rubric
         value: |
@@ -42,4 +52,62 @@ tests:
           - Correctly identify the blockers and name who must clear each one (Security Lead sign-off + founder execution for T-11; founder signing keys / FQ-13 for T-07).
           - Identify at least one valid parallelization opportunity among the unblocked tasks (e.g. T-16 proceeding while founder/Security Lead clear T-11).
           - Not invent tasks that were not provided in the context.
+        threshold: 0.8
+
+  # (b) Edge/failure mode: EVERY build task is blocked. The failure we guard against is the
+  #     PM inventing filler work or scheduling a blocked task as if ready, instead of escalating.
+  - description: "When every task is blocked, escalates the blockers and does not invent filler work"
+    vars:
+      scenario: |
+        Below is the current state of Sprint 2 as of Wednesday.
+
+        Context (from WORK.md):
+        - T-21 (FreeScout poller) is BLOCKED on the founder provisioning the FreeScout API key (FQ-22, unanswered 3 days).
+        - T-22 (Inngest intake workflow) depends on T-21.
+        - T-23 (LiteLLM triage call) depends on T-22.
+        - T-26 (auto-response) and T-27 (escalation path) depend on T-23.
+        - T-27 is additionally blocked on FQ-29 (the DNC tenant's opt-out policy), unanswered.
+        - Every other open ticket in the sprint sits downstream of T-21. There is no unblocked build work on the board.
+        - Two engineers' worth of agent capacity is available; the sprint ends July 18.
+
+        Task: Produce a plan for THIS WEEK given that every build task is blocked. Do not invent
+        filler tasks that are not on the board. State clearly what must be escalated and to whom,
+        and what (if any) genuinely useful non-blocked work exists.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Recognize that ALL build tasks are blocked behind T-21 and the unanswered founder queues (FQ-22, FQ-29), and NOT pretend a blocked task is ready to start.
+          - Escalate the blockers explicitly — name FQ-22 (FreeScout API key) and FQ-29 (DNC tenant opt-out policy) as founder decisions that must be cleared — rather than silently scheduling around them.
+          - NOT invent filler tasks that are absent from the board to manufacture the appearance of progress.
+          - At most, surface only genuinely useful non-build work that does not depend on T-21 (e.g. prep, test scaffolding, documentation, or chasing the escalations), while being honest that the critical path is stalled.
+        threshold: 0.8
+
+  # (c) Different decision: a mid-sprint scope change. The PM must surface the trade-off and
+  #     route it, not silently absorb unplanned work into a committed sprint.
+  - description: "Handles a mid-sprint scope-change request by surfacing the cost and routing it, not silently absorbing it"
+    vars:
+      scenario: |
+        It is day 6 of the 10-day Sprint 2 (AI triage pipeline). The critical path
+        T-21 -> T-22 -> T-23 -> T-26 -> T-27 is on track, with T-23 (LiteLLM triage) in progress.
+
+        Mid-sprint, the founder sends a new request: "Can we also add a Slack notification
+        that pings me whenever a ticket is auto-escalated? I'd like it this sprint."
+
+        Context:
+        - The Slack integration is net-new: no Slack app, webhook, or secret exists yet.
+        - It is not in the Sprint 2 goal (wire and validate the AI triage pipeline) and has no task ID.
+        - Pulling capacity onto it now risks the critical path landing by July 18.
+
+        Task: Respond to this mid-sprint scope-change request as PM. Decide whether it belongs in
+        this sprint, how it affects the committed critical path, and how you would handle it without
+        derailing the sprint goal.
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Treat the Slack request as a scope change against a committed sprint, not silently absorb it — assess its impact on the critical path (T-21 -> ... -> T-27) and the July 18 goal.
+          - Decline to jam unplanned, net-new work into the in-flight sprint at the expense of the committed pipeline, OR make the trade-off explicit (what would have to slip) rather than pretending it is free.
+          - Route it correctly: capture it as a new backlog item / next-sprint candidate (noting it needs a task ID, a Slack app/secret, and likely Security Lead review for the new webhook secret), rather than starting it ad hoc.
+          - Recognize this is the founder's call on priority but that the PM owns surfacing the cost — i.e. give a recommendation, not just a yes.
         threshold: 0.8
