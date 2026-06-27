@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { draftResponse, respondOneTicket, type FreeScoutDelivery, type DraftResult } from "../ticket-respond";
+import { draftResponse, respondOneTicket, type FreeScoutDelivery } from "../ticket-respond";
 import { makeClient, makePool, mockFetchOk } from "./helpers";
 
 /**
@@ -81,7 +81,7 @@ describe("draftResponse", () => {
 
   it("escapes XML-special characters so ticket content cannot break delimiters", async () => {
     const fetchMock = mockFetchOk("draft");
-    const _result = await draftResponse({
+    await draftResponse({
       title: "<script>alert(1)</script>",
       body: "a & b < c",
       urgency: "low",
