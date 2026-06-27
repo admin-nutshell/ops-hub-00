@@ -183,19 +183,17 @@ Parallel review by Tech Lead + QA Manager + Security Lead — all signed off. Th
 - Production Manager: T-08 (LiteLLM) + T-10 (FreeScout) in parallel
 
 ### Tech Lead
-**🟢 T-23 CODE COMPLETE (2026-06-25) — branch `feat/t23-ticket-respond`, PR open.**
-`src/inngest/ticket-respond.ts`: `respondTicket` (event-driven on `ops-hub/ticket.respond`) + exported `respondOneTicket`/`draftResponse`/`postFreeScoutNote`. Registered in `src/index.ts`. Drafts a reply via LiteLLM (system=instructions+urgency tone, user=XML-escaped untrusted ticket content — same injection split as triage), delivers it as an internal FreeScout **NOTE** (type=3, never auto-emailed) behind a mockable, config-gated delivery seam, then advances state `triaged → responded`. LangFuse trace `ticket-respond`. 11 unit tests green (draft prompt shape, injection escaping, idempotency skips, no-conversation skip, **error path: LiteLLM/delivery failure → no UPDATE, stays triaged**). `pnpm lint`/`typecheck`/`test` green.
+**✅ T-23 DONE (2026-06-26) — merged to main.**
+`src/inngest/ticket-respond.ts` live: `respondTicket` + `respondOneTicket`/`draftResponse`/`postFreeScoutNote`. 11 unit tests merged (T-24 confirmed). Activation wire: `triageTicket` emits `ops-hub/ticket.respond` on successful triage → `respondTicket` picks it up. State machine: `new → triaged → responded`.
 
-Migration `supabase/migrations/20260625000000_t23_responded_state.sql` adds `'responded'` to the `tickets.state` CHECK — it was missing, so the live UPDATE would have thrown a check-violation invisible to mocked tests (caught in review). Founder/Prod Mgr applies via the T-11 runbook pattern before T-23 runs live.
+**⏳ T-23 PENDING — production activation requires 3 ops actions (Production Manager):**
+1. Apply migration `supabase/migrations/20260625000000_t23_responded_state.sql` to staging via Supabase SQL Editor (adds `'responded'` to `tickets.state` CHECK — without it, the UPDATE throws a check-violation)
+2. Provision `FREESCOUT_DB_URL` (freescout_user DSN, needs INSERT on threads) in Coolify ops-hub-app
+3. Provision `FREESCOUT_BOT_USER_ID` (FreeScout user ID for the bot account) in Coolify ops-hub-app
+Until all 3 are set, `ticket-respond` is registered but dormant — tickets stay `triaged`, no data corruption.
 
-**ADR-0003** (`docs/adr/0003-freescout-response-writeback.md`) records the write-back decision: NOTE not reply (safety); write as `freescout_user` on a separate pool, never `ops_hub_app` (read-only on FreeScout tables); REST API rejected (Api module disabled/paid) but is the preferred long-term swap; do-nothing rejected.
-
-**FLAGGED (not added — Tech-Lead call, not founder's):**
-- → **Production Manager:** provision `FREESCOUT_DB_URL` (least-priv `freescout_user` DSN, INSERT on `threads`) + `FREESCOUT_BOT_USER_ID` in Coolify; verify `threads` NOT NULL columns + note-type constants against the live FreeScout DB before enabling (the INSERT column set is marked unverified-against-live-schema in code). Until set, `ticket-respond` is registered but dormant — fail-safe (ticket stays `triaged`).
-- → **Security Lead:** review the `freescout_user` write-credential scope + cross-app write posture (ADR-0003 §Review).
-- **Activation wiring deferred:** `triageTicket` must emit `ops-hub/ticket.respond` on success — one-line `step.sendEvent`, NOT added (T-23 must not modify `ticket-triage.ts`; T-22 blocked on FQ-39). Add when T-22 validates, or add a `sweepTriagedTickets` cron mirroring `sweepNewTickets`.
-
-**Handoff → QA Manager (T-24):** PR open, CI target green. The QA contract stub (`it.todo` list) in `ticket-respond.test.ts` is now converted to real assertions per its own instructions. Extend `ticket-state-machine.test.ts` to cover `triaged → responded`; the respond path's FreeScout delivery is mocked, so integration coverage of the state machine does not need the credential.
+**🟢 Security refactoring — PR #175 open (2026-06-26), ready to merge.**
+Two-pass audit complete. Changes: S-1/S-2 removed unauthenticated debug endpoints (`/debug/litellm-connectivity` + `/debug-sentry`); S-3 added `FREESCOUT_BOT_USER_ID` numeric validation; S-4 capped LiteLLM error body at 200 chars; deps: vitest 2→3 (5 CVEs resolved), prettier/sentry/inngest/typescript-eslint bumped; cleanups: `createLazyPool()` factory + `escapeXml`/`Urgency`/`URGENCIES` extracted to `utils.ts`; shared test helpers in `__tests__/helpers.ts`; `helloWorld` scaffold removed; `server.setTimeout(30_000)` added. Build clean, 140 tests passed.
 
 **✅ T-21 DONE (2026-06-23).** `pollFreeScout` cron verified end-to-end: two tickets confirmed in Supabase (`freescout_conversation_id: 6 + 7`), dedup working. FQ-31/33/34 resolved. PR #140 merged.
 
