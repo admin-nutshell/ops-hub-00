@@ -137,7 +137,7 @@ The hub is in Phase 1 complete state when **all** of these are true:
 |---|---|---|---|---|
 | M1 | Workspace + Foundation | P1 | End July 2026 (Wk 1–2) | Founder + Tech Lead |
 | M2 | Agent Team Activated | P1 | Mid August 2026 (Wk 3–4) | PM + Tech Lead |
-| M3 | TTS Tenant #1 (DNC) live on Ops Hub | P1 | End August 2026 (Wk 5–6) | Solutions Architect + PM |
+| M3 | TTS Tenant #1 (DNC) live on Ops Hub | P1 | ⏸ Deferred — platform capability build first (2026-06-27) | Solutions Architect + PM |
 | M4 | **Phase 1 Complete** | P1 → P2 | Early September 2026 (Wk 6–7) | PM + Founder |
 | M5 | Premium SLA tier launched | P2 | Late September 2026 (Wk 9–10) | Production Manager + Solutions Architect |
 | M6 | A-Mart YYC onboarded (conditional) | P2 | Early October 2026 (Wk 11–12) | Solutions Architect + Founder |
