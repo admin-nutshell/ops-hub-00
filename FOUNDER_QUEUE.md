@@ -4,112 +4,54 @@
 
 ---
 
-## FQ-45 — ADR-0004 LiteLLM DB isolation: run Step 1 SQL + set GitHub secret
+## FQ-46 — Monthly Briefing #1: read and acknowledge
 
 **Filed:** 2026-06-27
-**Filed by:** Tech Lead
-**Needs:** Execution (SQL + GitHub Actions secret)
-**Blocking:** LiteLLM table wipe risk on every redeploy. Has wiped `public.tenants` / `public.tickets` 3× in staging. Agent-dispatched workflow (`fix-litellm-schema-isolation.yml`) is ready — blocked on Steps 1 + 2 below, which only `postgres` can run.
-**Full runbook:** `docs/engineering/litellm-db-isolation-runbook.md`
+**Filed by:** PM (T-29)
+**Needs:** Read only — no action required
+**Deadline:** July 31, 2026
 
-**Context:** LiteLLM's Prisma startup runs DDL against the schema its DB user can reach. Because LiteLLM has been connecting as a `public`-capable user, it has wiped Ops Hub tables (tenants, tickets, etc.) 3 times. ADR-0004 solves this with a permission wall: a dedicated `litellm_db_user` role that owns the `litellm` schema and has zero access to `public`.
+Monthly briefing #1 is ready: `docs/briefings/2026-07-31-m1-briefing.md`
 
-**What needs to happen (2 founder steps, then agent dispatches):**
+Covers: M1 complete confirmation, what the platform does today, M2 status, key decisions made, open risks, and next 30 days.
 
-**Step 1 — Run SQL in Supabase SQL Editor** (project `yocoljutbiizdbfraapx`, connected as `postgres`)
+**No founder action needed** — this is an informational briefing. Reading it closes M1 criterion #13 and unblocks T-34 (M2 close).
 
-> Generate a strong password first (e.g. run `openssl rand -base64 24`). Use it where you see `__REPLACE__`.
+After reading: notify PM "T-29 read" and M1 #13 will be marked ✅.
 
-Copy-paste from `docs/engineering/litellm-db-isolation-runbook.md` §Step 1 (the full SQL block). Key operations:
-1. `CREATE ROLE litellm_db_user LOGIN PASSWORD '__REPLACE__'` (with NOSUPERUSER NOBYPASSRLS)
-2. `DROP SCHEMA IF EXISTS litellm CASCADE; CREATE SCHEMA litellm AUTHORIZATION litellm_db_user`
-3. `ALTER ROLE litellm_db_user SET search_path = litellm`
-4. `REVOKE ALL ON SCHEMA public FROM litellm_db_user`
+---
 
-**Step 2 — Set GitHub Actions secret** (repo: `admin-nutshell/ops-hub-00` → Settings → Secrets → Actions)
+## FQ-45 — ADR-0004 LiteLLM DB isolation: run Step 1 SQL + set GitHub secret
 
-Add secret `LITELLM_DB_USER_URL` with value:
-```
-postgresql://litellm_db_user.<project-id>:<password>@<supavisor-host>:6543/postgres?schema=litellm&pgbouncer=true
-```
-Replace `<project-id>` with `yocoljutbiizdbfraapx`, `<password>` with the one you generated, `<supavisor-host>` with the Supabase Transaction Mode pooler host (same host used in `OPS_HUB_APP_LOGIN_URL`, different port).
+**Filed:** 2026-06-27 | **Closed:** 2026-06-27
+**Status:** RESOLVED
 
-**After Steps 1 + 2 are done:** Notify Tech Lead ("FQ-45 Steps 1+2 done"). Agent dispatches the GitHub Actions workflow `fix-litellm-schema-isolation.yml` with `mode=apply-wall`, then `mode=freeze-schema`. Full 6-step runbook at `docs/engineering/litellm-db-isolation-runbook.md`.
+- `litellm_db_user` role exists, owns `litellm` schema, zero access to `public.*` tables (verified)
+- `LITELLM_DB_USER_URL` GitHub secret set
+- `fix-litellm-schema-isolation.yml apply-wall` ran (run 28221261717 — DB swap succeeded; health-check timed out during LiteLLM restart but swap applied)
+- `fix-litellm-schema-isolation.yml freeze-schema` ran and passed (run 28221681598)
 
-**Options:**
-- **Do it now (Recommended)** — runs 15–30 min; eliminates the #1 ops risk (table wipe on next LiteLLM redeploy)
-- **Defer** — safe only if LiteLLM is not redeployed before this is applied
-
-**Recommendation:** Do it now. The next LiteLLM redeploy (routine or triggered by Coolify auto-update) will wipe staging tables again. The workflow is ready to dispatch the moment you confirm.
-
-**Deadline:** Before next LiteLLM redeploy — treat as **ASAP / high priority**
+ADR-0004 is fully in force. LiteLLM cannot wipe ops-hub tables on redeploy.
 
 ---
 
 ## FQ-44 — FREESCOUT_DB_URL: provision env var to activate draft delivery + SLA breach notes
 
-**Filed:** 2026-06-27
-**Filed by:** Tech Lead
-**Needs:** Infrastructure provisioning (2 env vars in Coolify)
-**Blocking:** Two capabilities that T-35 (PR #192) just built — but both need direct FreeScout DB access to post internal notes:
-1. `ticket-respond`: Inngest function that posts the AI-drafted reply as a FreeScout internal note. Currently **dormant** — the ticket state advances to `responded` but no note is posted to FreeScout. A human cannot see the draft.
-2. `sla-monitor`: Posts a ⚠️ SLA BREACH note to FreeScout conversations that exceed the 60-min response target. Without the env var, only the `audit_log` entry is created (not visible in FreeScout).
+**Filed:** 2026-06-27 | **Closed:** 2026-06-27
+**Status:** RESOLVED
 
-**What needs to happen:**
-
-**Step 1 — Add `FREESCOUT_DB_URL` to Coolify ops-hub-app env vars**
-
-In Coolify → `ops-hub-app` → Environment Variables, add:
-```
-FREESCOUT_DB_URL = postgresql://freescout_user.yocoljutbiizdbfraapx:<freescout-db-password>@<supavisor-host>:5432/postgres
-```
-Use the same `DB_HOST`, `DB_USERNAME`, `DB_PASSWORD` values from the FreeScout Coolify service env vars to construct this. **Do NOT use the pooler port 6543** — FreeScout's raw DB user needs a direct connection (port 5432, Session Mode).
-
-> Security note: `freescout_user` has table-level ownership on `conversations` and `threads` only. ops_hub_app's write path is separate. This connection is used exclusively to INSERT into the `threads` table (internal notes).
-
-**Step 2 — Confirm `FREESCOUT_BOT_USER_ID=1` is already set**
-
-This should already be in Coolify from T-27. If not, add it. The bot user ID is the FreeScout admin user ID (haytham@inatechshell.ca → ID 1).
-
-**After setting both env vars:** Click Deploy (full redeploy, not Restart) in Coolify. Then notify Tech Lead: "FQ-44 done — FREESCOUT_DB_URL set". Agent will verify a test note appears in FreeScout.
-
-**Recommendation:** Do Step 1+2 and redeploy. Takes 5 minutes. Activates the AI draft delivery that's been dormant since T-23.
-
-**Deadline:** Non-blocking — but ticket-respond has been dormant since T-23 (June 25). This has been the only remaining gap in the respond capability.
+`FREESCOUT_DB_URL` confirmed present in Coolify ops-hub-app env vars. Ticket-respond draft delivery and SLA breach notes are active after PR #192 deploy.
 
 ---
 
 ## FQ-43 — M3 production go-live: two decisions needed before August infrastructure work begins
 
-**Filed:** 2026-06-27  
-**Filed by:** Solutions Architect (T-33 scoping)  
-**Needs:** Decision (A) + Authorization (B)  
-**Blocking:** M3 planning; infrastructure provisioning cannot start until (A) is decided  
-**Full scoping doc:** `docs/planning/m3-dnc-production.md`
+**Filed:** 2026-06-27 | **Closed:** 2026-06-27
+**Status:** DEFERRED — founder decision
 
-**Context:** T-27 proved the DNC pipeline on staging. M3 = DNC on production with real customer tickets. Before agents can begin the prod infrastructure build (target: mid-August), two founder decisions are required.
+**Decision:** DNC production go-live is deferred indefinitely. Build the platform to full capability first; tenant production onboarding (DNC or any other) comes after. M3 scope is on hold until the platform is mature and the founder re-opens it.
 
-**Item A — DNC support email address (Decision)**
-
-What email do real DNC customers send support tickets to?
-
-- **Option A (Recommended):** New DNC domain alias, e.g. `support@dailyneedscanada.ca` → prod FreeScout IMAP. Clean; DNC owns their support identity. Requires DNC to have/acquire a domain and configure MX or a Google Workspace alias.
-- **Option B:** `dnc@support.inatechshell.ca` (ITS subdomain alias) → prod FreeScout IMAP. Low-cost; no new domain needed. Adequate if DNC does not yet have its own domain.
-- **Option C (Not recommended):** Share `support@inatechshell.ca` between staging and prod FreeScout. Risk of emails landing in the wrong environment.
-
-**Item B — Do real DNC customers exist yet? (Information)**
-
-M3 is only meaningful if DNC has real customer ticket volume by end-August 2026. If DNC has no real customers yet, the M3 date slips — that's not a problem, just a planning input agents need to know.
-
-**Options:**
-- **Yes** — DNC has (or will have) real customers by August 2026 → proceed with full M3 prod build
-- **No / Not yet** — DNC is still pre-launch → M3 target date slips to when DNC goes live; agents will scope infrastructure work against that revised date
-
-**Recommendation:** Choose Option A or B for the email (A is cleaner at scale; B works fine for an early-stage tenant). If DNC is pre-launch, confirm expected launch date so agents can schedule the M3 infrastructure sprint accordingly.
-
-**Deadline:** Non-blocking on Sprint 3; needed before agents begin August infra work (target: decision by 2026-07-25 to give agents 1 week to scope the infra sprint).
-
-**After resolution:** Notify Solutions Architect with choices → agent will open the M3 infrastructure sprint and build the phase 1–5 runbook (see scoping doc §4).
+**Impact:** T-33 scoping doc (`docs/planning/m3-dnc-production.md`) remains valid as a reference — no work needed on it now. Solutions Architect will revisit when founder signals readiness to onboard a tenant to production.
 
 ---
 

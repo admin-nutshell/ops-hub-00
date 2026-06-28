@@ -4,7 +4,7 @@
 **Date:** 2026-06-27  
 **Sprint:** Sprint 3 (T-33 exit deliverable)  
 **Target:** M3 — end August 2026  
-**Status:** Scoping complete; blocked on FQ-43 (founder decisions)
+**Status:** ⏸ DEFERRED — 2026-06-27 founder decision. Build platform to full capability first; production tenant onboarding on hold indefinitely. This doc is reference material only — no work is in progress against it. Re-open when founder signals readiness.
 
 ---
 
