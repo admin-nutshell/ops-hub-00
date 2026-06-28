@@ -6,6 +6,9 @@ name: Deploy to Staging
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "status/**"
+      - "docs/**"
 
 # Least-privilege: needs packages:write for GHCR image push.
 permissions:
@@ -167,7 +170,7 @@ jobs:
 
           # 4. Start the app
           echo "Starting $APP_UUID..."
-          START_HTTP=$(curl -s --max-time 30 -o /tmp/start.json -w "%{http_code}" -X POST \
+          START_HTTP=$(curl -s --max-time 180 -o /tmp/start.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             "$COOLIFY_BASE/applications/$APP_UUID/start")
           echo "Start HTTP $START_HTTP"

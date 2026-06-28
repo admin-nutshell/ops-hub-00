@@ -1,0 +1,171 @@
+name: Status Page — Incident Management
+
+# Triggered two ways:
+#   1. workflow_dispatch — manual open / resolve by an agent or founder
+#   2. repository_dispatch (type: status-alert) — automated UptimeRobot alerts
+#      forwarded by the ops-hub /api/status/webhook endpoint
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [open, resolve]
+        description: "Open a new incident or resolve the most recent open one"
+        required: true
+        default: open
+      title:
+        type: string
+        description: "Incident title (required for open; used as label for resolve)"
+        required: true
+      affected:
+        type: string
+        description: "Affected systems — comma-separated (e.g. 'Ops Hub Staging,LiteLLM Staging')"
+        required: true
+        default: "Ops Hub Staging"
+      severity:
+        type: choice
+        options: [notice, disrupted, down]
+        description: "Severity"
+        default: disrupted
+
+  repository_dispatch:
+    types: [status-alert]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  manage-incident:
+    name: Manage incident
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: true
+          ref: status-content
+
+      - name: Open incident (manual workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'open'
+        env:
+          TITLE: ${{ github.event.inputs.title }}
+          AFFECTED: ${{ github.event.inputs.affected }}
+          SEVERITY: ${{ github.event.inputs.severity }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, re, datetime
+          title    = os.environ['TITLE']
+          affected = os.environ['AFFECTED']
+          severity = os.environ['SEVERITY']
+          now      = datetime.datetime.utcnow()
+          date_str    = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+          date_prefix = now.strftime('%Y-%m-%d')
+          slug = re.sub(r'[^a-z0-9-]', '', title.lower().replace(' ', '-'))[:50]
+          filename = f'status/content/{date_prefix}-{slug}.md'
+          lines = [
+            '---',
+            f'Title: "{title}"',
+            f'date: {date_str}',
+            'resolved: false',
+            f'severity: {severity}',
+            'affected:',
+            *[f'  - {s.strip()}' for s in affected.split(',')],
+            'section: issue',
+            '---',
+            'Investigating. Updates will follow.',
+          ]
+          with open(filename, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+          print(f'Created: {filename}')
+          PYEOF
+          git config user.name "ops-hub-bot"
+          git config user.email "bot@inatechshell.ca"
+          git add status/content/
+          git commit -m "status: open incident — $TITLE"
+          git push
+
+      - name: Open incident (UptimeRobot down alert)
+        if: github.event_name == 'repository_dispatch' && github.event.client_payload.alertType == 1
+        env:
+          MONITOR: ${{ github.event.client_payload.monitorFriendlyName }}
+        run: |
+          python3 - <<'PYEOF'
+          import os, re, datetime
+          monitor = os.environ['MONITOR']
+          now     = datetime.datetime.utcnow()
+          date_str    = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+          date_prefix = now.strftime('%Y-%m-%d')
+          slug = re.sub(r'[^a-z0-9-]', '', monitor.lower().replace(' ', '-'))[:50]
+          filename = f'status/content/{date_prefix}-{slug}-outage.md'
+          lines = [
+            '---',
+            f'Title: "{monitor} is down"',
+            f'date: {date_str}',
+            'resolved: false',
+            'severity: down',
+            'affected:',
+            f'  - {monitor}',
+            'section: issue',
+            '---',
+            f'Automated alert: {monitor} is unreachable. Investigating.',
+          ]
+          with open(filename, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+          print(f'Created: {filename}')
+          PYEOF
+          git config user.name "ops-hub-bot"
+          git config user.email "bot@inatechshell.ca"
+          git add status/content/
+          git commit -m "status: alert — $MONITOR is down"
+          git push
+
+      - name: Resolve incident (UptimeRobot up alert)
+        if: github.event_name == 'repository_dispatch' && github.event.client_payload.alertType == 2
+        env:
+          MONITOR: ${{ github.event.client_payload.monitorFriendlyName }}
+        run: |
+          RESOLVED_WHEN=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          RESOLVED=false
+          for f in $(ls -t status/content/*.md 2>/dev/null | head -20); do
+            if grep -q "^resolved: false" "$f" 2>/dev/null; then
+              sed -i "s|^resolved: false|resolved: true|" "$f"
+              sed -i "/^resolved: true/a resolvedWhen: $RESOLVED_WHEN" "$f"
+              git config user.name "ops-hub-bot"
+              git config user.email "bot@inatechshell.ca"
+              git add "$f"
+              git commit -m "status: resolved — $MONITOR is back"
+              git push
+              RESOLVED=true
+              break
+            fi
+          done
+          [ "$RESOLVED" = "true" ] || echo "No open incident found — skipping resolve"
+
+      - name: Resolve most recent open incident (manual workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'resolve'
+        env:
+          TITLE: ${{ github.event.inputs.title }}
+        run: |
+          RESOLVED_WHEN=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          RESOLVED=false
+          for f in $(ls -t status/content/*.md 2>/dev/null | head -20); do
+            if grep -q "^resolved: false" "$f" 2>/dev/null; then
+              sed -i "s|^resolved: false|resolved: true|" "$f"
+              sed -i "/^resolved: true/a resolvedWhen: $RESOLVED_WHEN" "$f"
+              git config user.name "ops-hub-bot"
+              git config user.email "bot@inatechshell.ca"
+              git add "$f"
+              git commit -m "status: resolved — $TITLE"
+              git push
+              RESOLVED=true
+              break
+            fi
+          done
+          [ "$RESOLVED" = "true" ] || echo "No open incident found"
+
+      - name: Trigger status page rebuild
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy-status.yml --ref main
