@@ -1,0 +1,105 @@
+name: Monthly Backup Verification
+
+on:
+  schedule:
+    - cron: "0 6 1 * *" # 1st of every month at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-backup:
+    name: Check Supabase backup age
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify SUPABASE_ACCESS_TOKEN is set
+        run: |
+          if [ -z "${{ secrets.SUPABASE_ACCESS_TOKEN }}" ]; then
+            echo "::error::SUPABASE_ACCESS_TOKEN secret is not set. See FQ-48 for setup instructions."
+            exit 1
+          fi
+
+      - name: Fetch last backup timestamp
+        id: backup
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          PROJECT_REF="yocoljutbiizdbfraapx"
+
+          RESPONSE=$(curl -sf --max-time 30 \
+            -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
+            -H "apikey: $SUPABASE_ACCESS_TOKEN" \
+            "https://api.supabase.com/v1/projects/$PROJECT_REF/database/backups" \
+            2>&1) || {
+            echo "::error::Supabase Management API call failed. Check SUPABASE_ACCESS_TOKEN validity."
+            exit 1
+          }
+
+          # Parse the most recent backup timestamp using Python (available on ubuntu-latest)
+          LAST_BACKUP=$(echo "$RESPONSE" | python3 - <<'PYEOF'
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    backups = data.get("backups", [])
+    if not backups:
+        print("NONE")
+        sys.exit(0)
+    latest = sorted(backups, key=lambda x: x.get("inserted_at", ""), reverse=True)[0]
+    print(latest.get("inserted_at", "UNKNOWN"))
+except Exception as e:
+    print(f"PARSE_ERROR:{e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+)
+
+          if [ "$LAST_BACKUP" = "NONE" ]; then
+            echo "::error::No backups found for project $PROJECT_REF"
+            exit 1
+          fi
+
+          echo "last_backup=$LAST_BACKUP" >> "$GITHUB_OUTPUT"
+          echo "project_ref=$PROJECT_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Check backup age and write summary
+        env:
+          LAST_BACKUP: ${{ steps.backup.outputs.last_backup }}
+          PROJECT_REF: ${{ steps.backup.outputs.project_ref }}
+        run: |
+          # Convert ISO timestamp to epoch; Python handles the UTC offset portably
+          BACKUP_TS=$(python3 -c "
+from datetime import datetime, timezone
+ts = '${LAST_BACKUP}'
+dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+print(int(dt.timestamp()))
+")
+          NOW=$(date +%s)
+          AGE_HOURS=$(( (NOW - BACKUP_TS) / 3600 ))
+          AGE_MINUTES=$(( (NOW - BACKUP_TS) / 60 % 60 ))
+          THRESHOLD=25
+
+          if [ "$AGE_HOURS" -le "$THRESHOLD" ]; then
+            STATUS="✅ OK"
+          else
+            STATUS="❌ STALE"
+          fi
+
+          # Write GitHub step summary (durable per-run artifact visible in Actions UI)
+          {
+            echo "## Backup Verification — $(date -u +%Y-%m-%d)"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Project ref | \`$PROJECT_REF\` |"
+            echo "| Last backup | \`$LAST_BACKUP\` |"
+            echo "| Age | ${AGE_HOURS}h ${AGE_MINUTES}m |"
+            echo "| Threshold | ${THRESHOLD} hours |"
+            echo "| **Status** | **$STATUS** |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "Last backup: $LAST_BACKUP (${AGE_HOURS}h ${AGE_MINUTES}m ago) — $STATUS"
+
+          if [ "$AGE_HOURS" -gt "$THRESHOLD" ]; then
+            echo "::error::Backup is ${AGE_HOURS}h old — exceeds ${THRESHOLD}h threshold. Check Supabase dashboard."
+            exit 1
+          fi
