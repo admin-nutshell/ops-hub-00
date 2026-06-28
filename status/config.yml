@@ -1,0 +1,28 @@
+baseURL: "https://status.inatechshell.ca/"
+languageCode: "en"
+title: "ITS Platform Status"
+
+module:
+  imports:
+    - path: github.com/cstate/cstate
+
+params:
+  description: "Real-time service status for In a Tech-Shell platform"
+  brand: "ITS Platform Status"
+  startDate: "2026-06-28"
+  alwaysShowTitle: true
+  categorizeAffected: false
+  enableMermaid: false
+  dateFormat: "January 2, 2006 at 15:04 UTC"
+  incidentPostsPerPage: 10
+
+  systems:
+    - name: "Ops Hub Staging"
+      description: "AI ticket triage and response pipeline"
+      url: "https://ops-hub-staging.inatechshell.ca/health"
+    - name: "LiteLLM Staging"
+      description: "LLM model router (gpt-4o-mini via OpenAI)"
+      url: "https://litellm-staging.inatechshell.ca/health"
+    - name: "FreeScout Staging"
+      description: "Ticket intake via IMAP"
+      url: "https://freescout-staging.inatechshell.ca"

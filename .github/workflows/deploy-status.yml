@@ -1,0 +1,64 @@
+name: Deploy Status Page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "status/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Hugo site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go (required for Hugo modules)
+        uses: actions/setup-go@v5 # pin: SHA required before production
+        with:
+          go-version: "1.21"
+
+      - name: Install Hugo extended
+        run: |
+          HUGO_VERSION="0.124.0"
+          wget -q "https://github.com/gohugoio/hugo/releases/download/v${HUGO_VERSION}/hugo_extended_${HUGO_VERSION}_linux-amd64.tar.gz" \
+            -O /tmp/hugo.tar.gz
+          tar -xzf /tmp/hugo.tar.gz -C /usr/local/bin hugo
+          hugo version
+
+      - name: Fetch Cstate Hugo module
+        working-directory: status
+        run: hugo mod get github.com/cstate/cstate@latest
+
+      - name: Build
+        working-directory: status
+        run: hugo --minify
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3 # pin: SHA required before production
+        with:
+          path: status/public
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4 # pin: SHA required before production

@@ -4,6 +4,42 @@
 
 ---
 
+## FQ-47 — T-38 Cstate status page: 4 founder actions to go live
+
+**Filed:** 2026-06-28
+**Filed by:** Production Manager (T-38)
+**Needs:** Authorization + 4 one-time setup actions
+**Deadline:** July 7, 2026 (T-38 target)
+
+Code is merged and the Hugo site is built and deployed by CI. Four actions are needed before `status.inatechshell.ca` is reachable and UptimeRobot alerts are automated:
+
+**Action 1 — Enable GitHub Pages on the repo (2 min)**
+Repo Settings → Pages → Source → "GitHub Actions". This is blocked on GitHub Team plan (already active). Without this, `deploy-status.yml` will fail.
+
+**Action 2 — Add DNS CNAME record (5 min)**
+In your DNS provider (for `inatechshell.ca`), add:
+```
+CNAME  status  admin-nutshell.github.io
+```
+After Pages is enabled, GitHub will also verify the custom domain. If prompted, confirm HTTPS enforcement.
+
+**Action 3 — Create a GitHub fine-grained PAT for dispatch (5 min)**
+Go to GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens.
+- Repository: `admin-nutshell/ops-hub-00`
+- Permissions: **Actions → Read and Write** (only this — do NOT grant repo contents write)
+- Set as Coolify env var `GITHUB_STATUS_DISPATCH_TOKEN` in the `ops-hub-staging` project
+
+**Action 4 — Set secret + configure UptimeRobot webhook (10 min)**
+a) Add a random secret string as Coolify env var `STATUS_WEBHOOK_SECRET` (e.g. 32-char random hex — `openssl rand -hex 16`)
+b) In UptimeRobot, for each monitored URL (Ops Hub, LiteLLM, FreeScout), add an Alert Contact:
+- Type: Webhook
+- URL: `https://ops-hub-staging.inatechshell.ca/api/status/webhook?secret=<STATUS_WEBHOOK_SECRET>`
+- POST Value (JSON): `{"monitorFriendlyName":"*friendlyname*","monitorURL":"*url*","alertType":*alerttype*}`
+
+**Notify:** PM "FQ-47 complete" — T-38 will be declared done once status page is confirmed live at `status.inatechshell.ca`.
+
+---
+
 ## FQ-46 — Monthly Briefing #1: read and acknowledge
 
 **Filed:** 2026-06-27

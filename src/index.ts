@@ -9,6 +9,7 @@ import { resolveTicket, sweepRespondedTickets } from "./inngest/ticket-resolve";
 import { sweepSlaBreaches } from "./inngest/sla-monitor";
 import { learnFromTicket } from "./inngest/kb-learn";
 import { emitTrace } from "./langfuse";
+import { handleStatusWebhook } from "./statusWebhook";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
@@ -29,6 +30,10 @@ const inngestHandler = serve({
 export const server = http.createServer((req, res) => {
   if (req.url?.startsWith("/api/inngest")) {
     return inngestHandler(req, res);
+  }
+  if (req.method === "POST" && req.url?.startsWith("/api/status/webhook")) {
+    void handleStatusWebhook(req, res);
+    return;
   }
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
