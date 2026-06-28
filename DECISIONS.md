@@ -800,4 +800,21 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   1 KPIs green. M3 (DNC production) deferred — staging proves app-agnostic
   routing; production is a config exercise when ready. Phase 2 begins.
   Sprint 4 target: M5 (Premium SLA tier).
+
+2026-06-28 [PM] M5 "Premium SLA tier launched" declared. Sprint 4 Phase 2
+  hardening tasks T-38 through T-41 all shipped:
+    T-38 ✅ Cstate status page — Hugo site + deploy/incident workflows merged
+      (FQ-47: 4 founder actions required for public go-live)
+    T-39 ✅ Premium SLA tier configured — sla_tier column + per-urgency targets
+      (critical 30/high 60/normal 240/low 480 min) in sla-monitor.ts
+    T-40 ✅ Backup verification automation — monthly Supabase API health check
+      (FQ-48: SUPABASE_ACCESS_TOKEN secret needed for first automated run)
+    T-41 ✅ Mini DR drill executed — FreeScout ✅ recovered, ops-hub ✅ recovered
+      + Inngest re-synced, LiteLLM external URL ⚠️ unreachable from CI
+      (FQ-49: founder to check LiteLLM staging container health)
+  Technical definition of "launched": Premium tier code shipped; sla_tier
+  configurable per tenant; no tenant yet activated at Premium (first activation
+  is a founder-driven sales decision, not a blocking technical criterion).
+  Sprint 4 retro (T-43) to follow. Next milestone: M6 (A-Mart conditional) or
+  M7 (Phase 2 Complete) depending on A-Mart conversion outcome.
 ```
