@@ -59,7 +59,18 @@ Verify that each platform component can be restarted independently and recovers 
 
 ## Incidents / findings
 
-None — all three components recovered within the expected window. FreeScout DB GRANTs (`SELECT` on `conversations`/`threads`) were preserved across the restart (GRANTs are database-level, not container-level).
+| Component | Result | Notes |
+|---|---|---|
+| FreeScout | ✅ Recovered | DB GRANTs preserved (database-level, not container-level) |
+| LiteLLM | ⚠️ Partial | Coolify restart accepted (HTTP 200); external health endpoint `https://litellm-staging.inatechshell.ca/health` returned 000 (connection refused) from GitHub Actions runners for full 6-min window. Internal Docker URL (`http://h12xz8887fxvbvjts2hac8if-…:4000`) was not directly testable from CI. FQ-49 filed. |
+| ops-hub | ⏭️ Skipped | Step was blocked by LiteLLM step failure; `continue-on-error: true` added to LiteLLM so ops-hub step will run on future drills. |
+
+**LiteLLM external URL finding (FQ-49):** `https://litellm-staging.inatechshell.ca/health` is unreachable from GitHub Actions runner IP ranges. This may indicate:
+- The LiteLLM staging container is down or unhealthy
+- The Coolify reverse proxy routing for this URL has a configuration issue
+- The SSL certificate for the domain has expired
+
+Founder action required: verify `https://litellm-staging.inatechshell.ca/health` is accessible in a browser from outside the Coolify network. If it's down, check Coolify dashboard for LiteLLM container status.
 
 ---
 
