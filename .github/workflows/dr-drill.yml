@@ -42,7 +42,7 @@ jobs:
 
           check_health() {
             local name="$1" url="$2"
-            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || true
             [ -z "$HTTP" ] && HTTP="000"
             if [ "$HTTP" = "200" ]; then
               echo "| $name | \`$url\` | ✅ $HTTP |" >> "$GITHUB_STEP_SUMMARY"
@@ -106,7 +106,7 @@ jobs:
           echo "Waiting for FreeScout to recover..."
           for i in $(seq 1 18); do
             S=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
-              "https://freescout-staging.inatechshell.ca" 2>/dev/null)
+              "https://freescout-staging.inatechshell.ca" 2>/dev/null) || true
             [ -z "$S" ] && S="000"
             if [ "$S" = "200" ] || [ "$S" = "302" ]; then
               echo "FreeScout recovered after ${i}0s (HTTP $S)"
@@ -151,11 +151,11 @@ jobs:
           fi
           echo "  Coolify response: HTTP $HTTP"
 
-          # Use /health/liveliness — fast liveness check (does not probe model providers)
+          # Poll /health — the same endpoint that passes baseline; /health/liveliness has proxy issues
           echo "Waiting for LiteLLM to recover (up to 6 min)..."
           for i in $(seq 1 36); do
             S=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
-              "https://litellm-staging.inatechshell.ca/health/liveliness" 2>/dev/null)
+              "https://litellm-staging.inatechshell.ca/health" 2>/dev/null) || true
             [ -z "$S" ] && S="000"
             if [ "$S" = "200" ]; then
               echo "LiteLLM recovered after ~${i}0s"
@@ -220,7 +220,7 @@ jobs:
           echo "Waiting for ops-hub to recover..."
           for i in $(seq 1 18); do
             S=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
-              "$STAGING_URL/health" 2>/dev/null)
+              "$STAGING_URL/health" 2>/dev/null) || true
             [ -z "$S" ] && S="000"
             if [ "$S" = "200" ]; then
               echo "ops-hub recovered after ~${i}0s"
