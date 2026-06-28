@@ -793,4 +793,11 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
     5. Sprint 2 retro ✅ (T-30, PR #186)
     6. Eval coverage ≥3 cases/agent ✅ (T-32, PR #188)
   M3 target deferred per FQ-43. Next milestone: platform capability expansion.
+
+2026-06-28 [PM] M4 "Phase 1 Complete" declared. Phase 1 critical path fully
+  satisfied: repo → Coolify → Supabase → Inngest/LangFuse/LiteLLM → agents →
+  CI/CD → FreeScout → first ticket E2E → DNC routing (T-27, staging). All Phase
+  1 KPIs green. M3 (DNC production) deferred — staging proves app-agnostic
+  routing; production is a config exercise when ready. Phase 2 begins.
+  Sprint 4 target: M5 (Premium SLA tier).
 ```
