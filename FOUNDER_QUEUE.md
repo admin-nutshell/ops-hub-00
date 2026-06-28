@@ -29,6 +29,30 @@ gh workflow run verify-backup.yml --repo admin-nutshell/ops-hub-00
 
 ---
 
+## FQ-49 — T-41 DR drill: LiteLLM external URL unreachable
+
+**Filed:** 2026-06-28
+**Filed by:** Production Manager (T-41 DR drill)
+**Needs:** Diagnosis + remediation
+**Deadline:** Non-blocking (staging only — does not affect live ticket processing via internal Docker URL)
+
+During the T-41 DR drill, `https://litellm-staging.inatechshell.ca/health` returned HTTP 000 (connection refused / no response) from GitHub Actions runners across 6 consecutive minutes after a Coolify restart. The Coolify restart API call itself returned HTTP 200 (restart accepted).
+
+**Action (10 min):**
+1. Open `https://litellm-staging.inatechshell.ca/health` in a browser (from outside the Coolify VPS)
+2. If it loads → the external URL works but GitHub runners can't reach it (unlikely but possible with IP allowlisting)
+3. If it doesn't load → LiteLLM staging container is down or the Coolify proxy config is broken
+   - Check Coolify dashboard for LiteLLM container status
+   - If the container is stopped, start it via Coolify UI
+   - If the proxy is misconfigured, check the Coolify application's domain/proxy settings for `litellm-staging.inatechshell.ca`
+4. Once the URL is reachable, re-run the DR drill: `gh workflow run dr-drill.yml --field components=all`
+
+**Note:** Ops Hub ticket processing is NOT affected — it uses the internal Docker URL `http://h12xz8887fxvbvjts2hac8if-<suffix>:4000`, not the external domain.
+
+**Notify:** PM "FQ-49 complete" after external URL is reachable and drill passes.
+
+---
+
 ## FQ-47 — T-38 Cstate status page: 4 founder actions to go live
 
 **Filed:** 2026-06-28
