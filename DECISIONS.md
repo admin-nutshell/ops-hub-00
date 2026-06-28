@@ -777,4 +777,9 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Staging test complete (T-27, FQ-42). M3 ("TTS Tenant #1 DNC live") = production
   onboarding with real customer tickets and live SLA enforcement — different scope.
   M3 target: end August 2026 per 09_delivery.md. T-33 will scope the delta.
+
+2026-06-27 [Founder] M3 DNC production onboarding deferred indefinitely (FQ-43 closed).
+  Decision: build platform to full capability first; tenant production onboarding
+  comes after. M3 scope is on hold until founder signals readiness. T-33 scoping
+  doc kept as reference. No August infrastructure sprint.
 ```
