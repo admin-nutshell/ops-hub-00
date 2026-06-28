@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-      STAGING_URL: ${{ secrets.COOLIFY_STAGING_APP_URL }}
+      STAGING_URL: "https://ops-hub-staging.inatechshell.ca"
       COMPONENTS: ${{ github.event.inputs.components }}
 
     steps:
@@ -42,7 +42,8 @@ jobs:
 
           check_health() {
             local name="$1" url="$2"
-            HTTP=$(curl -sf --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)
+            [ -z "$HTTP" ] && HTTP="000"
             if [ "$HTTP" = "200" ]; then
               echo "| $name | \`$url\` | ✅ $HTTP |" >> "$GITHUB_STEP_SUMMARY"
             else
@@ -104,8 +105,9 @@ jobs:
 
           echo "Waiting for FreeScout to recover..."
           for i in $(seq 1 18); do
-            S=$(curl -sf --max-time 10 -o /dev/null -w "%{http_code}" \
-              "https://freescout-staging.inatechshell.ca" 2>/dev/null || echo "000")
+            S=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
+              "https://freescout-staging.inatechshell.ca" 2>/dev/null)
+            [ -z "$S" ] && S="000"
             if [ "$S" = "200" ] || [ "$S" = "302" ]; then
               echo "FreeScout recovered after ${i}0s (HTTP $S)"
               echo "| FreeScout | Restarted | ✅ Recovered in ~${i}0s (HTTP $S) |" >> "$GITHUB_STEP_SUMMARY"
@@ -149,10 +151,12 @@ jobs:
           fi
           echo "  Coolify response: HTTP $HTTP"
 
-          echo "Waiting for LiteLLM external health endpoint..."
-          for i in $(seq 1 18); do
-            S=$(curl -sf --max-time 10 -o /dev/null -w "%{http_code}" \
-              "https://litellm-staging.inatechshell.ca/health" 2>/dev/null || echo "000")
+          # Use /health/liveliness — fast liveness check (does not probe model providers)
+          echo "Waiting for LiteLLM to recover (up to 6 min)..."
+          for i in $(seq 1 36); do
+            S=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
+              "https://litellm-staging.inatechshell.ca/health/liveliness" 2>/dev/null)
+            [ -z "$S" ] && S="000"
             if [ "$S" = "200" ]; then
               echo "LiteLLM recovered after ~${i}0s"
               echo "| LiteLLM | Restarted | ✅ Recovered in ~${i}0s |" >> "$GITHUB_STEP_SUMMARY"
@@ -162,7 +166,7 @@ jobs:
             echo "  Attempt $i: HTTP $S — waiting 10s"
             sleep 10
           done
-          echo "| LiteLLM | Restarted | ❌ Did not recover within 3 min |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| LiteLLM | Restarted | ❌ Did not recover within 6 min |" >> "$GITHUB_STEP_SUMMARY"
           echo "litellm_recovered=false" >> "$GITHUB_OUTPUT"
           exit 1
 
@@ -215,8 +219,9 @@ jobs:
 
           echo "Waiting for ops-hub to recover..."
           for i in $(seq 1 18); do
-            S=$(curl -sf --max-time 10 -o /dev/null -w "%{http_code}" \
-              "$STAGING_URL/health" 2>/dev/null || echo "000")
+            S=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
+              "$STAGING_URL/health" 2>/dev/null)
+            [ -z "$S" ] && S="000"
             if [ "$S" = "200" ]; then
               echo "ops-hub recovered after ~${i}0s"
               echo "| ops-hub | Restarted | ✅ Recovered in ~${i}0s (HTTP $S) |" >> "$GITHUB_STEP_SUMMARY"
