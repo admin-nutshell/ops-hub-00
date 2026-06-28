@@ -6,14 +6,16 @@
 
 ## Current sprint
 
-**Sprint:** Sprint 3 — Agent Activation
-**Sprint goal:** Define and close M2 ("Agent Team Activated"); deliver T-29 monthly founder briefing (M1 #13); instrument per-ticket cost and latency; expand eval coverage to ≥ 3 cases/agent; scope M3 (DNC production path).
-**Sprint window:** June 27 – July 11, 2026 (2 weeks — corrected; Sprint 2 closed June 27, 10 days before its planned window opened)
-**Target milestone:** M2 — Agent Team Activated
+**Sprint:** Sprint 4 — Phase 2 Hardening
+**Sprint goal:** Declare M4 (Phase 1 Complete); deploy Cstate status page; configure Premium SLA tier; build backup verification; run mini DR drill; author Sprint 3 retro.
+**Sprint window:** June 28 – July 11, 2026
+**Target milestone:** M5 — Premium SLA tier launched
 
-**Critical path:** T-31 cost instrumentation → T-32 eval expansion → T-29 briefing → T-34 M2 close
+**Critical path:** T-36 (M4 declare + Sprint 3 retro) → T-38 (Cstate) → T-39 (Premium SLA tier) → T-40 (backup verification) → T-41 (DR drill) → T-42 (M5 close)
 
 ---
+
+*(Sprint 3 — Agent Activation: June 27–28, 2026 — ✅ COMPLETE. T-29–T-35 all done. M2 declared complete 2026-06-28. Platform capability-complete. Sprint retro: T-36.)*
 
 *(Sprint 2 — AI Triage Pipeline: June 27, 2026 — ✅ COMPLETE. T-21–T-27 all done. M1 criteria #11 (incident drill) + #12 (DNC flow) closed. Pipeline live: FreeScout → Inngest → LiteLLM → Supabase. Sprint retro: T-30.)*
 
