@@ -63,37 +63,52 @@ async function postBreachNote(
 }
 
 // Finds open tickets past their SLA deadline and logs each breach to audit_log.
-// A NOT EXISTS sub-select prevents duplicate entries for the same ticket.
+// Dedup via NOT EXISTS prevents duplicate entries for the same ticket.
+// Premium tenants use per-urgency targets; standard tenants use sla_config flat target.
 // Returns the breached tickets so a second step can post FreeScout notes.
-async function findAndLogBreaches(pool: Pool): Promise<BreachRow[]> {
+export async function findAndLogBreaches(pool: Pool): Promise<BreachRow[]> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("SELECT set_config('app.current_tenant', $1, true)", [STAGING_TENANT_ID]);
     await client.query("SELECT set_config('app.current_project', $1, true)", [STAGING_PROJECT_ID]);
 
-    // SELECT first so we know which tickets need notes.
+    // CTE resolves response_target_minutes once per ticket so the CASE is not repeated
+    // in the WHERE clause. Premium: per-urgency (30/60/240/480 min). Standard: flat
+    // from sla_config JSON, defaulting to 240 min if the key is absent.
     const { rows: breached } = await client.query<BreachRow>(
-      `SELECT
-         t.id,
-         t.project_id::text,
-         t.tenant_id::text,
-         t.title,
-         t.urgency,
-         t.freescout_conversation_id::text,
-         EXTRACT(EPOCH FROM (now() - t.created_at)) / 60 AS minutes_open,
-         (tn.sla_config->>'response_target_minutes')::int   AS response_target_minutes
-       FROM tickets t
-       JOIN tenants tn ON tn.id = t.tenant_id
-       WHERE t.state IN ('new', 'triaged')
-         AND EXTRACT(EPOCH FROM (now() - t.created_at)) / 60
-             > (tn.sla_config->>'response_target_minutes')::int
-         AND NOT EXISTS (
-           SELECT 1 FROM audit_log al
-           WHERE al.resource_type = 'ticket'
-             AND al.resource_id   = t.id
-             AND al.action        = 'sla_breach'
-         )
+      `WITH candidates AS (
+         SELECT
+           t.id,
+           t.project_id::text,
+           t.tenant_id::text,
+           t.title,
+           t.urgency,
+           t.freescout_conversation_id::text,
+           EXTRACT(EPOCH FROM (now() - t.created_at)) / 60 AS minutes_open,
+           CASE tn.sla_tier
+             WHEN 'premium' THEN
+               CASE t.urgency
+                 WHEN 'critical' THEN 30
+                 WHEN 'high'     THEN 60
+                 WHEN 'normal'   THEN 240
+                 ELSE                 480
+               END
+             ELSE
+               COALESCE((tn.sla_config->>'response_target_minutes')::int, 240)
+           END AS response_target_minutes
+         FROM tickets t
+         JOIN tenants tn ON tn.id = t.tenant_id
+         WHERE t.state IN ('new', 'triaged')
+           AND NOT EXISTS (
+             SELECT 1 FROM audit_log al
+             WHERE al.resource_type = 'ticket'
+               AND al.resource_id   = t.id
+               AND al.action        = 'sla_breach'
+           )
+       )
+       SELECT * FROM candidates
+       WHERE minutes_open > response_target_minutes
        LIMIT 20`
     );
 
