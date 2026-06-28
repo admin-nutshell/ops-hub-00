@@ -782,4 +782,15 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   Decision: build platform to full capability first; tenant production onboarding
   comes after. M3 scope is on hold until founder signals readiness. T-33 scoping
   doc kept as reference. No August infrastructure sprint.
+
+2026-06-28 [PM] M2 "Agent Team Activated" declared COMPLETE (T-34).
+  All 6 criteria satisfied:
+    1. ≥5 tickets auto-processed ✅ (5th ticket: new→triaged→responded in 46s, 2026-06-28 01:10)
+    2. Per-ticket LLM cost in LangFuse ✅ (PR #187)
+    3. Inngest ≥95% success rate — waived by founder; pipeline demonstrated healthy
+       (46s end-to-end on live test; 8 functions registered; all CI deploys green)
+    4. Monthly briefing delivered ✅ (T-29, PR #194)
+    5. Sprint 2 retro ✅ (T-30, PR #186)
+    6. Eval coverage ≥3 cases/agent ✅ (T-32, PR #188)
+  M3 target deferred per FQ-43. Next milestone: platform capability expansion.
 ```
