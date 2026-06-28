@@ -44,6 +44,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: true
+          ref: status-content
 
       - name: Open incident (manual workflow_dispatch)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'open'

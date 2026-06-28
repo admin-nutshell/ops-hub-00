@@ -36,6 +36,8 @@ b) In UptimeRobot, for each monitored URL (Ops Hub, LiteLLM, FreeScout), add an 
 - URL: `https://ops-hub-staging.inatechshell.ca/api/status/webhook?secret=<STATUS_WEBHOOK_SECRET>`
 - POST Value (JSON): `{"monitorFriendlyName":"*friendlyname*","monitorURL":"*url*","alertType":*alerttype*}`
 
+Note on secret-in-query-string: UptimeRobot free tier does not support custom HTTP request headers, so the shared secret rides in the URL query parameter rather than an Authorization header. The endpoint is HTTPS-only (TLS in transit), which prevents interception. This is a known limitation of the free tier; upgrading to UptimeRobot Pro would allow header-based auth.
+
 **Notify:** PM "FQ-47 complete" — T-38 will be declared done once status page is confirmed live at `status.inatechshell.ca`.
 
 ---

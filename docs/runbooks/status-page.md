@@ -1,9 +1,12 @@
 # Status Page Runbook
 
 **URL:** https://status.inatechshell.ca
-**Hosting:** GitHub Pages (auto-deployed from `status/` via `deploy-status.yml`)
+**Hosting:** GitHub Pages (auto-deployed via `deploy-status.yml`)
 **Theme:** Cstate (Hugo module)
 **Incident automation:** UptimeRobot → ops-hub webhook → `repository_dispatch` → `status-incident.yml`
+**Branch layout:**
+- `main` — Hugo config (`status/config.yml`, `status/go.mod`, `status/static/CNAME`)
+- `status-content` — incident Markdown files only (`status/content/*.md`); unprotected so GitHub Actions can write directly
 
 ---
 
@@ -37,7 +40,7 @@ Go to GitHub → Actions → "Status Page — Incident Management" → Run workf
 - **affected:** comma-separated system names exactly as in `status/config.yml` (e.g. `Ops Hub Staging`)
 - **severity:** `notice` | `disrupted` | `down`
 
-The workflow creates a Markdown file in `status/content/`, commits to main, then triggers a Pages rebuild. The incident appears on the status page within ~2 minutes.
+The workflow creates a Markdown file in `status/content/`, commits to the `status-content` branch (unprotected — bypasses main branch protection), then triggers a Pages rebuild. The incident appears on the status page within ~2 minutes.
 
 ---
 
