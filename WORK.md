@@ -189,7 +189,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
 | T-30: Sprint 2 retrospective doc | PM | Sprint 2 ✅ | `docs/retros/sprint-2.md` — same 7-section format as sprint-1.md; captures pipeline saga, LiteLLM OpenAI-only pivot, FreeScout GRANT saga, DNC onboarding; M2 preview section | Jun 30 |
-| T-29: First monthly founder briefing (M1 criterion #13) | PM | M1 #1–#12 ✅ | `docs/briefings/2026-07-31-m1-briefing.md` — Sprint 1+2 summary, M1 close confirmation, M2 status snapshot, open risks, next 30-day preview; filed in FOUNDER_QUEUE | Jul 31 |
+| T-29: First monthly founder briefing (M1 criterion #13) | PM | M1 #1–#12 ✅ | ✅ **Done (2026-06-27, PR #194 merged).** `docs/briefings/2026-07-31-m1-briefing.md` delivered. FQ-46 filed for founder to read. M1 #13 ✅ | Jul 31 |
 | T-33: M3 scoping — DNC production path | Solutions Architect | T-27 ✅ | ✅ **Done (2026-06-27, PR #190).** `docs/planning/m3-dnc-production.md` — per-component delta (Supabase, FreeScout, LiteLLM, env vars, DNS), 5-phase migration runbook, 9-item go/no-go checklist, risk register. FQ-43 filed: two founder decisions needed (DNC email routing + real ticket volume confirmation) before August infra sprint. | Jul 7 |
 | T-34: M2 close verification | PM | T-29 ✅, T-30 ✅, T-31 ✅, T-32 ✅ | All 6 M2 checklist items green; M2 declared done in DECISIONS.md; M3 target window set | Jul 11 |
 
@@ -199,7 +199,7 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-35: Ticket resolution path + SLA monitoring + KB auto-learn | Tech Lead | T-23 ✅ (ticket-respond live) | 🔲 **PR #192 open (2026-06-27).** Three new Inngest functions: `ticket-resolve.ts` (auto-resolve cron + event handler, emits `ticket.resolved`), `sla-monitor.ts` (breach detection cron, logs to `audit_log`, optional FreeScout note), `kb-learn.ts` (extracts KB article from resolved ticket via LiteLLM, inserts into `kb_articles`). 4 unit tests green. No migration required — all states/tables already exist. **Pending: PR CI + merge + Coolify deploy.** | Jul 4 |
+| T-35: Ticket resolution path + SLA monitoring + KB auto-learn | Tech Lead | T-23 ✅ (ticket-respond live) | ✅ **Done (2026-06-27, PR #192 merged + deployed).** `ticket-resolve.ts`, `sla-monitor.ts`, `kb-learn.ts` live. 8 Inngest functions registered. ADR-0004 isolation wall applied. FQ-44 + FQ-45 resolved. | Jul 4 |
 
 ---
 
