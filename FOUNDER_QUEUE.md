@@ -4,6 +4,31 @@
 
 ---
 
+## FQ-48 — T-40 Backup verification: add SUPABASE_ACCESS_TOKEN secret
+
+**Filed:** 2026-06-28
+**Filed by:** Tech Lead (T-40)
+**Needs:** One-time secret creation
+**Deadline:** July 9, 2026 (T-40 target)
+
+`verify-backup.yml` runs monthly and calls the Supabase Management API to confirm the last database backup is < 25 hours old. It needs a personal access token with read access to project `yocoljutbiizdbfraapx`.
+
+**Action (5 min):**
+1. Go to [Supabase → Account → Access tokens](https://app.supabase.com/account/tokens)
+2. Generate new token → name: `ops-hub-backup-verify` → copy it
+3. Go to GitHub → repo `admin-nutshell/ops-hub-00` → Settings → Secrets and variables → Actions → New repository secret
+   - Name: `SUPABASE_ACCESS_TOKEN`
+   - Value: the token you just copied
+
+After adding the secret, trigger a one-time test run:
+```
+gh workflow run verify-backup.yml --repo admin-nutshell/ops-hub-00
+```
+
+**Notify:** PM "FQ-48 complete" — T-40 declared done once a manual run returns ✅.
+
+---
+
 ## FQ-47 — T-38 Cstate status page: 4 founder actions to go live
 
 **Filed:** 2026-06-28
