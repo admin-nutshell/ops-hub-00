@@ -93,7 +93,5 @@ export async function handleStatusWebhook(
 
   const detail = await ghResponse.text().catch(() => "");
   res.writeHead(502, { "Content-Type": "application/json" });
-  res.end(
-    JSON.stringify({ error: "GitHub dispatch failed", status: ghResponse.status, detail })
-  );
+  res.end(JSON.stringify({ error: "GitHub dispatch failed", status: ghResponse.status, detail }));
 }
