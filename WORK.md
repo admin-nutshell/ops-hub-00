@@ -6,12 +6,42 @@
 
 ## Current sprint
 
-**Sprint:** Sprint 4 — Phase 2 Hardening
-**Sprint goal:** Declare M4 (Phase 1 Complete); deploy Cstate status page; configure Premium SLA tier; build backup verification; run mini DR drill; author Sprint 3 retro.
-**Sprint window:** June 28 – July 11, 2026
-**Target milestone:** M5 — Premium SLA tier launched
+**Sprint:** Sprint 5 — Reliability Hardening + TTS Production Go-Live
+**Sprint goal:** Close three infrastructure reliability gaps (LiteLLM monitoring, suffix automation, LLM fallback), then deploy the full TTS pipeline to production and declare M6.
+**Sprint window:** July 7–18, 2026
+**Target milestone:** M6 — TTS Live in Production
 
-**Critical path:** T-36 (M4 declare + Sprint 3 retro) → T-38 (Cstate) → T-39 (Premium SLA tier) → T-40 (backup verification) → T-41 (DR drill) → T-42 (M5 close)
+**Critical path:** T-44 (LiteLLM monitor) → T-45 (suffix automation) → T-46 (LLM fallback) → T-47 (prod schema + env vars) → T-48 (LiteLLM prod) → T-49 (ops-hub prod deploy) → T-50 (FreeScout prod mailbox) → T-51 (TTS E2E validation) → T-52 (M6 close)
+
+**Direction decision (2026-06-29):** DNC dropped from near-term roadmap. Sprint 5 focuses on making TTS production-grade. See DECISIONS.md.
+
+---
+
+## Sprint 5 tasks
+
+### Track A — Reliability Hardening (prerequisite for prod go-live)
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-44: UptimeRobot monitor for LiteLLM | Production Manager | — | LiteLLM staging health added to UptimeRobot; keyword monitor on `/health` (looks for response body content so 401 = up, 000 = down); alert fires to founder email. Silent crash-loop recurrence impossible. | Jul 7 |
+| T-45: LiteLLM suffix auto-update workflow | Tech Lead | T-44 ✅ | `update-litellm-suffix.yml` (workflow_dispatch): SSH to VPS → `docker ps` → detect current suffix → Coolify API PATCH `LITELLM_URL` in ops-hub-app → restart ops-hub → verify `/health` 200. Requires `SSH_PRIVATE_KEY` + `VPS_HOST` GitHub secrets (founder to add — FQ to file). | Jul 9 |
+| T-46: Second LLM provider — Anthropic fallback | Tech Lead | T-44 ✅ | `claude-haiku-4-5-20251001` registered in LiteLLM staging as `fallback-model` alias. `ANTHROPIC_API_KEY` in LiteLLM Coolify env vars (founder to add — FQ to file). LiteLLM fallback routing configured: if `triage-model` (gpt-4o-mini) fails → `fallback-model`. Smoke test: POST /chat/completions with `fallback-model` returns 200. | Jul 9 |
+
+### Track B — Production Infrastructure
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-47: Production Supabase schema + ops-hub-prod env vars | Tech Lead + Production Manager | T-46 ✅ | ops-hub migrations applied to prod Supabase DB (same project `yocoljutbiizdbfraapx`, `prod` schema or separate RLS tenant scope — Tech Lead to decide and document in ADR). All ops-hub-prod Coolify env vars configured (`SUPABASE_URL`, `INNGEST_EVENT_KEY`, `LANGFUSE_*`, `LITELLM_BASE_URL` pointing to prod LiteLLM, `SENTRY_DSN`). | Jul 11 |
+| T-48: LiteLLM production instance | Production Manager | T-47 ✅ | LiteLLM deployed to Coolify prod project. `DATABASE_URL` = `postgres.yocoljutbiizdbfraapx@aws-1-ca-central-1.pooler.supabase.com` with prod schema. `triage-model` (gpt-4o-mini) + `fallback-model` registered. `/health` returns 401 from `https://litellm-prod.inatechshell.ca`. | Jul 14 |
+| T-49: ops-hub production deployment + CI/CD | Production Manager + Tech Lead | T-47 ✅ | ops-hub deployed to Coolify prod project at `https://ops-hub-prod.inatechshell.ca`. `main-deploy.yml` extended to auto-deploy to prod on merge (or `prod-deploy.yml` with manual promotion gate — Tech Lead to decide). `/health` returns `{"status":"ok"}`. Inngest synced. | Jul 14 |
+| T-50: FreeScout production mailbox | Production Manager | T-49 ✅ | Production FreeScout configured with real TTS support email (or staging FreeScout promoted). `FREESCOUT_DB_URL` + `FREESCOUT_BOT_USER_ID` set in ops-hub-prod Coolify env vars. `ops_hub_app` GRANT SELECT on FreeScout `conversations`/`threads` verified in prod DB. | Jul 14 |
+
+### Track C — Validation + Milestone Close
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-51: TTS production E2E validation | QA Manager + Production Manager | T-48 ✅, T-49 ✅, T-50 ✅ | Real TTS support email sent → FreeScout (prod) receives it → `pollFreeScout` ingests → `triageTicket` classifies → `respondTicket` delivers FreeScout note → Supabase prod `tickets` row: `state=responded`. Confirmed by founder in FreeScout prod UI and Supabase. | Jul 16 |
+| T-52: M6 close verification | PM | T-51 ✅ | All criteria green: ops-hub prod healthy, LiteLLM prod healthy, at least 1 ticket processed end-to-end in production, reliability gaps closed (T-44–T-46). M6 "TTS Live in Production" declared in DECISIONS.md. Sprint 5 retro task added as T-53. | Jul 18 |
 
 ---
 
@@ -35,6 +65,8 @@
 | T-43: Sprint 4 retro | PM | T-42 ✅ | ✅ **Done (2026-06-29).** `docs/retros/sprint-4.md` authored — 7 sections. Key incident: LiteLLM ENOIDENTIFIER crash-loop (Coolify duplicate DATABASE_URL rows + missing Supavisor project ref suffix); resolved by deleting all duplicate rows from coolify-db and re-entering via UI. FQ-49 closed. 6 Sprint 5 process changes documented. M5 declared complete 2026-06-29. | Jul 11 |
 
 ---
+
+*(Sprint 4 — Phase 2 Hardening: June 28 – July 11, 2026 — ✅ COMPLETE. T-36–T-43 all done. M4 + M5 declared 2026-06-28/29. Cstate + Premium SLA + backup verify + DR drill shipped. Sprint retro: T-43.)*
 
 *(Sprint 3 — Agent Activation: June 27–28, 2026 — ✅ COMPLETE. T-29–T-35 all done. M2 declared complete 2026-06-28. Platform capability-complete. Sprint retro: T-36.)*
 
