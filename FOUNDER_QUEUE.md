@@ -31,25 +31,22 @@ gh workflow run verify-backup.yml --repo admin-nutshell/ops-hub-00
 
 ## FQ-49 — T-41 DR drill: LiteLLM external URL unreachable
 
-**Filed:** 2026-06-28
+**Filed:** 2026-06-28 | **Closed:** 2026-06-29
 **Filed by:** Production Manager (T-41 DR drill)
-**Needs:** Diagnosis + remediation
-**Deadline:** Non-blocking (staging only — does not affect live ticket processing via internal Docker URL)
+**Status:** RESOLVED
 
-During the T-41 DR drill, `https://litellm-staging.inatechshell.ca/health` returned HTTP 000 (connection refused / no response) from GitHub Actions runners across 6 consecutive minutes after a Coolify restart. The Coolify restart API call itself returned HTTP 200 (restart accepted).
+**Root cause (not a proxy issue):** LiteLLM was crash-looping with `FATAL: (ENOIDENTIFIER) no tenant identifier provided` from Supavisor. The `DATABASE_URL` username was `postgres` — missing the required project ref suffix. Supavisor requires `postgres.yocoljutbiizdbfraapx`. The bad value persisted because Coolify had accumulated 3 duplicate `DATABASE_URL` rows in its internal `environment_variables` table; the last row (with no project ref) always won on deploy.
 
-**Action (10 min):**
-1. Open `https://litellm-staging.inatechshell.ca/health` in a browser (from outside the Coolify VPS)
-2. If it loads → the external URL works but GitHub runners can't reach it (unlikely but possible with IP allowlisting)
-3. If it doesn't load → LiteLLM staging container is down or the Coolify proxy config is broken
-   - Check Coolify dashboard for LiteLLM container status
-   - If the container is stopped, start it via Coolify UI
-   - If the proxy is misconfigured, check the Coolify application's domain/proxy settings for `litellm-staging.inatechshell.ca`
-4. Once the URL is reachable, re-run the DR drill: `gh workflow run dr-drill.yml --field components=all`
+**Resolution (2026-06-29):**
+1. Connected to `coolify-db` Docker container: `docker exec -it coolify-db psql -U coolify -d coolify`
+2. Deleted all 3 duplicate rows: `DELETE FROM environment_variables WHERE resourceable_id=4 AND key='DATABASE_URL'`
+3. Re-entered `DATABASE_URL` once via Coolify UI with `postgres.yocoljutbiizdbfraapx` as username
+4. Fixed P1000 auth failure (postgres password had been rotated): updated `DATABASE_URL`, `DB_PASSWORD`, and Supabase database password
+5. LiteLLM reached `Application startup complete`
 
-**Note:** Ops Hub ticket processing is NOT affected — it uses the internal Docker URL `http://h12xz8887fxvbvjts2hac8if-<suffix>:4000`, not the external domain.
+**Verification:** `https://litellm-staging.inatechshell.ca/health` returns HTTP 401 (correct — API key enforcement active). `https://ops-hub-staging.inatechshell.ca/health` returns `{"status":"ok"}`.
 
-**Notify:** PM "FQ-49 complete" after external URL is reachable and drill passes.
+**Container suffix updated:** Full redeploy changed suffix to `170111887056`. `LITELLM_URL` in Coolify ops-hub-app and CLAUDE.md updated (PR #205).
 
 ---
 
