@@ -23,7 +23,7 @@
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-44: UptimeRobot monitor for LiteLLM | Production Manager | — | LiteLLM staging health added to UptimeRobot; keyword monitor on `/health` (looks for response body content so 401 = up, 000 = down); alert fires to founder email. Silent crash-loop recurrence impossible. | Jul 7 |
+| T-44: UptimeRobot monitor for LiteLLM | Production Manager | — | ✅ **Done (2026-06-29, PR #210).** `GET /health/litellm` proxy endpoint added to ops-hub: calls `LITELLM_BASE_URL/health` with `LITELLM_MASTER_KEY`, returns 200 (reachable) / 503 (unreachable). UptimeRobot `LiteLLM Staging` monitor updated to HTTP on `https://ops-hub-staging.inatechshell.ca/health/litellm`. Silent crash-loop recurrence impossible. | Jul 7 |
 | T-45: LiteLLM suffix auto-update workflow | Tech Lead | T-44 ✅ | `update-litellm-suffix.yml` (workflow_dispatch): SSH to VPS → `docker ps` → detect current suffix → Coolify API PATCH `LITELLM_URL` in ops-hub-app → restart ops-hub → verify `/health` 200. Requires `SSH_PRIVATE_KEY` + `VPS_HOST` GitHub secrets (founder to add — FQ to file). | Jul 9 |
 | T-46: Second LLM provider — Anthropic fallback | Tech Lead | T-44 ✅ | `claude-haiku-4-5-20251001` registered in LiteLLM staging as `fallback-model` alias. `ANTHROPIC_API_KEY` in LiteLLM Coolify env vars (founder to add — FQ to file). LiteLLM fallback routing configured: if `triage-model` (gpt-4o-mini) fails → `fallback-model`. Smoke test: POST /chat/completions with `fallback-model` returns 200. | Jul 9 |
 
