@@ -21,7 +21,7 @@ An **app-agnostic, AI-native operations platform** that detects, triages, resolv
 | App runtime | Node.js 20 + TypeScript (pnpm) | Coolify — `ops-hub-staging.inatechshell.ca` |
 | Workflow orchestration | Inngest Cloud (free tier) | Cloud → synced at `/api/inngest` |
 | LLM routing | LiteLLM | Coolify — `litellm-staging.inatechshell.ca` |
-| LLM internal URL | `http://h12xz8887fxvbvjts2hac8if-074411057216:4000` | Docker network — use this, not sslip.io. **Suffix changes on every LiteLLM redeploy** — check `docker ps \| grep h12xz8887fxvbvjts2hac8if` after each deploy. |
+| LLM internal URL | `http://h12xz8887fxvbvjts2hac8if-170111887056:4000` | Docker network — use this, not sslip.io. **Suffix changes on every LiteLLM redeploy** — check `docker ps \| grep h12xz8887fxvbvjts2hac8if` after each deploy. |
 | Observability | LangFuse Cloud (free tier) | Cloud |
 | Database | Supabase PostgreSQL | Project `yocoljutbiizdbfraapx` — Canada Central |
 | Secret store | Supabase Vault | Same project |
@@ -126,4 +126,4 @@ Format required (no exceptions):
 - **Provider-neutral:** Claude is default; OpenAI / others swap via LiteLLM — never call Anthropic SDK directly in business logic
 - **Free-tier-first:** only pay when a feature is crucial AND demonstrably saves time or quality
 - **Eval-gated:** no prompt or capability change ships without passing the Promptfoo eval suite (> 95% pass rate)
-- **No sslip.io as LITELLM_URL:** internal Docker URL is the standing config; sslip.io is a fallback diagnostic tool only
+- **No sslip.io as LITELLM_BASE_URL:** internal Docker URL is the standing config; sslip.io is a fallback diagnostic tool only
