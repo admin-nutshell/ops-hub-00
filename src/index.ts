@@ -10,6 +10,7 @@ import { sweepSlaBreaches } from "./inngest/sla-monitor";
 import { learnFromTicket } from "./inngest/kb-learn";
 import { emitTrace } from "./langfuse";
 import { handleStatusWebhook } from "./statusWebhook";
+import { handleLitellmHealth } from "./healthLitellm";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 
@@ -33,6 +34,10 @@ export const server = http.createServer((req, res) => {
   }
   if (req.method === "POST" && req.url?.startsWith("/api/status/webhook")) {
     void handleStatusWebhook(req, res);
+    return;
+  }
+  if (req.method === "GET" && req.url === "/health/litellm") {
+    void handleLitellmHealth(req, res);
     return;
   }
   if (req.method === "GET" && req.url === "/health") {
