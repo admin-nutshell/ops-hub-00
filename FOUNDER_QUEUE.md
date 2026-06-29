@@ -4,6 +4,58 @@
 
 ---
 
+## FQ-51 — T-46 Second LLM provider: add ANTHROPIC_API_KEY to LiteLLM staging
+
+**Filed:** 2026-06-29
+**Filed by:** Tech Lead (T-46)
+**Needs:** One secret added to Coolify
+**Deadline:** July 9, 2026 (T-46 target)
+
+T-46 registers `claude-haiku-4-5-20251001` as a fallback provider in LiteLLM so an OpenAI outage doesn't silence triage. LiteLLM needs the Anthropic API key to call Anthropic models.
+
+**Action (3 min):**
+1. Go to Coolify → `litellm-staging` application → Environment Variables
+2. Add:
+   - Key: `ANTHROPIC_API_KEY`
+   - Value: your Anthropic API key (from console.anthropic.com → API Keys)
+3. Redeploy LiteLLM (or restart — env var change takes effect on next container start)
+
+**Note:** After redeploying LiteLLM, the internal Docker URL suffix will change. Run the suffix update procedure from `docs/retros/sprint-4-dr-drill.md` §"LiteLLM URL suffix — findings and procedure" after the redeploy.
+
+**Notify:** Tech Lead "FQ-51 complete" — T-46 will register the model alias and run the smoke test.
+
+---
+
+## FQ-50 — T-45 LiteLLM suffix automation: add SSH_PRIVATE_KEY + VPS_HOST GitHub secrets
+
+**Filed:** 2026-06-29
+**Filed by:** Tech Lead (T-45)
+**Needs:** Two GitHub secrets + one-time SSH key setup
+**Deadline:** July 9, 2026 (T-45 target)
+
+T-45 builds a `workflow_dispatch` workflow that SSHs to the Coolify VPS, detects the current LiteLLM container suffix, and updates `LITELLM_URL` in ops-hub-app automatically. This eliminates the manual suffix-tracking step after every LiteLLM redeploy.
+
+**Action (10 min):**
+
+1. **Generate an SSH key pair** (if you don't already have one for CI):
+   ```bash
+   ssh-keygen -t ed25519 -C "github-actions-ops-hub" -f ~/.ssh/ops_hub_ci -N ""
+   ```
+
+2. **Add the public key to the VPS** (authorized_keys for the user that runs Docker commands — likely `root` or `coolify`):
+   ```bash
+   cat ~/.ssh/ops_hub_ci.pub >> ~/.ssh/authorized_keys
+   ```
+   Or paste it via your VPS provider's SSH key management UI.
+
+3. **Add GitHub secrets** (repo Settings → Secrets and variables → Actions):
+   - Name: `SSH_PRIVATE_KEY` — Value: contents of `~/.ssh/ops_hub_ci` (the private key)
+   - Name: `VPS_HOST` — Value: `187.124.76.235` (Coolify VPS IP)
+
+**Notify:** Tech Lead "FQ-50 complete" — T-45 workflow can be built and tested.
+
+---
+
 ## FQ-48 — T-40 Backup verification: add SUPABASE_ACCESS_TOKEN secret
 
 **Filed:** 2026-06-28
