@@ -59,15 +59,15 @@ If you encounter a security concern, stop work and post to `FOUNDER_QUEUE.md` im
 
 ## Active sprint
 
-**Sprint 2 — AI Triage Pipeline**
+**Sprint 5 — Reliability Hardening + TTS Production Go-Live**
 Window: July 7–18, 2026
-Goal: Wire and validate full AI ticket pipeline: polling → Inngest → LiteLLM triage → auto-response
+Goal: Close reliability gaps (LiteLLM monitoring, suffix automation, LLM fallback) → deploy TTS pipeline to production → declare M6
 
 **Live status:** `WORK.md`
 **Recent decisions:** `DECISIONS.md`
 **Founder queue:** `FOUNDER_QUEUE.md`
 
-Critical path: T-21 → T-22 → T-23 → T-26 → T-27
+Critical path: T-44 → T-45 → T-46 → T-47 → T-48 → T-49 → T-50 → T-51 → T-52
 
 ---
 

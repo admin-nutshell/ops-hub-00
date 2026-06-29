@@ -817,4 +817,24 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   is a founder-driven sales decision, not a blocking technical criterion).
   Sprint 4 retro (T-43) to follow. Next milestone: M6 (A-Mart conditional) or
   M7 (Phase 2 Complete) depending on A-Mart conversion outcome.
+
+2026-06-29 [PM] FQ-49 RESOLVED. LiteLLM external URL was unreachable during T-41
+  DR drill because LiteLLM was crash-looping, not due to proxy misconfiguration.
+  Root cause: Coolify accumulated 3 duplicate DATABASE_URL rows in its internal
+  environment_variables table; last row had username "postgres" (missing Supavisor
+  project ref "yocoljutbiizdbfraapx"). Fix: deleted all rows from coolify-db,
+  re-entered once via Coolify UI with postgres.yocoljutbiizdbfraapx. Followed by
+  P1000 auth failure (postgres password rotated) — fixed by updating DATABASE_URL,
+  DB_PASSWORD, and Supabase DB password in sync. LiteLLM healthy 2026-06-29.
+  Container suffix updated to 170111887056 (PR #205).
+
+2026-06-29 [PM] DNC dropped from near-term roadmap. Direction: Sprint 5 =
+  reliability hardening + TTS production go-live (M6). Rationale: single active
+  tenant (TTS) should be production-grade before onboarding a second. Three
+  reliability gaps must close first: (1) LiteLLM has no UptimeRobot monitor —
+  crash-loop was silent; (2) suffix changes on redeploy are fully manual —
+  one missed update breaks triage; (3) OpenAI-only is a SPOF. Once those are
+  closed and TTS is processing tickets in production, M6 is declared. M7 and
+  further tenant onboarding follow at founder direction.
+  Sprint 5 window: July 7–18, 2026. Target: M6.
 ```
