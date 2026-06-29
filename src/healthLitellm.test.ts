@@ -76,7 +76,10 @@ describe("handleLitellmHealth", () => {
   });
 
   it("returns 503 when LiteLLM times out", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("signal timed out", "TimeoutError")));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new DOMException("signal timed out", "TimeoutError"))
+    );
     const [res, done] = makeRes();
     void handleLitellmHealth({} as http.IncomingMessage, res);
     const { status, body } = await done;

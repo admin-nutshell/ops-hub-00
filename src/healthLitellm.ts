@@ -2,7 +2,7 @@ import http from "http";
 
 export async function handleLitellmHealth(
   _req: http.IncomingMessage,
-  res: http.ServerResponse,
+  res: http.ServerResponse
 ): Promise<void> {
   const url = process.env.LITELLM_BASE_URL;
   const key = process.env.LITELLM_MASTER_KEY;
