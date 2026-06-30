@@ -21,9 +21,9 @@ on:
   workflow_dispatch:
     inputs:
       ssh_user:
-        description: 'SSH user on the VPS (must have docker access)'
+        description: "SSH user on the VPS (must have docker access)"
         required: false
-        default: 'root'
+        default: "haytham"
 
 permissions:
   contents: read
