@@ -45,6 +45,14 @@ describe("handleLitellmHealth", () => {
     expect(JSON.parse(body)).toEqual({ status: "ok", litellm: "reachable" });
   });
 
+  it("returns 200 for HEAD request (UptimeRobot default method)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 401 }));
+    const [res, done] = makeRes();
+    void handleLitellmHealth({ method: "HEAD" } as unknown as http.IncomingMessage, res);
+    const { status } = await done;
+    expect(status).toBe(200);
+  });
+
   it("calls the correct LiteLLM health URL", async () => {
     const mockFetch = vi.fn().mockResolvedValue({ status: 200 });
     vi.stubGlobal("fetch", mockFetch);

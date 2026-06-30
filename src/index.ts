@@ -36,7 +36,7 @@ export const server = http.createServer((req, res) => {
     void handleStatusWebhook(req, res);
     return;
   }
-  if (req.method === "GET" && req.url === "/health/litellm") {
+  if ((req.method === "GET" || req.method === "HEAD") && req.url === "/health/litellm") {
     void handleLitellmHealth(req, res);
     return;
   }
