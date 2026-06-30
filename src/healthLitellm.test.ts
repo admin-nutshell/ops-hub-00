@@ -25,7 +25,6 @@ describe("handleLitellmHealth", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
     vi.stubEnv("LITELLM_BASE_URL", "https://litellm-staging.inatechshell.ca");
-    vi.stubEnv("LITELLM_MASTER_KEY", "sk-test-master");
   });
 
   it("returns 503 when LITELLM_BASE_URL is missing", async () => {
@@ -37,16 +36,7 @@ describe("handleLitellmHealth", () => {
     expect(JSON.parse(body).litellm).toBe("not configured");
   });
 
-  it("returns 503 when LITELLM_MASTER_KEY is missing", async () => {
-    vi.stubEnv("LITELLM_MASTER_KEY", "");
-    const [res, done] = makeRes();
-    void handleLitellmHealth({} as http.IncomingMessage, res);
-    const { status, body } = await done;
-    expect(status).toBe(503);
-    expect(JSON.parse(body).litellm).toBe("not configured");
-  });
-
-  it("returns 200 when LiteLLM responds with 401 (auth required — but reachable)", async () => {
+  it("returns 200 when LiteLLM responds with 401 (reachable without auth)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ status: 401 }));
     const [res, done] = makeRes();
     void handleLitellmHealth({} as http.IncomingMessage, res);
@@ -55,15 +45,14 @@ describe("handleLitellmHealth", () => {
     expect(JSON.parse(body)).toEqual({ status: "ok", litellm: "reachable" });
   });
 
-  it("passes Authorization header with master key", async () => {
+  it("calls the correct LiteLLM health URL", async () => {
     const mockFetch = vi.fn().mockResolvedValue({ status: 200 });
     vi.stubGlobal("fetch", mockFetch);
     const [res, done] = makeRes();
     void handleLitellmHealth({} as http.IncomingMessage, res);
     await done;
-    const [calledUrl, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const [calledUrl] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(calledUrl).toBe("https://litellm-staging.inatechshell.ca/health");
-    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer sk-test-master");
   });
 
   it("returns 503 when LiteLLM is unreachable (network error)", async () => {
