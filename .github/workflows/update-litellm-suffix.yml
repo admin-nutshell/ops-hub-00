@@ -1,0 +1,211 @@
+name: Update LiteLLM URL suffix in ops-hub-app (T-45)
+
+# Detects the current LiteLLM container suffix on the Coolify VPS via SSH,
+# then patches LITELLM_URL in ops-hub-app so the internal Docker URL stays
+# correct after every LiteLLM redeploy.
+#
+# Run this immediately after any LiteLLM redeploy that changes the container
+# suffix — ops-hub cannot reach LiteLLM until this is done.
+#
+# Prerequisites (GitHub Actions secrets):
+#   SSH_PRIVATE_KEY     — ed25519 private key whose public half is in the VPS
+#                         authorized_keys for the ssh_user (see FQ-50)
+#   VPS_HOST            — Coolify VPS IP or hostname (e.g. 187.124.76.235)
+#   COOLIFY_API_TOKEN   — Coolify admin API token (already set)
+#
+# The LiteLLM UUID prefix (h12xz8887fxvbvjts2hac8if) is the stable part of
+# the container name. Only the numeric suffix after the hyphen changes on
+# each redeploy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_user:
+        description: 'SSH user on the VPS (must have docker access)'
+        required: false
+        default: 'root'
+
+permissions:
+  contents: read
+
+env:
+  LITELLM_UUID_PREFIX: "h12xz8887fxvbvjts2hac8if"
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+
+jobs:
+  update-suffix:
+    name: Detect suffix and patch LITELLM_URL
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. SSH setup ─────────────────────────────────────────────────────────
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+          LINES=$(wc -l < ~/.ssh/known_hosts)
+          if [ "$LINES" -eq 0 ]; then
+            echo "ERROR: ssh-keyscan returned nothing — VPS may be unreachable on port 22"
+            exit 1
+          fi
+          echo "known_hosts populated ($LINES lines)"
+
+      # ── 2. Detect LiteLLM container suffix ───────────────────────────────────
+      - name: Detect LiteLLM container suffix via docker ps
+        id: suffix
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          SSH_USER: ${{ inputs.ssh_user }}
+        run: |
+          CONTAINER_NAME=$(ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=10 \
+            "${SSH_USER}@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_UUID_PREFIX} --format '{{.Names}}' | head -1")
+
+          if [ -z "$CONTAINER_NAME" ]; then
+            echo "ERROR: No running LiteLLM container found (filter: ${LITELLM_UUID_PREFIX})"
+            echo "Check that LiteLLM is running in Coolify and the UUID prefix is correct."
+            exit 1
+          fi
+          echo "Container name: $CONTAINER_NAME"
+
+          SUFFIX="${CONTAINER_NAME#${LITELLM_UUID_PREFIX}-}"
+          if [ -z "$SUFFIX" ] || [ "$SUFFIX" = "$CONTAINER_NAME" ]; then
+            echo "ERROR: Could not extract suffix from: $CONTAINER_NAME"
+            echo "Expected format: ${LITELLM_UUID_PREFIX}-<numeric-suffix>"
+            exit 1
+          fi
+          echo "Suffix: $SUFFIX"
+
+          NEW_URL="http://${LITELLM_UUID_PREFIX}-${SUFFIX}:4000"
+          echo "New LITELLM_URL: $NEW_URL"
+          echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
+          echo "new_url=$NEW_URL" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Find ops-hub-app UUID ──────────────────────────────────────────────
+      - name: Find ops-hub-app UUID
+        id: find-app
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          echo "GET /applications → HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: Coolify API unavailable (HTTP $HTTP)"
+            cat /tmp/apps.json
+            exit 1
+          fi
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "ERROR: ops-hub-app not found in Coolify. Apps present:"
+            jq -r '.[].name' /tmp/apps.json
+            exit 1
+          fi
+          echo "ops-hub-app UUID: $UUID"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      # ── 4. Replace LITELLM_URL (delete all duplicates, then post fresh entry) ─
+      - name: Replace LITELLM_URL in ops-hub-app
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+          NEW_URL: ${{ steps.suffix.outputs.new_url }}
+        run: |
+          set -euo pipefail
+
+          # List current env vars
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs"
+
+          COUNT=$(jq '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Existing LITELLM_URL entries to delete: $COUNT"
+
+          # Delete all existing LITELLM_URL rows (cleans up accumulated duplicates)
+          for eu in $(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$UUID/envs/$eu")
+            echo "  DELETE LITELLM_URL ($eu) → HTTP $DEL"
+          done
+
+          # Post fresh entry with correct suffix
+          HTTP=$(curl -s --max-time 30 -o /tmp/set-url.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$NEW_URL" '{key:$k,value:$v}')")
+          echo "POST LITELLM_URL=$NEW_URL → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set LITELLM_URL (HTTP $HTTP)"
+            cat /tmp/set-url.json
+            exit 1
+          fi
+          echo "LITELLM_URL updated to: $NEW_URL"
+
+      # ── 5. Restart ops-hub-app ────────────────────────────────────────────────
+      - name: Restart ops-hub-app
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          UUID: ${{ steps.find-app.outputs.uuid }}
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$UUID/restart")
+          echo "Restart → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "WARNING: restart returned HTTP $HTTP — verify manually."
+            cat /tmp/restart.json | head -5
+          else
+            echo "Restart queued. Waiting 30s for container to come up..."
+            sleep 30
+          fi
+
+      # ── 6. Verify ops-hub-app health ─────────────────────────────────────────
+      - name: Verify ops-hub-app health
+        run: |
+          set -euo pipefail
+          MAX=6; WAIT=10; n=0
+          until curl -sf --max-time 10 "https://ops-hub-staging.inatechshell.ca/health" > /tmp/health.json 2>/dev/null; do
+            n=$((n+1))
+            if [ $n -ge $MAX ]; then
+              echo "ERROR: health check failed after $((MAX*WAIT))s"
+              cat /tmp/health.json 2>/dev/null || true
+              exit 1
+            fi
+            echo "  [$n/$MAX] waiting ${WAIT}s..."
+            sleep $WAIT
+          done
+          echo "ops-hub-app healthy:"
+          cat /tmp/health.json
+
+      # ── 7. Cleanup ────────────────────────────────────────────────────────────
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+
+      # ── 8. Summary ────────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        env:
+          NEW_URL: ${{ steps.suffix.outputs.new_url }}
+          SUFFIX: ${{ steps.suffix.outputs.suffix }}
+        run: |
+          echo "========================================================"
+          echo " T-45 — LiteLLM suffix update"
+          echo "========================================================"
+          echo ""
+          echo " Container suffix : ${SUFFIX:-unknown}"
+          echo " New LITELLM_URL  : ${NEW_URL:-unknown}"
+          echo ""
+          echo " Run this workflow after every LiteLLM redeploy to keep"
+          echo " ops-hub connected to the current container."
+          echo "========================================================"
