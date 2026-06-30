@@ -24,11 +24,11 @@ function makeRes(): [http.ServerResponse, Promise<{ status: number; body: string
 describe("handleLitellmHealth", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
-    vi.stubEnv("LITELLM_BASE_URL", "https://litellm-staging.inatechshell.ca");
+    vi.stubEnv("LITELLM_URL", "https://litellm-staging.inatechshell.ca");
   });
 
-  it("returns 503 when LITELLM_BASE_URL is missing", async () => {
-    vi.stubEnv("LITELLM_BASE_URL", "");
+  it("returns 503 when LITELLM_URL is missing", async () => {
+    vi.stubEnv("LITELLM_URL", "");
     const [res, done] = makeRes();
     void handleLitellmHealth({} as http.IncomingMessage, res);
     const { status, body } = await done;
