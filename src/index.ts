@@ -40,7 +40,7 @@ export const server = http.createServer((req, res) => {
     void handleLitellmHealth(req, res);
     return;
   }
-  if (req.method === "GET" && req.url === "/health") {
+  if ((req.method === "GET" || req.method === "HEAD") && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
     void emitTrace("health-check");
