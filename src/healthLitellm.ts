@@ -4,7 +4,7 @@ export async function handleLitellmHealth(
   _req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<void> {
-  const url = process.env.LITELLM_BASE_URL;
+  const url = process.env.LITELLM_URL;
 
   if (!url) {
     res.writeHead(503, { "Content-Type": "application/json" });
