@@ -26,12 +26,11 @@ T-46 registers `claude-haiku-4-5-20251001` as a fallback provider in LiteLLM so 
 
 ---
 
-## FQ-50 — T-45 LiteLLM suffix automation: add SSH_PRIVATE_KEY + VPS_HOST GitHub secrets
+## ✅ FQ-50 — T-45 LiteLLM suffix automation: add SSH_PRIVATE_KEY + VPS_HOST GitHub secrets
 
-**Filed:** 2026-06-29
+**Filed:** 2026-06-29 | **Closed:** 2026-07-01
 **Filed by:** Tech Lead (T-45)
-**Needs:** Two GitHub secrets + one-time SSH key setup
-**Deadline:** July 9, 2026 (T-45 target)
+**Status:** RESOLVED
 
 T-45 builds a `workflow_dispatch` workflow that SSHs to the Coolify VPS, detects the current LiteLLM container suffix, and updates `LITELLM_URL` in ops-hub-app automatically. This eliminates the manual suffix-tracking step after every LiteLLM redeploy.
 
