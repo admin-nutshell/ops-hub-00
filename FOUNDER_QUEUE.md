@@ -4,6 +4,39 @@
 
 ---
 
+## FQ-52 — Ops dashboard: scope decision before post-M6 sprint planning
+
+**Filed:** 2026-07-01
+**Filed by:** PM
+**Needs:** Decision
+**Deadline:** Non-blocking (before Sprint 6 planning)
+
+The charter (`04_architecture.md`) anticipates an ops dashboard — ticket queue, SLA health, cost-per-ticket trends, agent action log. It's never been formally scoped. Current visibility tools:
+
+| Need | Current tool | Gap |
+|---|---|---|
+| Ticket queue + replies | FreeScout | No SLA countdown or urgency colour-coding |
+| Per-ticket LLM cost | LangFuse | Requires LangFuse login; not founder-friendly |
+| Uptime / health | UptimeRobot | No link to ticket volume or pipeline health |
+| Incident status | Cstate | Public-facing only, not internal ops view |
+
+**Options:**
+
+**A — Build a custom ops dashboard (new sprint after M6)**
+A single internal page showing: live ticket queue with SLA timers, cost-per-ticket trend (7-day), pipeline health (LiteLLM reachable / Inngest run success rate), recent agent actions. Built by Frontend Engineer on top of existing Supabase + ops-hub API. Estimated: 2–3 sprint weeks.
+
+**B — Extend LangFuse + FreeScout (no new surface)**
+Add a FreeScout custom view (filter by urgency/SLA) and use LangFuse's built-in dashboards for cost. Costs nothing. Leaves UX fragmented across 3 tools.
+
+**C — Embed a BI tool (Metabase / Grafana)**
+Point a free-tier Metabase or Grafana instance at Supabase. Fast to stand up (~1 day). No custom code. Tradeoff: another tool to maintain and not white-labeled.
+
+**Recommendation:** B now, A after M6. Ship TTS to production first. Once the pipeline is handling real volume, the dashboard requirements will be clearer — build it against real data, not assumptions. File a task in Sprint 6 planning once M6 is declared.
+
+**Notify:** PM "FQ-52 decided" with chosen option — PM will scope the task or close it.
+
+---
+
 ## FQ-51 — T-46 Second LLM provider: add ANTHROPIC_API_KEY to LiteLLM staging
 
 **Filed:** 2026-06-29
