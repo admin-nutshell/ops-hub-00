@@ -17,8 +17,7 @@ permissions:
   contents: read
 
 env:
-  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
-  LITELLM_SSLIP_IP: "187.124.76.235"
+  LITELLM_STAGING_URL: "https://litellm-staging.inatechshell.ca"
   FALLBACK_ALIAS: "fallback-model"
   TRIAGE_ALIAS: "triage-model"
 
@@ -35,11 +34,10 @@ jobs:
         run: |
           echo "::add-mask::$LITELLM_KEY"
 
-          LITELLM_URL="http://${LITELLM_UUID}.${LITELLM_SSLIP_IP}.sslip.io"
-          echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
+          echo "LITELLM_BASE=$LITELLM_STAGING_URL" >> "$GITHUB_ENV"
 
           HEALTH=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
-            "$LITELLM_URL/health/readiness" || echo "000")
+            "$LITELLM_STAGING_URL/health/readiness" || echo "000")
           echo "Health check: HTTP $HEALTH"
           if [ "$HEALTH" != "200" ]; then
             echo "ERROR: litellm-staging not healthy (HTTP $HEALTH). Restart in Coolify UI."
