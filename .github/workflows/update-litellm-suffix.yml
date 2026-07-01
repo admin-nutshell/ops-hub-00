@@ -45,7 +45,6 @@ jobs:
           chmod 700 ~/.ssh
           printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keygen -l -f ~/.ssh/id_ed25519
           echo "SSH key written"
 
       # ── 2. Detect LiteLLM container suffix ───────────────────────────────────
@@ -58,7 +57,6 @@ jobs:
           CONTAINER_NAME=$(ssh -i ~/.ssh/id_ed25519 \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=10 \
-            -v \
             "${SSH_USER}@${VPS_HOST}" \
             "docker ps --filter name=${LITELLM_UUID_PREFIX} --format '{{.Names}}' | head -1")
 
