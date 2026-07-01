@@ -231,6 +231,68 @@ describe("triageOneTicket", () => {
     const queryCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string][];
     expect(queryCalls.some(([q]) => q.includes("UPDATE tickets"))).toBe(false);
   });
+
+  it("falls back to fallback-model when primary model fails (T-46)", async () => {
+    const client = makeClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // set_config tenant
+      { rows: [] }, // set_config project
+      { rows: [{ id: "t5", title: "Payment failed", body: "Card declined", state: "new" }] },
+      { rows: [] }, // COMMIT
+      { rows: [] }, // BEGIN
+      { rows: [] }, // set_config tenant
+      { rows: [] }, // set_config project
+      { rows: [] }, // UPDATE
+      { rows: [] }, // COMMIT
+    ]);
+    const pool = makePool(client);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Service Unavailable" })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            model: "claude-haiku-4-5-20251001",
+            choices: [
+              {
+                message: {
+                  content:
+                    '{"urgency":"high","category":"billing","routing":"billing","reasoning":"Payment failure"}',
+                },
+              },
+            ],
+            usage: { prompt_tokens: 50, completion_tokens: 20 },
+          }),
+        })
+    );
+
+    const result = await triageOneTicket(pool, "t5", "proj-1", "tenant-1");
+
+    expect(result).toMatchObject({ urgency: "high", category: "billing" });
+  });
+
+  it("throws primary error when both primary and fallback models fail (T-46)", async () => {
+    const client = makeClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // set_config tenant
+      { rows: [] }, // set_config project
+      { rows: [{ id: "t6", title: "Test", body: null, state: "new" }] },
+      { rows: [] }, // COMMIT
+    ]);
+    const pool = makePool(client);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn()
+        .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
+        .mockResolvedValueOnce({ ok: false, status: 429, text: async () => "Fallback rate limited" })
+    );
+
+    await expect(triageOneTicket(pool, "t6", "proj-1", "tenant-1")).rejects.toThrow("LiteLLM 503");
+
+    const queryCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string][];
+    expect(queryCalls.some(([q]) => q.includes("UPDATE tickets"))).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
