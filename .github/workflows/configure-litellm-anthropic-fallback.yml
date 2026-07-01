@@ -1,0 +1,200 @@
+name: Configure LiteLLM — register Anthropic fallback-model (T-46)
+
+# Registers claude-haiku-4-5-20251001 under the "fallback-model" alias in
+# litellm-staging WITHOUT touching triage-model (gpt-4o-mini). After this
+# workflow succeeds, ops-hub will automatically fall back to Anthropic when
+# OpenAI is unavailable.
+#
+# Prerequisites:
+#   ANTHROPIC_API_KEY must be set in litellm-staging Coolify env vars and the
+#   container must have been redeployed after the key was added.
+#   LITELLM_MASTER_KEY — LiteLLM admin key (GitHub Actions secret).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+  LITELLM_SSLIP_IP: "187.124.76.235"
+  FALLBACK_ALIAS: "fallback-model"
+  TRIAGE_ALIAS: "triage-model"
+
+jobs:
+  configure-fallback:
+    name: Register claude-haiku as fallback-model
+    runs-on: ubuntu-latest
+    env:
+      LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+
+    steps:
+      # ── 1. Health check ───────────────────────────────────────────────────────
+      - name: Verify litellm-staging health
+        run: |
+          echo "::add-mask::$LITELLM_KEY"
+
+          LITELLM_URL="http://${LITELLM_UUID}.${LITELLM_SSLIP_IP}.sslip.io"
+          echo "LITELLM_BASE=$LITELLM_URL" >> "$GITHUB_ENV"
+
+          HEALTH=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
+            "$LITELLM_URL/health/readiness" || echo "000")
+          echo "Health check: HTTP $HEALTH"
+          if [ "$HEALTH" != "200" ]; then
+            echo "ERROR: litellm-staging not healthy (HTTP $HEALTH). Restart in Coolify UI."
+            exit 1
+          fi
+          echo "litellm-staging is healthy"
+
+      # ── 2. Remove any existing fallback-model registrations ───────────────────
+      - name: Remove existing fallback-model entries
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/model_info.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/info")
+          echo "GET /model/info -> HTTP $HTTP"
+
+          if [ "$HTTP" = "200" ]; then
+            IDS=$(jq -r --arg alias "$FALLBACK_ALIAS" \
+              '.data[] | select(.model_name == $alias) | .model_info.id // empty' \
+              /tmp/model_info.json 2>/dev/null || true)
+            if [ -z "$IDS" ]; then
+              echo "No existing fallback-model entries to remove"
+            else
+              while IFS= read -r id; do
+                [ -z "$id" ] && continue
+                DEL=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" -X POST \
+                  -H "Authorization: Bearer $LITELLM_KEY" \
+                  -H "Content-Type: application/json" \
+                  "$LITELLM_BASE/model/delete" \
+                  -d "{\"id\": \"$id\"}")
+                echo "DELETE fallback-model id=$id -> HTTP $DEL"
+              done <<< "$IDS"
+            fi
+          fi
+
+      # ── 3. Register claude-haiku-4-5-20251001 as fallback-model ──────────────
+      - name: Register claude-haiku-4-5-20251001 as fallback-model
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg alias "$FALLBACK_ALIAS" \
+            '{
+              model_name: $alias,
+              litellm_params: {
+                model: "anthropic/claude-haiku-4-5-20251001",
+                api_key: "os.environ/ANTHROPIC_API_KEY"
+              },
+              model_info: {
+                id: "anthropic-fallback",
+                description: "Anthropic claude-haiku-4-5-20251001 — fallback when OpenAI unavailable (T-46)"
+              }
+            }')
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/reg_fallback.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/new" -d "$PAYLOAD")
+          echo "POST /model/new (anthropic-fallback) -> HTTP $HTTP"
+          jq . /tmp/reg_fallback.json 2>/dev/null || cat /tmp/reg_fallback.json | head -10 || true
+
+          if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+            echo "Registered: $FALLBACK_ALIAS -> anthropic/claude-haiku-4-5-20251001"
+          else
+            echo "ERROR: registration failed (HTTP $HTTP)"
+            echo "Check that ANTHROPIC_API_KEY is set in litellm-staging Coolify env vars"
+            echo "and the container was redeployed (not just restarted) after adding the key."
+            exit 1
+          fi
+
+      # ── 4. Verify both aliases are registered ─────────────────────────────────
+      - name: Verify model registrations
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/model_info_post.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_BASE/model/info")
+          echo "GET /model/info -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then exit 1; fi
+
+          echo "=== All registered models ==="
+          jq -r '.data[] |
+            "  alias=\(.model_name)  id=\(.model_info.id // "none")  model=\(.litellm_params.model // "?")"' \
+            /tmp/model_info_post.json 2>/dev/null || true
+
+          FALLBACK_COUNT=$(jq --arg a "$FALLBACK_ALIAS" \
+            '[.data[] | select(.model_name == $a)] | length' \
+            /tmp/model_info_post.json 2>/dev/null || echo 0)
+          TRIAGE_COUNT=$(jq --arg a "$TRIAGE_ALIAS" \
+            '[.data[] | select(.model_name == $a)] | length' \
+            /tmp/model_info_post.json 2>/dev/null || echo 0)
+
+          echo ""
+          PASS=true
+          [ "$FALLBACK_COUNT" -ge 1 ] && echo "fallback-model: $FALLBACK_COUNT entry (ok)" || \
+            { echo "ERROR: fallback-model not found"; PASS=false; }
+          [ "$TRIAGE_COUNT" -ge 1 ] && echo "triage-model: $TRIAGE_COUNT entry (ok)" || \
+            { echo "WARNING: triage-model not found — run configure-litellm-openai-only.yml"; }
+          [ "$PASS" = "false" ] && exit 1 || true
+
+      # ── 5. Smoke test — triage-model (confirm still working) ─────────────────
+      - name: Smoke test — triage-model (assert HTTP 200)
+        run: |
+          HTTP=$(curl -s --max-time 60 -o /tmp/smoke_triage.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_BASE/chat/completions" \
+            -d "{\"model\":\"$TRIAGE_ALIAS\",\"max_tokens\":10,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}")
+          echo "POST /chat/completions (triage-model) -> HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            echo "SMOKE TEST (triage-model): PASS — $(jq -r '.model // empty' /tmp/smoke_triage.json)"
+          else
+            echo "WARNING: triage-model smoke test failed (HTTP $HTTP) — run configure-litellm-openai-only.yml to restore"
+            cat /tmp/smoke_triage.json | head -5 || true
+          fi
+
+      # ── 6. Smoke test — fallback-model ───────────────────────────────────────
+      - name: Smoke test — fallback-model (assert HTTP 200)
+        run: |
+          HTTP=$(curl -s --max-time 60 -o /tmp/smoke_fallback.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_BASE/chat/completions" \
+            -d "{\"model\":\"$FALLBACK_ALIAS\",\"max_tokens\":10,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}")
+          echo "POST /chat/completions (fallback-model) -> HTTP $HTTP"
+          jq . /tmp/smoke_fallback.json 2>/dev/null || cat /tmp/smoke_fallback.json | head -10 || true
+
+          if [ "$HTTP" = "200" ]; then
+            CONTENT=$(jq -r '.choices[0].message.content // empty' /tmp/smoke_fallback.json 2>/dev/null || true)
+            MODEL=$(jq -r '.model // empty' /tmp/smoke_fallback.json 2>/dev/null || true)
+            echo ""
+            echo "SMOKE TEST (fallback-model): PASS"
+            echo "  content : $CONTENT"
+            echo "  model   : $MODEL"
+          else
+            echo "ERROR: fallback-model smoke test failed (HTTP $HTTP)"
+            echo "Check that ANTHROPIC_API_KEY is set in litellm-staging Coolify env vars"
+            echo "and litellm-staging was redeployed (not just restarted) after adding it."
+            exit 1
+          fi
+
+      # ── 7. Summary ────────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo "============================================================"
+          echo " T-46 — LiteLLM Anthropic fallback configuration"
+          echo "============================================================"
+          echo ""
+          echo " Registered aliases (if all steps passed):"
+          echo "   triage-model   → gpt-4o-mini (OpenAI, primary)"
+          echo "   fallback-model → anthropic/claude-haiku-4-5-20251001 (Anthropic)"
+          echo ""
+          echo " ops-hub will now automatically fall back to Anthropic when"
+          echo " LITELLM_FALLBACK_MODEL=fallback-model is set and OpenAI fails."
+          echo ""
+          echo " Next step: set LITELLM_FALLBACK_MODEL=fallback-model in"
+          echo " ops-hub-app Coolify env vars, then redeploy ops-hub."
+          echo "============================================================"

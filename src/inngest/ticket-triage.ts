@@ -45,12 +45,18 @@ export function _resetPool(mock?: Pool): void {
 
 // Instructions go in the system message; untrusted ticket content goes in the user message.
 // This separation prevents ticket bodies from overriding classification instructions.
-export async function classifyTicket(title: string, body: string | null): Promise<ClassifyResult> {
+export async function classifyTicket(
+  title: string,
+  body: string | null,
+  model?: string
+): Promise<ClassifyResult> {
   const litellmUrl = process.env.LITELLM_URL;
   const litellmKey = process.env.LITELLM_MASTER_KEY;
   if (!litellmUrl || !litellmKey) {
     throw new Error("LITELLM_URL or LITELLM_MASTER_KEY not configured");
   }
+
+  const modelName = model ?? process.env.LITELLM_TRIAGE_MODEL ?? "triage-model";
 
   const resp = await fetch(`${litellmUrl}/chat/completions`, {
     method: "POST",
@@ -60,7 +66,7 @@ export async function classifyTicket(title: string, body: string | null): Promis
       Authorization: `Bearer ${litellmKey}`,
     },
     body: JSON.stringify({
-      model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
+      model: modelName,
       temperature: 0,
       max_tokens: 200,
       messages: [
@@ -166,23 +172,31 @@ export async function triageOneTicket(
   }
 
   // 2. Classify via LiteLLM; record a LangFuse generation.
+  const primaryModel = process.env.LITELLM_TRIAGE_MODEL ?? "triage-model";
+  const fallbackModel = process.env.LITELLM_FALLBACK_MODEL ?? "fallback-model";
+
   const trace = langfuse?.trace({
     name: "ticket-triage",
     metadata: { ticket_id: ticketId, project_id: projectId, tenant_id: tenantId },
   });
   const generation = trace?.generation({
     name: "classify-ticket",
-    model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
+    model: primaryModel,
     input: [{ role: "user", content: ticket.title }],
   });
 
   let classification: ClassifyResult;
   try {
-    classification = await classifyTicket(ticket.title, ticket.body);
-  } catch (err) {
-    generation?.end({ output: String(err) });
-    await langfuse?.flushAsync();
-    throw err;
+    classification = await classifyTicket(ticket.title, ticket.body, primaryModel);
+  } catch (primaryErr) {
+    // Primary model failed — attempt fallback provider before giving up.
+    try {
+      classification = await classifyTicket(ticket.title, ticket.body, fallbackModel);
+    } catch {
+      generation?.end({ output: String(primaryErr) });
+      await langfuse?.flushAsync();
+      throw primaryErr;
+    }
   }
 
   generation?.end({
