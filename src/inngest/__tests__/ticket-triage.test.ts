@@ -248,7 +248,8 @@ describe("triageOneTicket", () => {
     const pool = makePool(client);
     vi.stubGlobal(
       "fetch",
-      vi.fn()
+      vi
+        .fn()
         .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Service Unavailable" })
         .mockResolvedValueOnce({
           ok: true,
@@ -283,9 +284,14 @@ describe("triageOneTicket", () => {
     const pool = makePool(client);
     vi.stubGlobal(
       "fetch",
-      vi.fn()
+      vi
+        .fn()
         .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
-        .mockResolvedValueOnce({ ok: false, status: 429, text: async () => "Fallback rate limited" })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          text: async () => "Fallback rate limited",
+        })
     );
 
     await expect(triageOneTicket(pool, "t6", "proj-1", "tenant-1")).rejects.toThrow("LiteLLM 503");
