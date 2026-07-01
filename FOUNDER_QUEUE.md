@@ -4,28 +4,28 @@
 
 ---
 
-## FQ-53 — T-46 completion: activate Anthropic fallback in ops-hub-app
+## FQ-53 — LiteLLM /model/new broken: fix Prisma migration before T-48
 
 **Filed:** 2026-07-01
 **Filed by:** Tech Lead (T-46)
-**Needs:** One env var added to ops-hub-app in Coolify + redeploy
-**Deadline:** July 9, 2026 (T-46 target)
+**Needs:** Diagnosis + fix of LiteLLM DB write API
+**Deadline:** Before T-48 (LiteLLM production instance)
 
-T-46 code is merged (PRs #222 + #223). The app-level fallback logic is live: if `triage-model` (gpt-4o-mini) fails, `classifyTicket` retries with `LITELLM_FALLBACK_MODEL`. LiteLLM's `/model/new` alias API is currently returning HTTP 500 post-redeploy (Prisma DB write broken — see note below), so we bypass the alias system by setting the full model name directly.
+T-46 is done — `LITELLM_FALLBACK_MODEL=anthropic/claude-haiku-4-5-20251001` set in ops-hub-app (founder action complete 2026-07-01). Fallback path is live.
 
-**Action (3 min):**
-1. Go to Coolify → `ops-hub-app` application → Environment Variables
-2. Add (Runtime variable, not Build):
-   - Key: `LITELLM_FALLBACK_MODEL`
-   - Value: `anthropic/claude-haiku-4-5-20251001`
-3. Redeploy ops-hub-app
+**Remaining issue:** LiteLLM's management API (`POST /model/new`) returns HTTP 500 "Failed to add model to db" since the ANTHROPIC_API_KEY redeploy. Reads work (`GET /model/info` → 200) but writes fail. This means the registered triage-model alias may have been lost on redeploy (in-memory only). Current workaround: `LITELLM_FALLBACK_MODEL` uses direct model name, bypassing aliases. **This must be fixed before T-48** — the prod LiteLLM instance needs reliable alias management.
 
-LiteLLM will route `anthropic/claude-haiku-4-5-20251001` directly to Anthropic using the `ANTHROPIC_API_KEY` already configured in litellm-staging — no alias pre-registration needed.
+**To diagnose (5 min):**
+```
+docker logs <litellm-container-name> 2>&1 | grep -i "prisma\|migration\|error" | head -20
+```
+Look for Prisma migration errors at startup. If found, run:
+```
+docker exec <litellm-container-name> python -c "from litellm.proxy.proxy_server import *; asyncio.run(prisma_setup(None))"
+```
+Or redeploy LiteLLM with `DATABASE_URL` pointing to a fresh schema and let it auto-migrate.
 
-**Secondary issue (non-blocking for T-46, worth fixing before T-48):**
-LiteLLM's management API (`POST /model/new`) returns HTTP 500 "Failed to add model to db" since the ANTHROPIC_API_KEY redeploy. This likely means a Prisma migration wasn't run after the LiteLLM version change. To diagnose: check LiteLLM container logs for Prisma errors immediately after startup. To fix: run `prisma migrate deploy` in the LiteLLM container, or redeploy with `DIRECT_URL` configured per LiteLLM docs. This matters for T-48 (prod LiteLLM) — alias management via API must work there.
-
-**Notify:** Tech Lead "FQ-53 action done" — will verify fallback path smoke test.
+**Notify:** Tech Lead when resolved — T-48 can then proceed with alias-based model management.
 
 ---
 
