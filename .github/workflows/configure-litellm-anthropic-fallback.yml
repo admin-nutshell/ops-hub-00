@@ -83,10 +83,6 @@ jobs:
               litellm_params: {
                 model: "anthropic/claude-haiku-4-5-20251001",
                 api_key: "os.environ/ANTHROPIC_API_KEY"
-              },
-              model_info: {
-                id: "anthropic-fallback",
-                description: "Anthropic claude-haiku-4-5-20251001 — fallback when OpenAI unavailable (T-46)"
               }
             }')
 
@@ -95,7 +91,7 @@ jobs:
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
             "$LITELLM_BASE/model/new" -d "$PAYLOAD")
-          echo "POST /model/new (anthropic-fallback) -> HTTP $HTTP"
+          echo "POST /model/new (fallback-model) -> HTTP $HTTP"
           jq . /tmp/reg_fallback.json 2>/dev/null || cat /tmp/reg_fallback.json | head -10 || true
 
           if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
