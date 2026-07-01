@@ -4,25 +4,40 @@
 
 ---
 
-## FQ-51 — T-46 Second LLM provider: add ANTHROPIC_API_KEY to LiteLLM staging
+## FQ-53 — T-46 completion: activate Anthropic fallback in ops-hub-app
 
-**Filed:** 2026-06-29
+**Filed:** 2026-07-01
 **Filed by:** Tech Lead (T-46)
-**Needs:** One secret added to Coolify
+**Needs:** One env var added to ops-hub-app in Coolify + redeploy
 **Deadline:** July 9, 2026 (T-46 target)
 
-T-46 registers `claude-haiku-4-5-20251001` as a fallback provider in LiteLLM so an OpenAI outage doesn't silence triage. LiteLLM needs the Anthropic API key to call Anthropic models.
+T-46 code is merged (PRs #222 + #223). The app-level fallback logic is live: if `triage-model` (gpt-4o-mini) fails, `classifyTicket` retries with `LITELLM_FALLBACK_MODEL`. LiteLLM's `/model/new` alias API is currently returning HTTP 500 post-redeploy (Prisma DB write broken — see note below), so we bypass the alias system by setting the full model name directly.
 
 **Action (3 min):**
-1. Go to Coolify → `litellm-staging` application → Environment Variables
-2. Add:
-   - Key: `ANTHROPIC_API_KEY`
-   - Value: your Anthropic API key (from console.anthropic.com → API Keys)
-3. Redeploy LiteLLM (or restart — env var change takes effect on next container start)
+1. Go to Coolify → `ops-hub-app` application → Environment Variables
+2. Add (Runtime variable, not Build):
+   - Key: `LITELLM_FALLBACK_MODEL`
+   - Value: `anthropic/claude-haiku-4-5-20251001`
+3. Redeploy ops-hub-app
 
-**Note:** After redeploying LiteLLM, the internal Docker URL suffix will change. Run the suffix update procedure from `docs/retros/sprint-4-dr-drill.md` §"LiteLLM URL suffix — findings and procedure" after the redeploy.
+LiteLLM will route `anthropic/claude-haiku-4-5-20251001` directly to Anthropic using the `ANTHROPIC_API_KEY` already configured in litellm-staging — no alias pre-registration needed.
 
-**Notify:** Tech Lead "FQ-51 complete" — T-46 will register the model alias and run the smoke test.
+**Secondary issue (non-blocking for T-46, worth fixing before T-48):**
+LiteLLM's management API (`POST /model/new`) returns HTTP 500 "Failed to add model to db" since the ANTHROPIC_API_KEY redeploy. This likely means a Prisma migration wasn't run after the LiteLLM version change. To diagnose: check LiteLLM container logs for Prisma errors immediately after startup. To fix: run `prisma migrate deploy` in the LiteLLM container, or redeploy with `DIRECT_URL` configured per LiteLLM docs. This matters for T-48 (prod LiteLLM) — alias management via API must work there.
+
+**Notify:** Tech Lead "FQ-53 action done" — will verify fallback path smoke test.
+
+---
+
+## ✅ FQ-51 — T-46 Second LLM provider: add ANTHROPIC_API_KEY to LiteLLM staging
+
+**Filed:** 2026-06-29 | **Closed:** 2026-07-01
+**Filed by:** Tech Lead (T-46)
+**Status:** RESOLVED
+
+`ANTHROPIC_API_KEY` added to litellm-staging and container redeployed. T-45 suffix workflow updated LITELLM_URL after the redeploy (run #28495829624). LiteLLM `/health/readiness` confirmed healthy.
+
+**New issue discovered post-redeploy:** LiteLLM `/model/new` API returning HTTP 500 "Failed to add model to db" — DB write broken. See FQ-53 for the workaround that completes T-46 without needing the alias API.
 
 ---
 
