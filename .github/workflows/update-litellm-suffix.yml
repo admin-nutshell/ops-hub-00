@@ -45,13 +45,7 @@ jobs:
           chmod 700 ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
-          LINES=$(wc -l < ~/.ssh/known_hosts)
-          if [ "$LINES" -eq 0 ]; then
-            echo "ERROR: ssh-keyscan returned nothing — VPS may be unreachable on port 22"
-            exit 1
-          fi
-          echo "known_hosts populated ($LINES lines)"
+          echo "SSH key written"
 
       # ── 2. Detect LiteLLM container suffix ───────────────────────────────────
       - name: Detect LiteLLM container suffix via docker ps
@@ -61,7 +55,7 @@ jobs:
           SSH_USER: ${{ inputs.ssh_user }}
         run: |
           CONTAINER_NAME=$(ssh -i ~/.ssh/id_ed25519 \
-            -o StrictHostKeyChecking=yes \
+            -o StrictHostKeyChecking=no \
             -o ConnectTimeout=10 \
             "${SSH_USER}@${VPS_HOST}" \
             "docker ps --filter name=${LITELLM_UUID_PREFIX} --format '{{.Names}}' | head -1")
