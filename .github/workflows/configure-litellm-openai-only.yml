@@ -39,7 +39,6 @@ permissions:
   contents: read
 
 env:
-  LITELLM_EXTERNAL_URL: ${{ inputs.environment == 'prod' && 'https://litellm-prod.inatechshell.ca' || 'https://litellm-staging.inatechshell.ca' }}
   TRIAGE_ALIAS: "triage-model"
   FALLBACK_ALIAS: "fallback-model"
   LEGACY_ALIAS: "meta/llama-3.3-70b-instruct"
@@ -49,15 +48,16 @@ jobs:
     name: Register OpenAI gpt-4o-mini as sole triage-model provider
     runs-on: ubuntu-latest
     env:
+      LITELLM_EXTERNAL_URL: ${{ inputs.environment == 'prod' && 'https://litellm-prod.inatechshell.ca' || 'https://litellm-staging.inatechshell.ca' }}
       LITELLM_KEY: ${{ inputs.environment == 'prod' && secrets.LITELLM_MASTER_KEY_PROD || secrets.LITELLM_MASTER_KEY }}
 
     steps:
       # ── 1. Health check ───────────────────────────────────────────────────────
-      - name: Verify litellm-staging health
+      - name: Verify litellm health
         id: health
         run: |
           echo "::add-mask::$LITELLM_KEY"
-          echo "litellm-staging URL: $LITELLM_EXTERNAL_URL"
+          echo "target: ${{ inputs.environment }} — $LITELLM_EXTERNAL_URL"
 
           HEALTH=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
             "$LITELLM_EXTERNAL_URL/health/readiness" || echo "000")
