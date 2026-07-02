@@ -1,0 +1,146 @@
+name: Deploy to Production
+
+# Manual promotion gate: deploys an already-built GHCR image to ops-hub-prod.
+# Run AFTER main-deploy.yml has pushed the image to GHCR and staging is healthy.
+#
+# Usage:
+#   - Default (no input): promotes the `latest` image (= last staging deploy)
+#   - With image_tag: promotes a specific commit SHA for pinned rollouts
+#
+# Rollback: re-run with the previous known-good SHA as image_tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (default: latest = last staging build)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prod-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Promote to ops-hub-prod
+    runs-on: ubuntu-latest
+
+    env:
+      COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+      IMAGE: "ghcr.io/${{ github.repository }}"
+      # Stable Coolify app UUID for ops-hub-prod — does not change on redeploy
+      OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+      PROD_URL: "https://ops-hub-prod.inatechshell.ca"
+
+    steps:
+      # ── 1. Patch image tag on prod app ────────────────────────────────────────
+      - name: Patch prod image tag
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          echo "Promoting $IMAGE:$TAG to ops-hub-prod ($OPS_HUB_PROD_UUID)..."
+          PATCH_BODY=$(jq -n --arg img "$IMAGE" --arg tag "$TAG" \
+            '{docker_registry_image_name:$img, docker_registry_image_tag:$tag}')
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID" -d "$PATCH_BODY")
+          echo "PATCH HTTP $HTTP"
+          jq . /tmp/patch.json 2>/dev/null || cat /tmp/patch.json
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: PATCH failed (HTTP $HTTP)"; exit 1
+          fi
+
+      # ── 2. Start deployment ───────────────────────────────────────────────────
+      - name: Start prod deployment
+        id: deploy
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          HTTP=$(curl -s --max-time 180 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/start")
+          echo "Start HTTP $HTTP"
+          jq . /tmp/start.json 2>/dev/null || cat /tmp/start.json
+          DEPLOYMENT_UUID=$(jq -r '.deployment_uuid // empty' /tmp/start.json 2>/dev/null || true)
+          echo "deployment_uuid=$DEPLOYMENT_UUID" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Wait for Coolify deployment ───────────────────────────────────────
+      - name: Wait for deployment to complete
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          DEPLOYMENT_UUID: ${{ steps.deploy.outputs.deployment_uuid }}
+        run: |
+          if [ -z "$DEPLOYMENT_UUID" ]; then
+            echo "No deployment UUID — skipping poll."; exit 0
+          fi
+          echo "Polling deployment $DEPLOYMENT_UUID ..."
+          for i in $(seq 1 30); do
+            HTTP=$(curl -s --max-time 15 -o /tmp/dep.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/deployments/$DEPLOYMENT_UUID" 2>/dev/null || true)
+            if [ "$HTTP" = "200" ]; then
+              STATUS=$(jq -r '.status // empty' /tmp/dep.json 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Deployment finished."; exit 0 ;;
+                failed|error)
+                  echo "=== Deployment FAILED ==="
+                  jq . /tmp/dep.json 2>/dev/null || cat /tmp/dep.json
+                  curl -s --max-time 30 \
+                    -H "Authorization: Bearer $TOKEN" \
+                    "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/logs" \
+                    2>/dev/null | tail -c 4000 || true
+                  exit 1 ;;
+              esac
+            else
+              echo "Attempt $i: API HTTP $HTTP — waiting 10s"
+            fi
+            sleep 10
+          done
+          echo "WARNING: poll timed out — proceeding to health check"
+
+      # ── 4. Health check ───────────────────────────────────────────────────────
+      - name: Wait for prod health check
+        run: |
+          echo "Polling $PROD_URL/health ..."
+          for i in $(seq 1 18); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" \
+              "$PROD_URL/health" || true)
+            if [ "$HTTP" = "200" ]; then
+              echo "Health check passed (attempt $i) — prod is live."
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $HTTP — waiting 10s"
+            sleep 10
+          done
+          echo "ERROR: health check timed out after 3 minutes"
+          exit 1
+
+      # ── 5. Inngest sync ───────────────────────────────────────────────────────
+      - name: Sync Inngest functions
+        run: |
+          echo "Syncing Inngest at $PROD_URL/api/inngest ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/sync.json -w "%{http_code}" -X PUT \
+            -H "Content-Type: application/json" \
+            "$PROD_URL/api/inngest")
+          echo "Sync HTTP $HTTP"
+          cat /tmp/sync.json
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "WARNING: Inngest sync returned HTTP $HTTP — functions may not be updated"
+          fi
+
+      # ── 6. Summary ────────────────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================="
+          echo " ops-hub PRODUCTION deployment"
+          echo "======================================================="
+          echo "  image: $IMAGE:${{ inputs.image_tag }}"
+          echo "  url:   $PROD_URL"
+          echo "======================================================="
