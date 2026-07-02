@@ -31,6 +31,8 @@ permissions:
 env:
   LITELLM_UUID_PREFIX: "h12xz8887fxvbvjts2hac8if"
   COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  # Staging ops-hub-app Coolify UUID — stable, does not change on redeploy
+  OPS_HUB_STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
 
 jobs:
   update-suffix:
@@ -80,30 +82,12 @@ jobs:
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
           echo "new_url=$NEW_URL" >> "$GITHUB_OUTPUT"
 
-      # ── 3. Find ops-hub-app UUID ──────────────────────────────────────────────
+      # ── 3. Use pinned staging ops-hub-app UUID ───────────────────────────────
       - name: Find ops-hub-app UUID
         id: find-app
-        env:
-          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
         run: |
-          set -euo pipefail
-          HTTP=$(curl -s --max-time 60 -o /tmp/apps.json -w "%{http_code}" \
-            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications")
-          echo "GET /applications → HTTP $HTTP"
-          if [ "$HTTP" != "200" ]; then
-            echo "ERROR: Coolify API unavailable (HTTP $HTTP)"
-            cat /tmp/apps.json
-            exit 1
-          fi
-          UUID=$(jq -r '.[] | select(.name == "ops-hub-app") | .uuid' /tmp/apps.json 2>/dev/null)
-          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
-            echo "ERROR: ops-hub-app not found in Coolify. Apps present:"
-            jq -r '.[].name' /tmp/apps.json
-            exit 1
-          fi
-          echo "ops-hub-app UUID: $UUID"
-          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "ops-hub-app UUID: $OPS_HUB_STAGING_UUID"
+          echo "uuid=$OPS_HUB_STAGING_UUID" >> "$GITHUB_OUTPUT"
 
       # ── 4. Replace LITELLM_URL (delete all duplicates, then post fresh entry) ─
       - name: Replace LITELLM_URL in ops-hub-app
