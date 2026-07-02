@@ -1,12 +1,12 @@
 name: Configure LiteLLM — OpenAI gpt-4o-mini as sole triage-model provider
 
-# Registers model aliases on litellm-staging:
+# Registers model aliases on the target LiteLLM instance (staging or prod):
 #   triage-model   → gpt-4o-mini      (primary triage path)
 #   fallback-model → anthropic/claude-haiku-4-5-20251001 (fallback, via ANTHROPIC_API_KEY)
 #   meta/llama-3.3-70b-instruct → gpt-4o-mini (legacy alias, kept for backwards compat)
 #
 # Run order:
-#   1. Verify litellm-staging health
+#   1. Verify litellm health
 #   2. Purge all existing model registrations
 #   3. Register triage-model   → gpt-4o-mini
 #   4. Register fallback-model → anthropic/claude-haiku-4-5-20251001
@@ -16,20 +16,29 @@ name: Configure LiteLLM — OpenAI gpt-4o-mini as sole triage-model provider
 #   8. Summary
 #
 # Prerequisites (GitHub Actions secrets):
-#   LITELLM_MASTER_KEY — LiteLLM admin key (must match Coolify env var)
+#   LITELLM_MASTER_KEY      — staging LiteLLM admin key
+#   LITELLM_MASTER_KEY_PROD — prod LiteLLM admin key
 #
-# OPENAI_API_KEY and ANTHROPIC_API_KEY must be set in litellm-staging Coolify env vars
+# OPENAI_API_KEY and ANTHROPIC_API_KEY must be set in the target Coolify env vars
 # and the container must have been redeployed (vars injected on redeploy, not restart).
 # This workflow never receives or logs raw API key values.
 
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target LiteLLM instance"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - prod
 
 permissions:
   contents: read
 
 env:
-  LITELLM_EXTERNAL_URL: "https://litellm-staging.inatechshell.ca"
   TRIAGE_ALIAS: "triage-model"
   FALLBACK_ALIAS: "fallback-model"
   LEGACY_ALIAS: "meta/llama-3.3-70b-instruct"
@@ -39,15 +48,16 @@ jobs:
     name: Register OpenAI gpt-4o-mini as sole triage-model provider
     runs-on: ubuntu-latest
     env:
-      LITELLM_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+      LITELLM_EXTERNAL_URL: ${{ inputs.environment == 'prod' && 'https://litellm-prod.inatechshell.ca' || 'https://litellm-staging.inatechshell.ca' }}
+      LITELLM_KEY: ${{ inputs.environment == 'prod' && secrets.LITELLM_MASTER_KEY_PROD || secrets.LITELLM_MASTER_KEY }}
 
     steps:
       # ── 1. Health check ───────────────────────────────────────────────────────
-      - name: Verify litellm-staging health
+      - name: Verify litellm health
         id: health
         run: |
           echo "::add-mask::$LITELLM_KEY"
-          echo "litellm-staging URL: $LITELLM_EXTERNAL_URL"
+          echo "target: ${{ inputs.environment }} — $LITELLM_EXTERNAL_URL"
 
           HEALTH=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
             "$LITELLM_EXTERNAL_URL/health/readiness" || echo "000")
@@ -206,13 +216,12 @@ jobs:
         if: always()
         run: |
           echo "============================================================"
-          echo " LITELLM — model alias configuration"
+          echo " LITELLM — model alias configuration (${{ inputs.environment }})"
           echo "============================================================"
+          echo "  target: $LITELLM_EXTERNAL_URL"
           echo "  triage-model   → gpt-4o-mini"
           echo "  fallback-model → anthropic/claude-haiku-4-5-20251001"
           echo "  meta/llama-3.3-70b-instruct → gpt-4o-mini (legacy)"
           echo ""
-          echo "  ops-hub-app LITELLM_FALLBACK_MODEL must be set to:"
-          echo "    fallback-model"
-          echo "  (not the raw anthropic/ model name)"
+          echo "  ops-hub LITELLM_FALLBACK_MODEL must be set to: fallback-model"
           echo "============================================================"
