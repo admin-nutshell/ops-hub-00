@@ -42,6 +42,14 @@ export const pollFreeScout = inngest.createFunction(
   }: {
     step: Parameters<Parameters<typeof inngest.createFunction>[1]>[0]["step"];
   }) => {
+    // Fail-closed: only one ops-hub environment should poll the shared FreeScout
+    // mailbox at a time (dedup is on freescout_conversation_id globally, not
+    // scoped per environment). Set POLLING_ENABLED=true on exactly one
+    // environment's Coolify env vars — currently ops-hub-prod. See T-54.
+    if (process.env.POLLING_ENABLED !== "true") {
+      return { polled: 0, inserted: 0 };
+    }
+
     const result: PollResult = await step.run("poll-and-insert", async () => {
       const client = await getPool().connect();
       try {

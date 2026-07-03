@@ -898,3 +898,34 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 
   Do not merge to main until T-54(A) is fixed.
 ```
+
+### 2026-07-03 — T-54(A) fixed; correction to earlier near-miss entry
+
+```
+2026-07-03 [Tech Lead] Correction: the earlier near-miss entry above described
+  ajqplom2mghf5a8h6vf1q6xg as a "deprecated staging app." That was wrong —
+  it is the current, live ops-hub-staging app, confirmed directly in Coolify's
+  UI. The deprecated thing (per the 2026-06-22 entry) was its old
+  auto-generated sslip.io hostname, not the app itself; Coolify derives
+  sslip.io hostnames from the app's own UUID, which is why the string
+  coincided. This means the app-name collision in main-deploy.yml was
+  permanent and deterministic on every run, not a fragile edge case
+  depending on a leftover app.
+
+  Fixed: main-deploy.yml now pins OPS_HUB_STAGING_UUID directly (same
+  pattern as prod-deploy.yml's OPS_HUB_PROD_UUID), removing the name-based
+  /applications lookup entirely. Lint/typecheck/192 unit tests all green.
+
+  This fix makes the staging deploy step succeed for the first time since
+  ops-hub-staging was stopped, which restarts it on the next merge to main.
+  To keep that safe, freescout-poller.ts gained a fail-closed
+  POLLING_ENABLED env-var guard (default off) — required to be set to
+  "true" on ops-hub-prod (not staging) before/at merge, or prod's own
+  poller silently stops working too.
+
+  T-54(B) (Inngest app-id collision) remains unverified. Every observed
+  main-deploy.yml failure this sprint crashed before reaching the Inngest
+  sync step; now that (A) no longer blocks that step, the next staging
+  deploy will reach it for the first time. Watch prod's /api/inngest and
+  run a live ticket test afterward to find out whether (B) is real.
+```
