@@ -838,3 +838,37 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   further tenant onboarding follow at founder direction.
   Sprint 5 window: July 7–18, 2026. Target: M6.
 ```
+
+### 2026-07-03 — M6 "TTS Live in Production" declared
+
+```
+2026-07-03 [PM] M6 "TTS Live in Production" declared. Sprint 5 critical path
+  (T-44 through T-52) complete. Production E2E validated: test email → FreeScout
+  (freescout-staging.inatechshell.ca, promoted to serve as the prod mailbox per
+  T-50) → pollFreeScout ingested → ticket 3e9a23c5 created in prod project
+  (project_id=00…0003) → triageTicket classified → respondTicket delivered
+  FreeScout note, confirmed visible in FreeScout UI → state=responded in
+  Supabase, ~15s end-to-end. ops-hub prod /health: ok. LiteLLM prod
+  /health/readiness: healthy, db connected.
+
+  T-51 blocker found + fixed en route: ops-hub-prod's Coolify env vars were
+  missing INNGEST_SIGNING_KEY, INNGEST_EVENT_KEY, LANGFUSE_PUBLIC_KEY,
+  LANGFUSE_SECRET_KEY, SENTRY_DSN, NVIDIA_API_KEY, LITELLM_URL,
+  LITELLM_MASTER_KEY (prod), LITELLM_EXTERNAL_URL (prod) — 3 of these
+  (LITELLM_URL/MASTER_KEY/EXTERNAL_URL) were part of T-47's originally-claimed
+  "8 vars set," lost afterward, most likely via the known Coolify
+  append-not-upsert env var bug triggered during a later edit (T-50's
+  FREESCOUT_DB_URL addition is the leading suspect). Re-added, redeployed via
+  prod-deploy.yml, re-verified.
+
+  T-54 opened (not a blocker for M6, but blocks future merges to main):
+  ops-hub-staging and ops-hub-prod are registered as the same Inngest app id
+  ("ops-hub"), and main-deploy.yml re-syncs Inngest against staging's URL on
+  every merge to main — this can silently repoint production's function
+  dispatch to staging. ops-hub-staging left stopped in Coolify until T-54
+  lands; do not merge to main in the meantime without re-running prod-deploy.yml
+  afterward to re-assert prod's Inngest registration.
+
+  T-53 (Sprint 5 retro) opened, to cover both findings above.
+  Next milestone: M7 or further tenant onboarding, at founder direction.
+```
