@@ -872,3 +872,29 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   T-53 (Sprint 5 retro) opened, to cover both findings above.
   Next milestone: M7 or further tenant onboarding, at founder direction.
 ```
+
+### 2026-07-03 — Near-miss: merging PR #233 triggered a cross-environment deploy collision
+
+```
+2026-07-03 [Tech Lead] Merging PR #233 (WORK.md/DECISIONS.md only) triggered
+  main-deploy.yml (run 28673637806) because its paths-ignore only excludes
+  docs/**, not root-level .md files. Its Coolify app lookup does
+  jq 'select(.name == "ops-hub-app")' against the full /applications list
+  with no project scoping. Two apps share that name — ops-hub-prod
+  (sbke5gqru1n54rj7gssgca2y) and a deprecated staging app
+  (ajqplom2mghf5a8h6vf1q6xg) — so the query matched both, producing a
+  malformed multi-line UUID that crashed the PATCH call (curl exit 3) before
+  any request reached Coolify. Confirmed no impact: prod /health (200) and
+  /api/inngest (401) unchanged after the run.
+
+  This fails safe only because the two name-matches both exist right now —
+  it is not randomness, but it is fragile: deleting the deprecated staging
+  app, a rename, or "fixing" the crash with | head -1 would turn this into a
+  silent PATCH of ops-hub-prod's image tag from an unreviewed merge to main,
+  bypassing the T-49 manual-promotion-gate design entirely. Filed as T-54(A).
+  Separately, T-54(B) (Inngest app-id collision) remains unverified — this
+  run crashed before reaching the Inngest sync step, so that theory was not
+  actually exercised today.
+
+  Do not merge to main until T-54(A) is fixed.
+```
