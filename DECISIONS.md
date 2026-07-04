@@ -1063,3 +1063,48 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   team task consumes sprint capacity on either. Full task table:
   WORK.md "Sprint 6 tasks."
 ```
+
+### 2026-07-04 — T-61 Phase 1 attempted, blocked at the pre-check (zero live changes)
+
+```
+2026-07-04 [Production Manager] T-61 Phase 1 (staging) executed per
+  docs/deploys/2026-07-04-litellm-db-wall-restoration.md, in order, stopping
+  at step 1 as the plan requires on failure.
+
+  Added precheck-litellm-db-wall.yml (PR #255) — read-only workflow: proves
+  litellm_db_user still authenticates + owns a healthy litellm schema,
+  captures baseline public.* row counts for the later canary, and stashes
+  litellm-staging's current (working) DATABASE_URL as a build artifact —
+  the plan's documented rollback DSN was not actually saved anywhere before
+  this, and apply-wall's own Step 3 deletes the only live copy before the
+  new value is confirmed healthy.
+
+  First dispatch (run 28722649416) failed with "invalid URI query parameter:
+  schema" — a bug in the new workflow, not a real result: LITELLM_DB_USER_URL
+  carries a Prisma-only ?schema=litellm suffix that libpq/psql does not
+  understand. Fixed (PR #256) by stripping the query string before psql
+  connects; every check already qualifies tables by schema explicitly, so
+  nothing about the check was weakened.
+
+  Second dispatch (run 28722827915), after the fix, returned a real result:
+  FATAL: password authentication failed for user "litellm_db_user". This is
+  a genuine auth rejection, not the ENOIDENTIFIER/"tenant not found" error
+  that would indicate a DSN-format problem — the connection reached the
+  password-check stage. Root cause not confirmed (the only rotation on
+  record, 2026-06-29/FQ-49, was the postgres role's password, not
+  litellm_db_user's), only the symptom. Per the deploy plan's own
+  instruction for this exact scenario, did not guess at or attempt to reset
+  the password — filed FOUNDER_QUEUE.md FQ-58 and stopped.
+
+  Confirmed via the run log: no step after the auth check executed (baseline
+  capture and rollback-DSN stash are gated behind it) — zero writes were made
+  anywhere. fix-litellm-schema-isolation.yml was NOT dispatched. litellm-staging
+  is unchanged from this session's start: DATABASE_URL still the
+  postgres.yocoljutbiizdbfraapx DSN, DISABLE_SCHEMA_UPDATE=true still set,
+  /health/readiness still 200. The FQ-57 latent-risk posture (both
+  litellm-staging and litellm-prod connect as postgres, wall not in effect,
+  but no Prisma DDL running today) is unchanged — this session neither
+  worsened nor improved it. T-62 (Phase 2, prod) remains blocked on FQ-57
+  as before, and is now additionally gated behind T-61 Phase 1 completing
+  cleanly, which itself now needs FQ-58 resolved first.
+```
