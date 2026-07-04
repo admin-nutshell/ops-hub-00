@@ -1008,3 +1008,52 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   re-add an explicit Inngest sync step to the staging deploy path before
   that fix lands.
 ```
+
+### 2026-07-04 — T-54(B) permanent fix completed (backfilled entry)
+
+```
+2026-07-04 [PM] Backfilling a gap found during Sprint 6 scoping: WORK.md's
+  T-54 row has claimed since 2026-07-04 that the permanent fix for the
+  Inngest app-id collision (T-54(B)) is complete, but no corresponding
+  DECISIONS.md entry was ever written — the last entry above (T-54(B)
+  confirmed, interim mitigation shipped) still frames the permanent fix as
+  open. Verified directly before backfilling, not taken on WORK.md's word
+  alone (per this same file's own 2026-07-03 lesson):
+    - PR #239 ("fix(T-54): make Inngest app id configurable per
+      environment") confirmed MERGED 2026-07-04T02:02:18Z.
+    - src/inngest/client.ts line 8 confirmed live:
+      `new Inngest({ id: process.env.INNGEST_APP_ID ?? "ops-hub" })`.
+  `INNGEST_APP_ID=ops-hub-staging` set on ops-hub-staging only; ops-hub-prod
+  relies on the default ("ops-hub"). Inngest's Apps page (per WORK.md T-54)
+  showed two distinct apps post-fix, verified with a live post-split test
+  ticket processing correctly in prod. T-54 (both halves) is closed as of
+  this backfill. Process note: this is exactly the class of drift the
+  Sprint 5 retro's process change #1 warns about ("don't trust a WORK.md
+  done-checkmark without a live check") — applied here to the decisions
+  log itself, not just env vars.
+```
+
+### 2026-07-04 — Sprint 6 scoped
+
+```
+2026-07-04 [PM] Sprint 6 scoped: Ops Dashboard MVP + Reliability Debt
+  Closure. Sprint 5 closed out fully (T-44-T-56, M6 declared 2026-07-03,
+  retro at docs/retros/sprint-5.md). Sprint 6 anchors on a single
+  measurable outcome per the retro's own lesson about overcommitment:
+  the founder-facing Ops Dashboard, read-only MVP only (T-57 auth
+  boundary -> T-58 build -> T-59 RLS verification), covering the 4
+  charter daily pillars from 02_stakeholders.md plus queue/pipeline/
+  system-health/incidents views. Settings/write area (model routing
+  editor, SLA editor, feature flags) explicitly deferred to Sprint 7.
+  Two smaller parallel tracks: LiteLLM DB isolation wall restoration
+  (T-60 staging, executable now; T-61 prod, contingent on founder FQ-57
+  action) and Sprint 5 CI/process debt (T-63 paths-ignore fix; T-64
+  backlog nice-to-have). No milestone declared this sprint - see WORK.md
+  "Milestone numbering note": charter M7 is gated on an exogenous A-Mart/
+  tenant event; team's milestone track already diverged from the charter
+  table at M3 (DNC deferred, FQ-43); this sprint's work should not be
+  auto-labeled M7 when it completes. FQ-47 (Cstate go-live) and FQ-43
+  (DNC/second-tenant onboarding) carried forward as founder-gated, no
+  team task consumes sprint capacity on either. Full task table:
+  WORK.md "Sprint 6 tasks."
+```

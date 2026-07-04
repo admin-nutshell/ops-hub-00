@@ -6,14 +6,62 @@
 
 ## Current sprint
 
-**Sprint:** Sprint 5 — Reliability Hardening + TTS Production Go-Live
-**Sprint goal:** Close three infrastructure reliability gaps (LiteLLM monitoring, suffix automation, LLM fallback), then deploy the full TTS pipeline to production and declare M6.
-**Sprint window:** July 7–18, 2026
-**Target milestone:** M6 — TTS Live in Production
+**Sprint:** Sprint 6 — Ops Dashboard MVP + Reliability Debt Closure
+**Sprint goal:** Ship the founder-facing Ops Dashboard as a **read-only MVP** (the 4 charter-mandated daily pillars from `02_stakeholders.md` — SLA attainment, open tickets, agent costs, eval health — plus deflection rate, ticket queue, pipeline stage counts, system health, and the platform-incidents feed), properly RLS-scoped and sitting behind a real auth boundary. This is the sprint's single anchor. Two smaller tracks ride alongside in parallel (different owners, no bandwidth conflict): closing the latent LiteLLM DB-isolation-wall regression found at the end of Sprint 5 (FQ-57), and clearing Sprint 5's process/CI debt.
+**Sprint window:** July 6–20, 2026
+**Target milestone:** None declared this sprint. See "Milestone numbering note" below — this is capability-building, not a milestone-closing sprint.
+**Explicitly deferred to Sprint 7 (not in scope, do not start early):** the Ops Dashboard **settings/write area** (per-function model routing editor, SLA target editor, feature-flag toggles) — deferred because it needs T-59-style backend work (splitting `LITELLM_TRIAGE_MODEL`/`LITELLM_FALLBACK_MODEL` so Respond and KB Learn stop sharing Triage's routing config) and a heavier RLS-write security review than a 2-week window comfortably holds alongside everything else below. Building it now would repeat the Sprint 5 overcommit pattern this plan is deliberately avoiding.
 
-**Critical path:** T-44 (LiteLLM monitor) → T-45 (suffix automation) → T-46 (LLM fallback) → T-47 (prod schema + env vars) → T-48 (LiteLLM prod) → T-49 (ops-hub prod deploy) → T-50 (FreeScout prod mailbox) → T-51 (TTS E2E validation) → T-52 (M6 close)
+**Milestone numbering note:** the charter (`09_delivery.md`) defines M6 = "A-Mart YYC onboarded (conditional)" and M7 = "Phase 2 Complete." The team's actual milestone track diverged from that table starting at M3 (DNC production deferred indefinitely, FQ-43) and redefined M6 as "TTS Live in Production" (declared 2026-07-03, DECISIONS.md). Charter-M7 is gated on an exogenous event (A-Mart pilot conversion or an equivalent tenant commercial milestone) that hasn't happened. **This sprint's work should not be labeled M7 when it completes** — it's platform-hardening work in the gap between the team's M6 and whichever milestone the founder next signals. Flagging this now so it isn't silently mislabeled later; revisit numbering explicitly if/when a founder decision reopens tenant onboarding.
 
-**Direction decision (2026-06-29):** DNC dropped from near-term roadmap. Sprint 5 focuses on making TTS production-grade. See DECISIONS.md.
+**Critical path (Track A, the sprint anchor):** T-57 (dashboard auth) → T-58 (dashboard read-only build) → T-59 (RLS/tenant-scoping verification). Tracks B and C do not gate Track A and vice versa — different owners, run in parallel.
+
+**Founder-gated, no team task consumes sprint capacity on these (carried forward, not dropped):**
+- **FQ-47** (Cstate status page go-live, filed 2026-06-28) — still open, 4 founder actions (GitHub Pages, DNS CNAME, PAT, UptimeRobot webhook). Code (T-38) has been done since Sprint 4; this is pure founder action. No Sprint 6 task. Will reference in the next monthly founder briefing/tenant-health email as a standing open item.
+- **FQ-57 Phase 2** (prod-only LiteLLM restricted-role SQL) — see T-61 below; blocked on founder SQL + secret.
+- **DNC / second-tenant onboarding** — remains deferred indefinitely per FQ-43 (2026-06-27, founder decision). Not scheduled. Revisit only on founder signal.
+
+---
+
+## Sprint 6 tasks
+
+### Track A — Ops Dashboard Read-Only MVP (sprint anchor)
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-57: Dashboard auth mechanism | Tech Lead | — | A real auth boundary in front of the dashboard route(s) before any live data is wired — a single-admin console reading tenant-scoped tables (`tickets`, `tenants`, `feature_flags`) is not safe-by-default just because there's one user. Minimum viable: a password/session gate or Traefik-level basic auth on the dashboard path; document the choice and threat model in a short decision note (ADR not required for this size, but record in DECISIONS.md). Must land before T-58 is exposed on a reachable domain — UI/data-layer work in T-58 may proceed in parallel against a local/staging build. | Jul 10 |
+| T-58: Ops Dashboard read-only build | Frontend Engineer | T-57 (must land before go-live; parallel build OK) | Single-screen founder console per the approved mockup (`docs/design/ops-dashboard-mockup-v1.html`, visual reference only). Covers: SLA attainment, open tickets, agent costs, eval health (the 4 charter daily pillars, `02_stakeholders.md`), auto-resolve/deflection rate, ticket queue, pipeline stage counts, system health, platform-incidents feed. **Read-only this sprint — no settings/write area** (see deferral note above). Every query goes through `ops_hub_app` (or an equivalently scoped role) with explicit tenant/project scoping — `service_role` never held at runtime, per CLAUDE.md non-negotiables. React/Next.js + Tailwind per the `frontend_engineer` agent spec. | Jul 17 |
+| T-59: RLS/tenant-scoping verification of dashboard queries | QA Manager + Security Lead (informational) | T-58 | Every dashboard data query audited against CLAUDE.md's multi-tenant rule (fail-closed RLS, explicit tenant/project scoping, no cross-tenant leakage even under a single-admin-user model). At minimum one live check per widget confirming it can't return rows outside its intended scope. Sign-off recorded before T-58 is declared done. | Jul 18 |
+
+### Track B — Reliability Debt: LiteLLM DB Isolation Wall (FQ-57)
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-60: Restore LiteLLM DB isolation wall — Phase 1 (staging) | Production Manager | — | Canary rollout per `docs/deploys/2026-07-04-litellm-db-wall-restoration.md` Phase 1: read-only pre-check that `litellm_db_user`'s password still works → `fix-litellm-schema-isolation.yml apply-wall` → re-register + verify 3 aliases persist across restart → manual `public.*` row-count canary → `freeze-schema` → 30-min monitoring window. Executable now — does not need new founder action (only the existing `litellm_db_user` role + `LITELLM_DB_USER_URL` secret from ADR-0004/FQ-45). | Jul 13 |
+| T-61: Restore LiteLLM DB isolation wall — Phase 2 (prod) | Production Manager | T-60 clean; **FOUNDER ACTION (FQ-57)** | **Blocked/contingent** — gated on the founder running the one-time superuser SQL to create the new prod-only `litellm_db_user_prod` role + `litellm_prod` schema, and setting `LITELLM_PROD_DB_USER_URL` as a GitHub secret (FQ-57). If the founder action lands mid-sprint: same canary sequence as T-60 but with a 24-hour monitoring window (prod, live traffic) and QA Manager post-deploy verification (live ticket E2E, same shape as T-51). Security Lead sign-off required on the new role SQL before Phase 2 executes. If the founder action doesn't land this sprint, this task carries to Sprint 7 — not a Sprint 6 slip, since it depends on an input outside the team's control. | Contingent |
+| T-62: Env var presence health check | Production Manager | — | Lightweight periodic check (piggyback on existing `/health` endpoint pattern, per the Sprint 5 retro's own recommendation) that flags when an expected Coolify env var goes missing on ops-hub-staging/prod, so a repeat of T-47's silent 9-var drift (Sprint 5 §4.1) is caught by monitoring instead of by a live production test. Scope: the vars already enumerated in T-47/T-51's exit criteria. | Jul 17 |
+
+### Track C — Process & CI Hygiene (Sprint 5 retro closeout)
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-63: Fix `main-deploy.yml` `paths-ignore` to exclude root docs | Tech Lead | — | `paths-ignore` extended to also exclude root-level `WORK.md` and `DECISIONS.md` (currently only excludes `status/**` and `docs/**` — confirmed by direct read of the workflow file 2026-07-04). Closes the gap that let PR #233 (docs-only) trigger `main-deploy.yml` and exercise the T-54(A) app-name collision as a near-miss. One-line-ish CI change; does not fix any app-identity issue on its own (that's T-54(A), already fixed). | Jul 9 |
+| T-64 (low priority, nice-to-have): Re-evaluate re-enabling the Inngest sync step in `main-deploy.yml` | Tech Lead | — | The "Sync Inngest functions" step was removed from `main-deploy.yml` 2026-07-04 with a comment saying it stays out "until the permanent fix (distinct Inngest app id per environment) is fixed." That permanent fix (PR #239, `INNGEST_APP_ID` configurable) is confirmed merged and live (code-verified 2026-07-04 during Sprint 6 scoping — `src/inngest/client.ts` reads `INNGEST_APP_ID ?? "ops-hub"`). Re-adding the step for staging only (never touching prod's sync) may now be safe; this task is to verify that reasoning and either re-add it or explicitly document why not. Not blocking — staging still gets picked up by Inngest's periodic poll without it. | TBD (backlog if sprint is full) |
+
+**Sprint 6 working agreements (Sprint 5 retro §5, process discipline — not standalone tasks):**
+1. Don't trust a WORK.md "done ✅" on env vars without a live check before a dependent task assumes it's still true (see T-62 for the automated version of this).
+2. Anchor on Coolify app UUIDs, not breadcrumb/name text, whenever a lookup could span both staging and prod projects.
+3. Treat any Coolify API call that looks up an application by name (not UUID) as suspect until it's proven scoped by project.
+4. Don't attempt a deploy-pipeline fix blind, at the end of a long session, when it can't be verified without the exact live action it's meant to prevent — hand off instead.
+
+**Sprint 5 retro §7 open risks — re-verified 2026-07-04 during Sprint 6 scoping (all closed or accounted for, none silently dropped):**
+| Risk | Status at Sprint 6 kickoff |
+|---|---|
+| `main-deploy.yml` Coolify app-name collision (T-54(A)) | ✅ Confirmed fixed — `OPS_HUB_STAGING_UUID` pin present and in use in `main-deploy.yml` (code-verified). |
+| Inngest app-id collision (T-54(B)) | ✅ Confirmed fixed — `INNGEST_APP_ID` configurable, PR #239 merged (code-verified); **DECISIONS.md never got an entry for this completion — backfilled 2026-07-04, see below.** Supersedes the retro's "still open" framing, which predates the fix. |
+| ops-hub-staging FreeScout poll-dedup race | ✅ Confirmed fixed — `POLLING_ENABLED` fail-closed guard present in `freescout-poller.ts` (code-verified). |
+| Coolify env var drift (Medium) | → T-62 above. |
+| ADR-0003 non-atomic note delivery / duplicate replies (Low–Medium) | Accepted tradeoff, no action this sprint — revisit only if it recurs at scale. |
 
 ---
 
@@ -69,6 +117,8 @@
 | T-43: Sprint 4 retro | PM | T-42 ✅ | ✅ **Done (2026-06-29).** `docs/retros/sprint-4.md` authored — 7 sections. Key incident: LiteLLM ENOIDENTIFIER crash-loop (Coolify duplicate DATABASE_URL rows + missing Supavisor project ref suffix); resolved by deleting all duplicate rows from coolify-db and re-entering via UI. FQ-49 closed. 6 Sprint 5 process changes documented. M5 declared complete 2026-06-29. | Jul 11 |
 
 ---
+
+*(Sprint 5 — Reliability Hardening + TTS Production Go-Live: July 7–18, 2026 — ✅ COMPLETE (finished ahead of window, by 2026-07-03/04). T-44–T-56 all done. M6 "TTS Live in Production" declared 2026-07-03. Reliability gaps (LiteLLM monitor, suffix automation, Anthropic fallback) closed; full TTS prod pipeline live; T-54 Inngest app-id + deploy-collision fixes complete; T-56 kb_articles RLS fix complete. FQ-57 (DB isolation wall regression) and T-55 (dashboard, design-only) carried into Sprint 6. Sprint retro: `docs/retros/sprint-5.md`.)*
 
 *(Sprint 4 — Phase 2 Hardening: June 28 – July 11, 2026 — ✅ COMPLETE. T-36–T-43 all done. M4 + M5 declared 2026-06-28/29. Cstate + Premium SLA + backup verify + DR drill shipped. Sprint retro: T-43.)*
 
@@ -268,12 +318,16 @@ From `09_delivery.md` — all must be true before M1 is declared complete.
 |---|---|---|---|
 | ~~T-07 Inngest HTTPS fix~~ | ~~**FQ-18 filed**~~ — **RESOLVED (2026-06-22).** ops-hub-staging.inatechshell.ca live; Inngest synced. | — | Production Manager |
 | ~~T-18 (RLS isolation test)~~ | ~~**T-12** (Vault + `ops_hub_app` login role)~~ — **FULLY RESOLVED (2026-06-22):** T-12 Vault SQL executed by founder (FQ-16); `ops_hub_app_login` connectable; T-18 test can now run against real login path. | — | Security Lead |
+| T-61 (LiteLLM DB wall — prod, Phase 2) | **FQ-57** — founder one-time superuser SQL (new `litellm_db_user_prod` role + `litellm_prod` schema) + `LITELLM_PROD_DB_USER_URL` GitHub secret. Non-blocking (latent risk, `DISABLE_SCHEMA_UPDATE=true` holds); should not sit for long — the whole point of ADR-0004 is defeated while this is open. | Carries to Sprint 7 if not resolved this window. | Production Manager |
+| FQ-47 (Cstate status page go-live) | 4 founder actions (GitHub Pages, DNS CNAME, PAT, UptimeRobot webhook) — open since 2026-06-28. Code (T-38) complete; this is pure founder action, no team task. | Status page stays dark; no functional impact on TTS pipeline or M6. | Production Manager |
 
 ---
 
 ## Per-agent status
 
 ### PM
+**2026-07-04 — Sprint 6 scoped: T-57–T-64 committed.** Sprint 5 fully closed (T-44–T-56, M6 declared 2026-07-03); Sprint 6 anchors on one measurable outcome — the Ops Dashboard read-only MVP (T-57 auth → T-58 build → T-59 RLS verification) — with two smaller parallel tracks (LiteLLM DB isolation wall restoration, FQ-57; Sprint 5 CI/process debt cleanup) that don't compete for the same agents. Dashboard settings/write area deliberately deferred to Sprint 7 to avoid repeating Sprint 5's late-session overcommit pattern. Verified against the source docs before committing: FQ-57 and FQ-47 both still open (code-confirmed neither has a closing PR); T-54(A)/(B) and the FreeScout poll-dedup guard all code-verified fixed (not just WORK.md-claimed) — but found and backfilled a real gap: DECISIONS.md was never updated when T-54(B)'s permanent fix (PR #239) landed, so WORK.md's "done" claim sat unconfirmed in the canonical decisions log for the same reason the Sprint 5 retro warns about. `main-deploy.yml`'s `paths-ignore` gap (retro §5 item 4) confirmed still open by direct file read — filed as T-63. Milestone numbering: no M-number declared this sprint; charter M7 is gated on an exogenous A-Mart/tenant event that hasn't happened, and the team's milestone track already diverged from the charter table at M3 — flagged in the Current Sprint section so a future session doesn't mislabel this work M7 by default. FQ-47 (Cstate go-live) and DNC/second-tenant onboarding (FQ-43) carried forward as founder-gated, no team task.
+
 **2026-06-25 — T-28 Sprint 1 retro authored.** `docs/retros/sprint-1.md` committed on `docs/t28-sprint-1-retro` (PR open). 7 sections; honest on the FreeScout 40+ PR saga, LiteLLM internal-hostname discovery, branch-protection free-tier wall, and the T-23/T-24 parallel-dispatch worktree collision; 6 Sprint 2 process changes codified. Internal learning doc — not founder-facing (that's T-29). T-28 → done.
 
 **2026-06-25 — Sprint 2 session start. Team OS live.**
