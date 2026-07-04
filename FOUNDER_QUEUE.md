@@ -4,28 +4,17 @@
 
 ---
 
-## FQ-53 — LiteLLM /model/new broken: fix Prisma migration before T-48
+## ✅ FQ-53 — LiteLLM /model/new broken: fix Prisma migration before T-48 — RESOLVED 2026-07-02
 
-**Filed:** 2026-07-01
+**Filed:** 2026-07-01 | **Resolved:** 2026-07-02
 **Filed by:** Tech Lead (T-46)
-**Needs:** Diagnosis + fix of LiteLLM DB write API
-**Deadline:** Before T-48 (LiteLLM production instance)
+**Status:** RESOLVED
 
-T-46 is done — `LITELLM_FALLBACK_MODEL=anthropic/claude-haiku-4-5-20251001` set in ops-hub-app (founder action complete 2026-07-01). Fallback path is live.
+**Actual root cause (not Prisma migration, as originally suspected):** `postgres` (the role LiteLLM's Prisma client connects as) lacked privileges on the `litellm` schema — its tables are owned by `litellm_db_user`. `POST /model/new` writes failed with HTTP 500 "Failed to add model to db"; reads (`GET /model/info`) worked because they didn't require write privileges.
 
-**Remaining issue:** LiteLLM's management API (`POST /model/new`) returns HTTP 500 "Failed to add model to db" since the ANTHROPIC_API_KEY redeploy. Reads work (`GET /model/info` → 200) but writes fail. This means the registered triage-model alias may have been lost on redeploy (in-memory only). Current workaround: `LITELLM_FALLBACK_MODEL` uses direct model name, bypassing aliases. **This must be fixed before T-48** — the prod LiteLLM instance needs reliable alias management.
+**Fix:** `GRANT litellm_db_user TO postgres` run in Supabase SQL Editor (role inheritance) — no Prisma re-migration needed.
 
-**To diagnose (5 min):**
-```
-docker logs <litellm-container-name> 2>&1 | grep -i "prisma\|migration\|error" | head -20
-```
-Look for Prisma migration errors at startup. If found, run:
-```
-docker exec <litellm-container-name> python -c "from litellm.proxy.proxy_server import *; asyncio.run(prisma_setup(None))"
-```
-Or redeploy LiteLLM with `DATABASE_URL` pointing to a fresh schema and let it auto-migrate.
-
-**Notify:** Tech Lead when resolved — T-48 can then proceed with alias-based model management.
+**Verification:** `configure-litellm-openai-only` workflow now passes cleanly against both staging and prod (extended with an `environment` input for T-48) — all three alias registrations (`triage-model`, `fallback-model`, `meta/llama-3.3-70b-instruct`) return HTTP 200 on `/model/new`. No workaround needed; alias-based model management is fully reliable. See WORK.md T-46 for full detail. No further founder action required — this entry was left open in error after the fix landed; closing now.
 
 ---
 
