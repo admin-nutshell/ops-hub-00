@@ -1,0 +1,173 @@
+name: Precheck LiteLLM DB wall restoration (T-61, read-only)
+
+# Pre-flight for docs/deploys/2026-07-04-litellm-db-wall-restoration.md Phase 1,
+# Canary rollout step 1. Makes ZERO changes to any running service or to Coolify
+# config. Three things, all read-only:
+#
+#   1. Auth + health probe AS litellm_db_user (via LITELLM_DB_USER_URL) — proves
+#      the restricted role's password still authenticates and it still owns a
+#      populated `litellm` schema, and re-confirms it still has zero rights on
+#      `public` (belt-and-suspenders — this role's own grants were never touched,
+#      but cheap to re-verify before relying on it).
+#   2. Baseline row counts for public.tenants/tickets/projects/kb_articles/
+#      conversations/threads via SUPABASE_STAGING_DB_URL (postgres role) — the
+#      "before" numbers the plan's step 5 canary compares against after apply-wall.
+#   3. Stash of litellm-staging's CURRENT (live, working) DATABASE_URL as a
+#      GitHub Actions artifact — this is the plan's documented rollback DSN
+#      ("re-point DATABASE_URL back to the current-working postgres DSN, kept
+#      as literal fallback, not deleted"). Nothing stashes it today; without
+#      this step apply-wall's Step 3 DELETEs the only copy before the new value
+#      is confirmed healthy. Value is masked in logs; only lives in the artifact
+#      (never printed, never committed).
+#
+# If auth fails here: STOP. Do not attempt any live change. Per the deploy plan,
+# check DECISIONS.md's Supabase password rotation history; if the role password
+# has genuinely rotated and the current value isn't known, file FOUNDER_QUEUE.md
+# rather than guessing or resetting it.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+
+jobs:
+  precheck:
+    name: litellm_db_user auth + schema health + public baseline + rollback stash
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      DB_USER_URL: ${{ secrets.LITELLM_DB_USER_URL }}
+      BASELINE_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+
+    steps:
+      - name: Validate required secrets are present
+        run: |
+          MISSING=""
+          [ -z "$TOKEN" ] && MISSING="$MISSING COOLIFY_API_TOKEN"
+          [ -z "$DB_USER_URL" ] && MISSING="$MISSING LITELLM_DB_USER_URL"
+          [ -z "$BASELINE_URL" ] && MISSING="$MISSING SUPABASE_STAGING_DB_URL"
+          if [ -n "$MISSING" ]; then
+            echo "ERROR: missing secret(s):$MISSING"
+            exit 1
+          fi
+          echo "All required secrets present."
+
+      - name: Install postgresql-client
+        run: |
+          sudo apt-get -qq update >/dev/null 2>&1 || true
+          sudo apt-get -qq install -y postgresql-client >/dev/null 2>&1 || true
+
+      # ── 1. Auth + schema health AS litellm_db_user ───────────────────────────
+      - name: Probe — litellm_db_user auth + litellm schema health
+        id: authprobe
+        run: |
+          echo "::add-mask::$DB_USER_URL"
+          echo "=== current_user (proves password authenticates) ==="
+          if ! psql "$DB_USER_URL" -tAc "SELECT current_user;" 2>/tmp/autherr; then
+            echo "AUTH_FAILED"
+            echo "psql error output:"
+            cat /tmp/autherr
+            echo "auth_ok=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "auth_ok=true" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "=== litellm schema owner ==="
+          psql "$DB_USER_URL" -tAc \
+            "SELECT n.nspname, pg_catalog.pg_get_userbyid(n.nspowner) AS owner
+             FROM pg_namespace n WHERE n.nspname = 'litellm';" 2>&1
+          echo ""
+          echo "=== table count in schema litellm (expect > 0 — LiteLLM's own Prisma tables) ==="
+          psql "$DB_USER_URL" -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'litellm';" 2>&1
+          echo ""
+          echo "=== role attributes (expect all false — non-superuser, non-bypassrls, ADR-0004) ==="
+          psql "$DB_USER_URL" -tAc \
+            "SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls
+             FROM pg_roles WHERE rolname = current_user;" 2>&1
+          echo ""
+          echo "=== confirm STILL zero read access on public (expect: permission denied) ==="
+          if psql "$DB_USER_URL" -tAc "SELECT count(*) FROM public.tenants;" 2>/tmp/publicerr; then
+            echo "WARNING: litellm_db_user CAN read public.tenants — the wall on this role's"
+            echo "own grants may have been altered. Not fatal to this precheck, but flag before"
+            echo "proceeding with apply-wall."
+          else
+            echo "Confirmed: litellm_db_user has NO access to public.tenants (expected):"
+            cat /tmp/publicerr | head -3
+          fi
+
+      - name: STOP — auth failed
+        if: steps.authprobe.outputs.auth_ok == 'false'
+        run: |
+          echo "::error::litellm_db_user did NOT authenticate. Do not proceed with apply-wall."
+          echo "Check DECISIONS.md for Supabase password rotation history. If the password has"
+          echo "genuinely rotated and the current value is not known, STOP and file"
+          echo "FOUNDER_QUEUE.md rather than guessing or resetting it."
+          exit 1
+
+      # ── 2. Baseline row counts (public schema, via postgres role) ────────────
+      - name: Baseline — public table row counts (pre-apply-wall)
+        run: |
+          echo "::add-mask::$BASELINE_URL"
+          echo "=== Baseline row counts — compare against these after apply-wall + freeze-schema ==="
+          psql "$BASELINE_URL" -tAc \
+            "SELECT 'tenants='       || count(*) FROM public.tenants
+             UNION ALL SELECT 'tickets='      || count(*) FROM public.tickets
+             UNION ALL SELECT 'projects='     || count(*) FROM public.projects
+             UNION ALL SELECT 'kb_articles='  || count(*) FROM public.kb_articles
+             UNION ALL SELECT 'conversations='|| count(*) FROM public.conversations
+             UNION ALL SELECT 'threads='      || count(*) FROM public.threads;" 2>&1
+
+      # ── 3. Stash the CURRENT (working) DATABASE_URL for rollback ─────────────
+      - name: Stash current litellm-staging DATABASE_URL (rollback DSN)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs")
+          echo "GET /envs -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "ERROR: could not read litellm-staging envs (HTTP $HTTP) — cannot stash rollback DSN."
+            exit 1
+          fi
+          # Coolify has accumulated duplicate rows before (known bug) — last row wins on deploy,
+          # so take the LAST DATABASE_URL entry, not the first.
+          CURRENT_DSN=$(jq -r '[.[] | select(.key=="DATABASE_URL")] | last | .value' /tmp/envs.json 2>/dev/null)
+          if [ -z "$CURRENT_DSN" ] || [ "$CURRENT_DSN" = "null" ]; then
+            echo "ERROR: no DATABASE_URL found on litellm-staging — cannot stash rollback DSN."
+            exit 1
+          fi
+          echo "::add-mask::$CURRENT_DSN"
+          mkdir -p /tmp/rollback
+          printf '%s' "$CURRENT_DSN" > /tmp/rollback/litellm-staging-rollback-dsn.txt
+          DUP_COUNT=$(jq -r '[.[] | select(.key=="DATABASE_URL")] | length' /tmp/envs.json 2>/dev/null || echo "?")
+          echo "Stashed current DATABASE_URL as artifact (value masked; $DUP_COUNT row(s) found, used last)."
+          echo ""
+          echo "=== DISABLE_SCHEMA_UPDATE (current, non-secret) ==="
+          jq -r '.[] | select(.key=="DISABLE_SCHEMA_UPDATE") | "  value=\(.value)"' /tmp/envs.json 2>/dev/null
+
+      - name: Upload rollback DSN artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: litellm-staging-rollback-dsn
+          path: /tmp/rollback/litellm-staging-rollback-dsn.txt
+          retention-days: 7
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "========================================================"
+          echo " T-61 Phase 1 precheck complete"
+          echo "========================================================"
+          echo " - litellm_db_user auth: see 'Probe' step above"
+          echo " - public baseline counts: see 'Baseline' step above"
+          echo " - rollback DSN: uploaded as artifact 'litellm-staging-rollback-dsn'"
+          echo "   (download to a local scratchpad file before apply-wall; never print it)"
+          echo ""
+          echo " If auth probe passed and baseline captured: safe to dispatch"
+          echo " fix-litellm-schema-isolation.yml mode=apply-wall next."
+          echo "========================================================"
