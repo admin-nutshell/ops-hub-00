@@ -1,0 +1,170 @@
+name: Diagnose LiteLLM Prisma /model/new failure (FQ-53, read-only)
+
+# Pure diagnostic for FQ-53 — makes no persistent changes to any running service.
+# Captures the exact evidence needed to classify the "Failed to add model to db"
+# root cause into one of three buckets, each with a different fix:
+#   1. schema drift (relation/column "does not exist", P2021/P2022) ->
+#      DISABLE_SCHEMA_UPDATE=true (frozen since FQ-45/ADR-0004) is blocking a
+#      migration a newer LiteLLM image needs. Fix: temporarily flip it off,
+#      redeploy once, verify `public` survived, re-freeze (documented rollback
+#      path in docs/engineering/litellm-db-isolation-runbook.md).
+#   2. permission denied (42501) -> litellm_db_user lacks a grant it now needs.
+#      Fix requires founder-run SQL (superuser) -> FOUNDER_QUEUE, NOT this workflow.
+#   3. _prisma_migrations wedged (P3009 / failed migration record) -> needs a
+#      manual migration-history repair, different remediation again.
+#
+# Does one throwaway /model/new + /model/delete round trip against a disposable
+# model_name so the write path is exercised live, not just inferred from logs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_user:
+        description: "SSH user on the VPS (must have docker access)"
+        required: false
+        default: "haytham"
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "h12xz8887fxvbvjts2hac8if"
+  LITELLM_EXTERNAL_URL: "https://litellm-staging.inatechshell.ca"
+
+jobs:
+  diagnose:
+    name: Prisma log capture + live write probe (staging)
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+
+    steps:
+      # ── 1. SSH setup ─────────────────────────────────────────────────────────
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      # ── 2. Detect current container name (suffix rotates on every redeploy) ──
+      - name: Detect litellm-staging container name
+        id: container
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          SSH_USER: ${{ inputs.ssh_user }}
+        run: |
+          CONTAINER_NAME=$(ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "${SSH_USER}@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_UUID} --format '{{.Names}}' | head -1")
+          if [ -z "$CONTAINER_NAME" ]; then
+            echo "ERROR: no running litellm-staging container found (filter: ${LITELLM_UUID})"
+            exit 1
+          fi
+          echo "Container: $CONTAINER_NAME"
+          echo "name=$CONTAINER_NAME" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Prisma / migration / error lines from container logs ──────────────
+      - name: Grep container logs for Prisma / migration / error signatures
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          SSH_USER: ${{ inputs.ssh_user }}
+          NAME: ${{ steps.container.outputs.name }}
+        run: |
+          echo "=== docker logs $NAME | grep -iE 'prisma|migration|P[0-9]{4}|does not exist|permission denied|error' (last 200 matches) ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "${SSH_USER}@${VPS_HOST}" \
+            "docker logs $NAME 2>&1 | grep -iE 'prisma|migration|P[0-9]{4}|does not exist|permission denied|error' | tail -200" \
+            || echo "(grep found nothing — see raw tail below)"
+          echo ""
+          echo "=== Raw last 80 lines (unfiltered, for context) ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "${SSH_USER}@${VPS_HOST}" \
+            "docker logs $NAME 2>&1 | tail -80"
+
+      # ── 4. Current DATABASE_URL username + DISABLE_SCHEMA_UPDATE from Coolify ─
+      - name: Read current DATABASE_URL (masked) + DISABLE_SCHEMA_UPDATE
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs")
+          echo "GET /envs -> HTTP $HTTP"
+          echo ""
+          echo "=== DATABASE_URL username (host/db/password redacted) ==="
+          jq -r '.[] | select(.key=="DATABASE_URL") | .value' /tmp/envs.json 2>/dev/null \
+            | sed -E 's#postgresql://([^:]+):[^@]+@.*#\1#' \
+            | sed 's/^/  user=/'
+          echo ""
+          echo "=== DISABLE_SCHEMA_UPDATE ==="
+          jq -r '.[] | select(.key=="DISABLE_SCHEMA_UPDATE") | "  value=\(.value)"' /tmp/envs.json 2>/dev/null
+          echo "(if blank above: variable is unset — schema updates are NOT frozen)"
+
+      # ── 5. Live read probe: GET /model/info ───────────────────────────────────
+      - name: Probe GET /model/info
+        run: |
+          HTTP=$(curl -s --max-time 20 -o /tmp/model-info.json -w "%{http_code}" \
+            -H "Authorization: Bearer $MASTER_KEY" \
+            "$LITELLM_EXTERNAL_URL/model/info")
+          echo "GET /model/info -> HTTP $HTTP"
+          jq '.data | length as $n | "models registered: \($n)"' /tmp/model-info.json 2>/dev/null || cat /tmp/model-info.json | head -c 500
+
+      # ── 6. Live write probe: POST /model/new with a disposable test model ────
+      - name: Probe POST /model/new (disposable test entry)
+        id: writeprobe
+        run: |
+          HTTP=$(curl -s --max-time 20 -o /tmp/model-new.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $MASTER_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_EXTERNAL_URL/model/new" \
+            -d '{
+                  "model_name": "fq53-diagnostic-probe",
+                  "litellm_params": { "model": "openai/gpt-4o-mini", "api_key": "os.environ/OPENAI_API_KEY" }
+                }')
+          echo "POST /model/new -> HTTP $HTTP"
+          echo "=== Full response body ==="
+          cat /tmp/model-new.json | python3 -m json.tool 2>/dev/null || cat /tmp/model-new.json
+          echo "http=$HTTP" >> "$GITHUB_OUTPUT"
+
+      # ── 7. Cleanup: delete the probe entry if it was actually created ────────
+      - name: Cleanup disposable probe entry (best-effort, only if write succeeded)
+        if: steps.writeprobe.outputs.http == '200'
+        run: |
+          MODEL_ID=$(jq -r '.model_info.id // empty' /tmp/model-new.json 2>/dev/null)
+          if [ -n "$MODEL_ID" ]; then
+            curl -s --max-time 20 -o /tmp/delete.json -w "DELETE /model/delete -> HTTP %{http_code}\n" -X POST \
+              -H "Authorization: Bearer $MASTER_KEY" -H "Content-Type: application/json" \
+              "$LITELLM_EXTERNAL_URL/model/delete" \
+              -d "$(jq -n --arg id "$MODEL_ID" '{id:$id}')"
+          fi
+
+      # ── 8. Classification summary ─────────────────────────────────────────────
+      - name: Classify root cause
+        if: always()
+        run: |
+          HTTP="${{ steps.writeprobe.outputs.http }}"
+          echo "========================================================"
+          echo " FQ-53 DIAGNOSTIC SUMMARY"
+          echo "========================================================"
+          echo " POST /model/new probe result: HTTP ${HTTP:-unknown}"
+          echo ""
+          if [ "$HTTP" = "200" ]; then
+            echo " Write path is currently WORKING. FQ-53 may already be resolved"
+            echo " or is intermittent. Re-run against the original failing alias"
+            echo " registration path before closing."
+          else
+            echo " Write path FAILED (HTTP $HTTP). Check step 3 + step 6 body above for:"
+            echo "   - 'does not exist' / P2021 / P2022  -> schema drift (frozen schema"
+            echo "     is missing a column/table a newer LiteLLM image needs) ->"
+            echo "     apply the ADR-0004 rollback path: fix-litellm-schema-isolation.yml"
+            echo "     mode=apply-wall (flips DISABLE_SCHEMA_UPDATE off, lets Prisma sync),"
+            echo "     verify public survived, re-run mode=freeze-schema."
+            echo "   - 'permission denied' / 42501        -> litellm_db_user needs a new"
+            echo "     grant. Requires founder-run superuser SQL -> FOUNDER_QUEUE, do NOT"
+            echo "     flip DISABLE_SCHEMA_UPDATE for this case."
+            echo "   - P3009 / 'migration ... failed'      -> _prisma_migrations history"
+            echo "     is wedged; needs manual repair, different from both above."
+          fi
+          echo "========================================================"
