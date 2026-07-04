@@ -1041,14 +1041,20 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   retro at docs/retros/sprint-5.md). Sprint 6 anchors on a single
   measurable outcome per the retro's own lesson about overcommitment:
   the founder-facing Ops Dashboard, read-only MVP only (T-57 auth
-  boundary -> T-58 build -> T-59 RLS verification), covering the 4
-  charter daily pillars from 02_stakeholders.md plus queue/pipeline/
-  system-health/incidents views. Settings/write area (model routing
-  editor, SLA editor, feature flags) explicitly deferred to Sprint 7.
-  Two smaller parallel tracks: LiteLLM DB isolation wall restoration
-  (T-60 staging, executable now; T-61 prod, contingent on founder FQ-57
-  action) and Sprint 5 CI/process debt (T-63 paths-ignore fix; T-64
-  backlog nice-to-have). No milestone declared this sprint - see WORK.md
+  boundary -> T-58 data feeds -> T-59 build -> T-60 RLS verification),
+  covering the 4 charter daily pillars from 02_stakeholders.md plus
+  queue/pipeline/system-health/incidents views. T-58 (Data Engineer) was
+  added after checking whether all 4 pillars are actually queryable
+  today: 2 of 4 (eval health, agent cost) are not — T-17's Eval Gate
+  never computes a stored pass-rate, and T-31 put per-ticket cost in
+  LangFuse Cloud only with no in-app query path — so those two widgets
+  get a data-feed prerequisite instead of surfacing as a mid-build wall
+  for Frontend Engineer. Settings/write area (model routing editor, SLA
+  editor, feature flags) explicitly deferred to Sprint 7. Two smaller
+  parallel tracks: LiteLLM DB isolation wall restoration (T-61 staging,
+  executable now; T-62 prod, contingent on founder FQ-57 action) and
+  Sprint 5 CI/process debt (T-64 paths-ignore fix; T-65 backlog
+  nice-to-have). No milestone declared this sprint - see WORK.md
   "Milestone numbering note": charter M7 is gated on an exogenous A-Mart/
   tenant event; team's milestone track already diverged from the charter
   table at M3 (DNC deferred, FQ-43); this sprint's work should not be
