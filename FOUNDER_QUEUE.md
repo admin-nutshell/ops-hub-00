@@ -83,7 +83,7 @@ T-45 builds a `workflow_dispatch` workflow that SSHs to the Coolify VPS, detects
 
 ---
 
-## FQ-49 — T-41 DR drill: LiteLLM external URL unreachable
+## ✅ FQ-49 — T-41 DR drill: LiteLLM external URL unreachable — RESOLVED 2026-06-29
 
 **Filed:** 2026-06-28 | **Closed:** 2026-06-29
 **Filed by:** Production Manager (T-41 DR drill)
@@ -159,7 +159,7 @@ After reading: notify PM "T-29 read" and M1 #13 will be marked ✅.
 
 ---
 
-## FQ-45 — ADR-0004 LiteLLM DB isolation: run Step 1 SQL + set GitHub secret
+## ✅ FQ-45 — ADR-0004 LiteLLM DB isolation: run Step 1 SQL + set GitHub secret — RESOLVED 2026-06-27
 
 **Filed:** 2026-06-27 | **Closed:** 2026-06-27
 **Status:** RESOLVED
@@ -173,7 +173,7 @@ ADR-0004 is fully in force. LiteLLM cannot wipe ops-hub tables on redeploy.
 
 ---
 
-## FQ-44 — FREESCOUT_DB_URL: provision env var to activate draft delivery + SLA breach notes
+## ✅ FQ-44 — FREESCOUT_DB_URL: provision env var to activate draft delivery + SLA breach notes — RESOLVED 2026-06-27
 
 **Filed:** 2026-06-27 | **Closed:** 2026-06-27
 **Status:** RESOLVED
