@@ -16,6 +16,14 @@ params:
   dateFormat: "January 2, 2006 at 15:04 UTC"
   incidentPostsPerPage: 10
 
+  # Status indicator colors (required by the cstate theme's meta partial —
+  # without these, hex color parsing fails on empty strings and the build
+  # errors with "unable to cast '0x' of type string to int64").
+  ok: "#22c55e"
+  disrupted: "#f59e0b"
+  down: "#ef4444"
+  notice: "#3b82f6"
+
   systems:
     - name: "Ops Hub Staging"
       description: "AI ticket triage and response pipeline"
