@@ -828,6 +828,44 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   DB_PASSWORD, and Supabase DB password in sync. LiteLLM healthy 2026-06-29.
   Container suffix updated to 170111887056 (PR #205).
 
+2026-07-04 [Production Manager] FQ-53 investigated (litellm-staging `/model/new`
+  500 "Failed to add model to db"). Read-only diagnostics
+  (`diagnose-litellm-prisma.yml`, `verify-litellm-db-isolation.yml`,
+  `restart-verify-litellm-staging.yml`) found the write path is currently
+  healthy — `POST /model/new` returns 200 live, and `triage-model` /
+  `fallback-model` / `meta/llama-3.3-70b-instruct` all persist across a
+  restart with a working completion. FQ-53 closed on that basis.
+
+  Near-miss discovered while diagnosing (not an active incident — logging per
+  the "document every anomaly, even self-resolved" rule): litellm-staging's
+  `DATABASE_URL` currently connects as `postgres.yocoljutbiizdbfraapx` (shared
+  Supabase superuser), not the ADR-0004 restricted role `litellm_db_user` that
+  FQ-45 established on 2026-06-27. Root cause, pinned via this file's own
+  2026-06-29 FQ-49 entry: the FQ-49 crash-loop fix ("re-entered DATABASE_URL
+  once via Coolify UI with postgres.yocoljutbiizdbfraapx as username") is
+  correct for the ENOIDENTIFIER problem it was solving (missing Supavisor
+  project-ref suffix) but used the plain superuser instead of the restricted
+  role, silently reverting the wall two days after it was built. This was
+  never flagged at the time. `litellm-prod` (T-48, PR #231) has the identical
+  posture — also `postgres`, also un-walled; its "isolated from staging"
+  claim refers only to the `?schema=litellm_prod` routing hint, which a
+  superuser connection does not enforce (superuser bypasses schema ownership
+  entirely). `DISABLE_SCHEMA_UPDATE=true` is confirmed set on both
+  environments, so no Prisma DDL is running today — risk is latent, not
+  active. Public tables confirmed intact via indirect evidence: T-51's
+  production ticket e2e and T-56's `kb_articles` write both succeeded today
+  (2026-07-04) against the same shared `public` schema.
+
+  Deliberately NOT fixed live this session — flipping `DISABLE_SCHEMA_UPDATE`
+  back on to restore the restricted role risks taking a currently-healthy
+  service down if the same schema-drift that caused FQ-53 resurfaces, and
+  prod additionally needs a *new* prod-only restricted role (reusing
+  `litellm_db_user` for prod would collide with staging's schema via its
+  pinned `search_path`) that requires founder-run superuser SQL. Staged
+  canary rollout plan + rollback path written up front per the pre-deploy
+  checklist: `docs/deploys/2026-07-04-litellm-db-wall-restoration.md`.
+  Founder action requested: FQ-57.
+
 2026-06-29 [PM] DNC dropped from near-term roadmap. Direction: Sprint 5 =
   reliability hardening + TTS production go-live (M6). Rationale: single active
   tenant (TTS) should be production-grade before onboarding a second. Three
