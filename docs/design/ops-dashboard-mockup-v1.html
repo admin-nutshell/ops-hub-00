@@ -1,0 +1,1221 @@
+<title>Ops Hub — Daily Console</title>
+<style>
+  :root {
+    --bg: #10141b;
+    --surface: #171c25;
+    --surface-raised: #1d2430;
+    --border: #262e3d;
+    --border-soft: #1e2531;
+    --text: #e9ecf1;
+    --text-muted: #8791a3;
+    --text-faint: #5b6478;
+    --accent: #5aa2e6;
+    --accent-dim: #5aa2e633;
+    --good: #48b583;
+    --good-dim: #48b58322;
+    --warn: #db9a3c;
+    --warn-dim: #db9a3c22;
+    --critical: #dd5c5c;
+    --critical-dim: #dd5c5c22;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-image:
+      radial-gradient(ellipse 900px 500px at 15% -10%, #5aa2e614, transparent),
+      radial-gradient(ellipse 700px 400px at 100% 0%, #db9a3c0d, transparent);
+  }
+
+  a { color: inherit; }
+
+  .console {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 28px 32px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  /* ── Top bar ─────────────────────────────────────────────────────────── */
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    background: linear-gradient(155deg, var(--accent), #3d7ab8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 13px;
+    color: #0b1017;
+    flex-shrink: 0;
+  }
+
+  .brand-text h1 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+  }
+
+  .brand-text .sub {
+    font-size: 11.5px;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    letter-spacing: 0.02em;
+  }
+
+  .topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+  }
+
+  .project-switch {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px 6px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .project-switch strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .project-switch svg { opacity: 0.6; }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 13px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    background: var(--good-dim);
+    color: var(--good);
+    border: 1px solid #48b5833d;
+  }
+
+  .status-pill .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 0 3px currentColor22;
+  }
+
+  .last-checked {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-faint);
+    text-align: right;
+    line-height: 1.4;
+  }
+
+  /* ── Metric strip ────────────────────────────────────────────────────── */
+
+  .metric-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px;
+  }
+
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .metric-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-faint);
+    font-weight: 600;
+  }
+
+  .metric-trend {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    letter-spacing: 0;
+  }
+  .metric-trend.up { color: var(--good); background: var(--good-dim); }
+  .metric-trend.down { color: var(--critical); background: var(--critical-dim); }
+  .metric-trend.flat { color: var(--text-muted); background: var(--surface-raised); }
+
+  .metric-value {
+    font-family: var(--mono);
+    font-size: 30px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .metric-value .unit {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-muted);
+  }
+
+  .metric-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .metric-sub strong { color: var(--text); font-weight: 600; }
+
+  .sparkline {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 30px;
+    opacity: 0.9;
+  }
+
+  .metric-card.good .metric-value { color: var(--good); }
+  .metric-card.warn .metric-value { color: var(--warn); }
+
+  /* ── Main grid ───────────────────────────────────────────────────────── */
+
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1.7fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .panel-head h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+  }
+
+  .panel-head .count {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+
+  .panel-tabs {
+    display: flex;
+    gap: 4px;
+    background: var(--surface-raised);
+    border-radius: 7px;
+    padding: 3px;
+  }
+
+  .panel-tab {
+    font-size: 11.5px;
+    font-weight: 550;
+    padding: 5px 11px;
+    border-radius: 5px;
+    color: var(--text-muted);
+    cursor: pointer;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+  }
+
+  .panel-tab.active {
+    background: var(--accent);
+    color: #0b1017;
+  }
+
+  /* ── Ticket table ────────────────────────────────────────────────────── */
+
+  .ticket-table-wrap { overflow-x: auto; }
+
+  table.tickets {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 640px;
+  }
+
+  table.tickets thead th {
+    text-align: left;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    font-weight: 600;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border-soft);
+    white-space: nowrap;
+  }
+
+  table.tickets tbody tr {
+    border-bottom: 1px solid var(--border-soft);
+    cursor: pointer;
+  }
+  table.tickets tbody tr:last-child { border-bottom: none; }
+  table.tickets tbody tr:hover { background: var(--surface-raised); }
+
+  table.tickets td {
+    padding: 12px 20px;
+    vertical-align: middle;
+  }
+
+  .sev-stripe {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .sev-bar {
+    width: 3px;
+    height: 26px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+  .sev-bar.critical { background: var(--critical); }
+  .sev-bar.high { background: var(--warn); }
+  .sev-bar.normal { background: var(--accent); }
+  .sev-bar.low { background: var(--text-faint); }
+
+  .ticket-id {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+  }
+
+  .ticket-title { font-weight: 550; font-size: 13px; }
+  .ticket-meta {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 9px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .chip.new { background: var(--accent-dim); color: var(--accent); }
+  .chip.triaged { background: #b98ee622; color: #c79ee8; }
+  .chip.responded { background: var(--good-dim); color: var(--good); }
+  .chip.investigating { background: var(--warn-dim); color: var(--warn); }
+
+  .sla-cell {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
+  .sla-cell.ok { color: var(--good); }
+  .sla-cell.tight { color: var(--warn); }
+  .sla-cell.breach { color: var(--critical); font-weight: 600; }
+
+  .tenant-tag {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  /* ── Right rail ──────────────────────────────────────────────────────── */
+
+  .rail {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .pipeline {
+    padding: 18px 20px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .pipeline-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .pipeline-label {
+    width: 82px;
+    flex-shrink: 0;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    font-weight: 550;
+  }
+
+  .pipeline-bar-track {
+    flex: 1;
+    height: 7px;
+    background: var(--surface-raised);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .pipeline-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: var(--accent);
+  }
+
+  .pipeline-count {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    width: 22px;
+    text-align: right;
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .health-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .health-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 12.5px;
+  }
+  .health-row:last-child { border-bottom: none; }
+
+  .health-name { display: flex; align-items: center; gap: 9px; }
+
+  .health-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+  .health-dot.good { background: var(--good); box-shadow: 0 0 0 3px var(--good-dim); }
+  .health-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-dim); }
+
+  .health-latency {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .incident-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .incident-row {
+    padding: 13px 20px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .incident-row:last-child { border-bottom: none; }
+
+  .incident-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+
+  .incident-title {
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+
+  .incident-time {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-faint);
+    flex-shrink: 0;
+    margin-left: 10px;
+  }
+
+  .incident-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+
+  .incident-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-right: 7px;
+    background: var(--good-dim);
+    color: var(--good);
+  }
+
+  @media (max-width: 980px) {
+    .metric-strip { grid-template-columns: repeat(2, 1fr); }
+    .main-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ── Nav ─────────────────────────────────────────────────────────────── */
+
+  .nav {
+    display: flex;
+    gap: 2px;
+  }
+
+  .nav-item {
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 8px 4px;
+    cursor: pointer;
+    margin-right: 22px;
+  }
+  .nav-item.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  .page { display: none; flex-direction: column; gap: 28px; }
+  .page.active { display: flex; }
+
+  /* ── Settings ────────────────────────────────────────────────────────── */
+
+  .settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+
+  .settings-grid .panel.full { grid-column: 1 / -1; }
+
+  .panel-note {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin: 14px 20px 0;
+    padding: 11px 13px;
+    background: var(--warn-dim);
+    border: 1px solid #db9a3c3d;
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+  .panel-note strong { color: var(--warn); }
+
+  table.settings {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  table.settings thead th {
+    text-align: left;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    font-weight: 600;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  table.settings td {
+    padding: 11px 20px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 12.5px;
+    vertical-align: middle;
+  }
+  table.settings tbody tr:last-child td { border-bottom: none; }
+
+  .fn-name { font-weight: 600; }
+  .fn-sub { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+
+  select.model-select {
+    background: var(--surface-raised);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    width: 100%;
+    max-width: 200px;
+  }
+  select.model-select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  select.model-select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .sla-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 18px 20px 20px;
+  }
+  .sla-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .sla-row-label { display: flex; align-items: center; gap: 9px; font-size: 12.5px; font-weight: 550; }
+  .urgency-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .sla-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 5px 6px 5px 12px;
+  }
+  .sla-input-wrap input {
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    width: 48px;
+    text-align: right;
+  }
+  .sla-input-wrap input:focus { outline: none; }
+  .sla-unit { font-size: 11px; color: var(--text-faint); padding-right: 4px; }
+
+  .env-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border-soft);
+    font-size: 12.5px;
+  }
+  .env-row:last-child { border-bottom: none; }
+  .env-key { font-family: var(--mono); font-size: 12px; }
+  .env-meta { display: flex; align-items: center; gap: 10px; color: var(--text-faint); font-size: 11px; }
+  .env-check { color: var(--good); }
+
+  .flag-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .flag-row:last-child { border-bottom: none; }
+  .flag-name { font-size: 12.5px; font-weight: 600; }
+  .flag-desc { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+
+  .toggle {
+    width: 34px;
+    height: 19px;
+    border-radius: 10px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    position: relative;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .toggle.on { background: var(--good-dim); border-color: #48b5834d; }
+  .toggle .knob {
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: var(--text-faint);
+    transition: transform 0.15s ease, background 0.15s ease;
+  }
+  .toggle.on .knob { background: var(--good); transform: translateX(15px); }
+
+  .rollout-pct { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-left: 10px; }
+</style>
+
+<script>
+  function showPage(name) {
+    document.querySelectorAll('.page').forEach(function (el) { el.classList.remove('active'); });
+    document.getElementById('page-' + name).classList.add('active');
+    document.querySelectorAll('.nav-item').forEach(function (el) { el.classList.remove('active'); });
+    document.getElementById('nav-' + name).classList.add('active');
+  }
+  function toggleFlag(el) { el.classList.toggle('on'); }
+</script>
+
+<div class="console">
+
+  <!-- ── Top bar ──────────────────────────────────────────────────── -->
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">OH</div>
+      <div class="brand-text">
+        <h1>Ops Hub</h1>
+        <div class="sub">In a Tech-Shell — Console</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" id="nav-dashboard" onclick="showPage('dashboard')">Dashboard</button>
+      <button class="nav-item" id="nav-settings" onclick="showPage('settings')">Settings</button>
+    </nav>
+    <div class="topbar-right">
+      <div class="project-switch">
+        Project&nbsp;<strong>TTS</strong>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M2 4l3 3 3-3" stroke="currentColor" stroke-width="1.3"/></svg>
+      </div>
+      <div class="status-pill"><span class="dot"></span>All systems nominal</div>
+      <div class="last-checked">Checked 2 min ago<br>Fri Jul 4, 2026 · 09:14 ET</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       PAGE: Dashboard
+       ══════════════════════════════════════════════════════════════ -->
+  <div class="page active" id="page-dashboard">
+
+  <!-- ── Five daily pillars ───────────────────────────────────────── -->
+  <div class="metric-strip">
+
+    <div class="metric-card good">
+      <div class="metric-label">
+        SLA attainment
+        <span class="metric-trend up">↑ 1.2%</span>
+      </div>
+      <div class="metric-value">98.4<span class="unit">%</span></div>
+      <div class="metric-sub"><strong>1</strong> ticket at risk of breach · target 95%</div>
+      <svg class="sparkline" viewBox="0 0 200 30" preserveAspectRatio="none">
+        <polyline points="0,18 25,16 50,19 75,14 100,15 125,10 150,8 175,6 200,5" fill="none" stroke="#48b583" stroke-width="1.6"/>
+      </svg>
+    </div>
+
+    <div class="metric-card">
+      <div class="metric-label">
+        Open tickets
+        <span class="metric-trend flat">→ 0</span>
+      </div>
+      <div class="metric-value">7</div>
+      <div class="metric-sub"><strong style="color:var(--critical)">1</strong> critical · <strong style="color:var(--warn)">2</strong> high · 4 normal</div>
+      <svg class="sparkline" viewBox="0 0 200 30" preserveAspectRatio="none">
+        <polyline points="0,10 25,14 50,9 75,13 100,17 125,12 150,15 175,11 200,13" fill="none" stroke="#5aa2e6" stroke-width="1.6"/>
+      </svg>
+    </div>
+
+    <div class="metric-card good">
+      <div class="metric-label">
+        Cost per ticket
+        <span class="metric-trend up">↓ 8%</span>
+      </div>
+      <div class="metric-value">$0.74<span class="unit">CAD</span></div>
+      <div class="metric-sub">of <strong>$2.00</strong> budget ceiling · 34 tickets today</div>
+      <svg class="sparkline" viewBox="0 0 200 30" preserveAspectRatio="none">
+        <polyline points="0,8 25,10 50,9 75,14 100,16 125,15 150,19 175,21 200,22" fill="none" stroke="#48b583" stroke-width="1.6"/>
+      </svg>
+    </div>
+
+    <div class="metric-card">
+      <div class="metric-label">
+        Eval pass rate
+        <span class="metric-trend flat">→ 0</span>
+      </div>
+      <div class="metric-value">97.1<span class="unit">%</span></div>
+      <div class="metric-sub">Promptfoo · last run <strong>4h ago</strong> · gate at 95%</div>
+      <svg class="sparkline" viewBox="0 0 200 30" preserveAspectRatio="none">
+        <polyline points="0,7 25,7 50,8 75,7 100,6 125,9 150,7 175,8 200,7" fill="none" stroke="#5aa2e6" stroke-width="1.6"/>
+      </svg>
+    </div>
+
+    <div class="metric-card good">
+      <div class="metric-label">
+        Auto-resolved
+        <span class="metric-trend up">↑ 3%</span>
+      </div>
+      <div class="metric-value">85<span class="unit">%</span></div>
+      <div class="metric-sub"><strong>29</strong> of 34 needed zero human time</div>
+      <svg class="sparkline" viewBox="0 0 200 30" preserveAspectRatio="none">
+        <polyline points="0,20 25,17 50,18 75,13 100,12 125,9 150,7 175,6 200,4" fill="none" stroke="#48b583" stroke-width="1.6"/>
+      </svg>
+    </div>
+
+  </div>
+
+  <!-- ── Main grid: queue + rail ──────────────────────────────────── -->
+  <div class="main-grid">
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Ticket queue</h2>
+        <div class="panel-tabs">
+          <button class="panel-tab active">Open (7)</button>
+          <button class="panel-tab">At risk (1)</button>
+          <button class="panel-tab">All</button>
+        </div>
+      </div>
+      <div class="ticket-table-wrap">
+        <table class="tickets">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>Tenant</th>
+              <th>State</th>
+              <th>SLA remaining</th>
+              <th>Age</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <div class="sev-stripe">
+                  <div class="sev-bar critical"></div>
+                  <div>
+                    <div class="ticket-title">Checkout fails on payment step</div>
+                    <div class="ticket-meta"><span class="ticket-id">#T-0142</span> · billing · critical</div>
+                  </div>
+                </div>
+              </td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip investigating">investigating</span></td>
+              <td class="sla-cell breach">−00:04:12</td>
+              <td class="sla-cell">00:34:12</td>
+            </tr>
+            <tr>
+              <td>
+                <div class="sev-stripe">
+                  <div class="sev-bar high"></div>
+                  <div>
+                    <div class="ticket-title">Order #8821 never arrived</div>
+                    <div class="ticket-meta"><span class="ticket-id">#T-0141</span> · shipping · high</div>
+                  </div>
+                </div>
+              </td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip triaged">triaged</span></td>
+              <td class="sla-cell tight">00:11:40</td>
+              <td class="sla-cell">00:48:20</td>
+            </tr>
+            <tr>
+              <td>
+                <div class="sev-stripe">
+                  <div class="sev-bar high"></div>
+                  <div>
+                    <div class="ticket-title">Can't reset account password</div>
+                    <div class="ticket-meta"><span class="ticket-id">#T-0140</span> · auth · high</div>
+                  </div>
+                </div>
+              </td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip responded">responded</span></td>
+              <td class="sla-cell ok">00:52:03</td>
+              <td class="sla-cell">00:07:57</td>
+            </tr>
+            <tr>
+              <td>
+                <div class="sev-stripe">
+                  <div class="sev-bar normal"></div>
+                  <div>
+                    <div class="ticket-title">Refund request — duplicate charge</div>
+                    <div class="ticket-meta"><span class="ticket-id">#T-0139</span> · billing · normal</div>
+                  </div>
+                </div>
+              </td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip responded">responded</span></td>
+              <td class="sla-cell ok">03:41:09</td>
+              <td class="sla-cell">00:18:51</td>
+            </tr>
+            <tr>
+              <td>
+                <div class="sev-stripe">
+                  <div class="sev-bar normal"></div>
+                  <div>
+                    <div class="ticket-title">How do I update billing address</div>
+                    <div class="ticket-meta"><span class="ticket-id">#T-0138</span> · billing · normal</div>
+                  </div>
+                </div>
+              </td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip new">new</span></td>
+              <td class="sla-cell ok">03:58:30</td>
+              <td class="sla-cell">00:01:30</td>
+            </tr>
+            <tr>
+              <td>
+                <div class="sev-stripe">
+                  <div class="sev-bar normal"></div>
+                  <div>
+                    <div class="ticket-title">Delivery window for bulk order</div>
+                    <div class="ticket-meta"><span class="ticket-id">#T-0137</span> · shipping · normal</div>
+                  </div>
+                </div>
+              </td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip triaged">triaged</span></td>
+              <td class="sla-cell ok">02:29:44</td>
+              <td class="sla-cell">01:30:16</td>
+            </tr>
+            <tr>
+              <td>
+                <div class="sev-stripe">
+                  <div class="sev-bar low"></div>
+                  <div>
+                    <div class="ticket-title">Feature request — dark mode in app</div>
+                    <div class="ticket-meta"><span class="ticket-id">#T-0136</span> · product · low</div>
+                  </div>
+                </div>
+              </td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip new">new</span></td>
+              <td class="sla-cell ok">07:52:01</td>
+              <td class="sla-cell">00:07:59</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="rail">
+
+      <div class="panel pipeline">
+        <div class="panel-head" style="padding:0 0 12px; border:none;">
+          <h2>Pipeline</h2>
+          <span class="count">last 24h</span>
+        </div>
+        <div class="pipeline-row">
+          <div class="pipeline-label">New</div>
+          <div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:22%; background:var(--accent)"></div></div>
+          <div class="pipeline-count">2</div>
+        </div>
+        <div class="pipeline-row">
+          <div class="pipeline-label">Triaged</div>
+          <div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:22%; background:#c79ee8"></div></div>
+          <div class="pipeline-count">2</div>
+        </div>
+        <div class="pipeline-row">
+          <div class="pipeline-label">Responded</div>
+          <div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:22%; background:var(--good)"></div></div>
+          <div class="pipeline-count">2</div>
+        </div>
+        <div class="pipeline-row">
+          <div class="pipeline-label">Investigating</div>
+          <div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:11%; background:var(--warn)"></div></div>
+          <div class="pipeline-count">1</div>
+        </div>
+        <div class="pipeline-row">
+          <div class="pipeline-label">Resolved</div>
+          <div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:100%"></div></div>
+          <div class="pipeline-count">27</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>System health</h2>
+        </div>
+        <div class="health-list">
+          <div class="health-row">
+            <div class="health-name"><span class="health-dot good"></span>ops-hub-prod</div>
+            <div class="health-latency">200 · 41ms</div>
+          </div>
+          <div class="health-row">
+            <div class="health-name"><span class="health-dot good"></span>litellm-prod</div>
+            <div class="health-latency">healthy · db ok</div>
+          </div>
+          <div class="health-row">
+            <div class="health-name"><span class="health-dot good"></span>FreeScout</div>
+            <div class="health-latency">200 · IMAP ok</div>
+          </div>
+          <div class="health-row">
+            <div class="health-name"><span class="health-dot good"></span>Inngest sync</div>
+            <div class="health-latency">registered</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Platform incidents</h2>
+          <span class="count">infra, not ticket QA</span>
+        </div>
+        <div class="incident-list">
+          <div class="incident-row">
+            <div class="incident-top">
+              <div class="incident-title"><span class="incident-badge">Resolved</span>Deploy dispatch collision</div>
+              <div class="incident-time">14h ago</div>
+            </div>
+            <div class="incident-desc">Staging deploy briefly redirected production's cron dispatch. Self-caught, root-caused, and closed same session.</div>
+          </div>
+          <div class="incident-row">
+            <div class="incident-top">
+              <div class="incident-title"><span class="incident-badge">Resolved</span>Prod env vars restored</div>
+              <div class="incident-time">15h ago</div>
+            </div>
+            <div class="incident-desc">9 missing config values on ops-hub-prod found and fixed before customer impact.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  </div>
+  <!-- /page-dashboard -->
+
+  <!-- ══════════════════════════════════════════════════════════════
+       PAGE: Settings
+       ══════════════════════════════════════════════════════════════ -->
+  <div class="page" id="page-settings">
+
+    <div class="settings-grid">
+
+      <div class="panel full">
+        <div class="panel-head">
+          <h2>Model routing</h2>
+          <span class="count">per pipeline function</span>
+        </div>
+        <div class="ticket-table-wrap">
+          <table class="settings">
+            <thead>
+              <tr>
+                <th>Function</th>
+                <th>Primary model</th>
+                <th>Fallback model</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <div class="fn-name">FreeScout poller</div>
+                  <div class="fn-sub">freescout-poll · reads Supabase directly, no LLM call</div>
+                </td>
+                <td colspan="2" style="color:var(--text-faint); font-family:var(--mono); font-size:11.5px;">— no model —</td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="fn-name">Triage</div>
+                  <div class="fn-sub">ticket-triage · classifies urgency, category, routing</div>
+                </td>
+                <td>
+                  <select class="model-select">
+                    <option>gpt-4o-mini</option>
+                    <option>claude-haiku-4-5</option>
+                  </select>
+                </td>
+                <td>
+                  <select class="model-select">
+                    <option selected>claude-haiku-4-5</option>
+                    <option>gpt-4o-mini</option>
+                  </select>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="fn-name">Respond</div>
+                  <div class="fn-sub">ticket-respond · drafts the FreeScout reply</div>
+                </td>
+                <td>
+                  <select class="model-select" disabled>
+                    <option>gpt-4o-mini</option>
+                  </select>
+                </td>
+                <td>
+                  <select class="model-select" disabled>
+                    <option>claude-haiku-4-5</option>
+                  </select>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="fn-name">KB learn</div>
+                  <div class="fn-sub">kb-learn · writes resolved tickets into the knowledge base</div>
+                </td>
+                <td>
+                  <select class="model-select" disabled>
+                    <option>gpt-4o-mini</option>
+                  </select>
+                </td>
+                <td>
+                  <select class="model-select" disabled>
+                    <option>claude-haiku-4-5</option>
+                  </select>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel-note">
+          <span>⚠</span>
+          <span><strong>Not live yet:</strong> today, Respond and KB Learn share whatever Triage is set to — there's only one system-wide primary/fallback pair right now. The greyed-out rows show the target design; splitting them apart needs a small backend change first, not just this screen.</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>SLA targets</h2>
+          <span class="count">by urgency</span>
+        </div>
+        <div class="sla-editor">
+          <div class="sla-row">
+            <div class="sla-row-label"><span class="urgency-dot" style="background:var(--critical)"></span>Critical</div>
+            <div class="sla-input-wrap"><input type="text" value="30"><span class="sla-unit">min</span></div>
+          </div>
+          <div class="sla-row">
+            <div class="sla-row-label"><span class="urgency-dot" style="background:var(--warn)"></span>High</div>
+            <div class="sla-input-wrap"><input type="text" value="60"><span class="sla-unit">min</span></div>
+          </div>
+          <div class="sla-row">
+            <div class="sla-row-label"><span class="urgency-dot" style="background:var(--accent)"></span>Normal</div>
+            <div class="sla-input-wrap"><input type="text" value="240"><span class="sla-unit">min</span></div>
+          </div>
+          <div class="sla-row">
+            <div class="sla-row-label"><span class="urgency-dot" style="background:var(--text-faint)"></span>Low</div>
+            <div class="sla-input-wrap"><input type="text" value="480"><span class="sla-unit">min</span></div>
+          </div>
+        </div>
+        <div class="panel-note" style="margin-bottom:20px;">
+          <span>ℹ</span>
+          <span>Applies to Daily Needs Canada (growth tier). Backed by real data — this already lives in <span style="font-family:var(--mono)">tenants.sla_config</span> today.</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Feature flags</h2>
+          <span class="count">project: TTS</span>
+        </div>
+        <div class="flag-list">
+          <div class="flag-row">
+            <div>
+              <div class="flag-name">Anthropic fallback provider</div>
+              <div class="flag-desc">Retry on Claude Haiku when the primary model fails</div>
+            </div>
+            <div style="display:flex; align-items:center;">
+              <div class="toggle on" onclick="toggleFlag(this)"><div class="knob"></div></div>
+              <span class="rollout-pct">100%</span>
+            </div>
+          </div>
+          <div class="flag-row">
+            <div>
+              <div class="flag-name">KB auto-learn</div>
+              <div class="flag-desc">Write resolved tickets into the KB automatically</div>
+            </div>
+            <div style="display:flex; align-items:center;">
+              <div class="toggle" onclick="toggleFlag(this)"><div class="knob"></div></div>
+              <span class="rollout-pct">0%</span>
+            </div>
+          </div>
+          <div class="flag-row">
+            <div>
+              <div class="flag-name">Premium SLA tier</div>
+              <div class="flag-desc">Per-urgency targets instead of one flat response time</div>
+            </div>
+            <div style="display:flex; align-items:center;">
+              <div class="toggle on" onclick="toggleFlag(this)"><div class="knob"></div></div>
+              <span class="rollout-pct">100%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Environment config</h2>
+          <span class="count">ops-hub-prod</span>
+        </div>
+        <div class="env-list">
+          <div class="env-row">
+            <span class="env-key">INNGEST_SIGNING_KEY</span>
+            <span class="env-meta"><span class="env-check">✓</span>verified 2h ago</span>
+          </div>
+          <div class="env-row">
+            <span class="env-key">LITELLM_EXTERNAL_URL</span>
+            <span class="env-meta"><span class="env-check">✓</span>verified 2h ago</span>
+          </div>
+          <div class="env-row">
+            <span class="env-key">LITELLM_MASTER_KEY</span>
+            <span class="env-meta"><span class="env-check">✓</span>verified 2h ago</span>
+          </div>
+          <div class="env-row">
+            <span class="env-key">FREESCOUT_DB_URL</span>
+            <span class="env-meta"><span class="env-check">✓</span>verified 2h ago</span>
+          </div>
+          <div class="env-row">
+            <span class="env-key">POLLING_ENABLED</span>
+            <span class="env-meta"><span class="env-check">✓</span>verified 2h ago</span>
+          </div>
+        </div>
+        <div class="panel-note" style="margin: 0 20px 20px;">
+          <span>ℹ</span>
+          <span>This would have caught tonight's env-var drift the moment it happened, instead of two days later. Not live — needs a small read-only Coolify API integration.</span>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+  <!-- /page-settings -->
+
+</div>
