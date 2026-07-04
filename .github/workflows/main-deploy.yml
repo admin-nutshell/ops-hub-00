@@ -9,6 +9,10 @@ on:
     paths-ignore:
       - "status/**"
       - "docs/**"
+      - "WORK.md"
+      - "DECISIONS.md"
+      - "FOUNDER_QUEUE.md"
+      - "CLAUDE.md"
 
 # Least-privilege: needs packages:write for GHCR image push.
 permissions:
