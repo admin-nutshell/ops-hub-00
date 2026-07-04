@@ -4,6 +4,34 @@
 
 ---
 
+## FQ-58 — T-61 Phase 1 blocked: litellm_db_user password no longer authenticates
+
+**Filed:** 2026-07-04
+**Filed by:** Production Manager (T-61, Phase 1 canary pre-check)
+**Needs:** Information / Authorization
+**Deadline:** Non-blocking overall (no live change was made; `DISABLE_SCHEMA_UPDATE=true` still holds the latent risk documented in FQ-57) — but blocks T-61 Phase 1 from proceeding.
+
+**What happened:** Per the pre-deploy checklist in `docs/deploys/2026-07-04-litellm-db-wall-restoration.md` ("Canary rollout plan," Phase 1, step 1), a new read-only precheck workflow (`precheck-litellm-db-wall.yml`, added this session via PR #255/#256) was dispatched before touching anything live. It attempts `SELECT current_user;` against Supabase as `litellm_db_user`, using the `LITELLM_DB_USER_URL` GitHub secret (set 2026-06-26/27 per ADR-0004/FQ-45, unchanged since).
+
+Result: **`FATAL: password authentication failed for user "litellm_db_user"`** (run [28722827915](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28722827915), 2026-07-04 23:18 UTC). This is a genuine auth rejection, not the `ENOIDENTIFIER`/"tenant not found" error that would indicate a DSN-format problem (missing project-ref suffix) — the connection reached the password-check stage cleanly. The most likely explanation is the same class of drift flagged as a risk in the deploy plan itself: the role's password may have been changed on the Supabase side (directly or via some other rotation event) without the `LITELLM_DB_USER_URL` GitHub secret being updated to match. DECISIONS.md's only confirmed rotation on record (2026-06-29, FQ-49) was the `postgres` superuser role's password, not `litellm_db_user`'s — so if that's the cause, it was an unlogged side effect, not the documented event. Root mechanism is not confirmed; only the symptom (auth rejected) is.
+
+**No live change was attempted or made.** The workflow is read-only by design (GET/psql-SELECT only) and is written to halt immediately on this exact failure rather than guess or retry with a different value. All later steps in the same job (baseline row-count capture, rollback-DSN stash) did not run — confirmed directly in the run log, they're gated behind the auth check succeeding.
+
+**What's needed (pick one):**
+- **Option A (if the password was intentionally rotated or is otherwise unknown/lost):** Run, as superuser in Supabase SQL Editor — same shape as the original `docs/engineering/litellm-db-isolation-runbook.md` Step 1 —
+  ```sql
+  ALTER ROLE litellm_db_user WITH PASSWORD '<new password>';
+  ```
+  Then update the GitHub secret `LITELLM_DB_USER_URL` with the matching new password (host/port/db/schema unchanged — only the password segment differs). Do NOT paste the password in chat or commit it anywhere; set it directly via `gh secret set LITELLM_DB_USER_URL` or the GitHub UI.
+- **Option B (if the password was never actually changed and the secret is simply stale/wrong from setup):** Confirm the value that was originally set on 2026-06-26/27 and re-enter it into the `LITELLM_DB_USER_URL` secret if it differs from what's stored today.
+- Either way, notify Production Manager once done — the precheck workflow will be re-run before anything further proceeds (per the deploy plan, nothing progresses to `fix-litellm-schema-isolation.yml apply-wall` until this passes clean).
+
+**Impact if left open:** None beyond what FQ-57 already describes — `DISABLE_SCHEMA_UPDATE=true` is confirmed still set on both `litellm-staging` and `litellm-prod`, so the latent (not active) DB-isolation-wall gap continues exactly as before. This FQ only blocks the *restoration* work (T-61), not current service health.
+
+**Notify:** Production Manager "FQ-58 done" — Phase 1 precheck will be re-dispatched immediately.
+
+---
+
 ## ✅ FQ-53 — LiteLLM /model/new broken: fix Prisma migration before T-48
 
 **Filed:** 2026-07-01 | **Closed:** 2026-07-04
