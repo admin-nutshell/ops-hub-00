@@ -4,28 +4,37 @@
 
 ---
 
-## FQ-53 — LiteLLM /model/new broken: fix Prisma migration before T-48
+## ✅ FQ-53 — LiteLLM /model/new broken: fix Prisma migration before T-48
 
-**Filed:** 2026-07-01
+**Filed:** 2026-07-01 | **Closed:** 2026-07-04
 **Filed by:** Tech Lead (T-46)
-**Needs:** Diagnosis + fix of LiteLLM DB write API
-**Deadline:** Before T-48 (LiteLLM production instance)
+**Status:** RESOLVED (functionally) — root cause corrected below; **do not read this as "Prisma bug fixed"**
 
-T-46 is done — `LITELLM_FALLBACK_MODEL=anthropic/claude-haiku-4-5-20251001` set in ops-hub-app (founder action complete 2026-07-01). Fallback path is live.
+**What was actually wrong (confirmed via `diagnose-litellm-prisma.yml`, 2026-07-04):** the 500 was real, but by the time this was investigated the write path was already working again — `POST /model/new` returned HTTP 200 live, and a restart-then-recheck (`restart-verify-litellm-staging.yml`) confirmed all 3 aliases (`triage-model`, `fallback-model`, `meta/llama-3.3-70b-instruct`) persist across a restart, plus a live `triage-model` completion succeeded.
 
-**Remaining issue:** LiteLLM's management API (`POST /model/new`) returns HTTP 500 "Failed to add model to db" since the ANTHROPIC_API_KEY redeploy. Reads work (`GET /model/info` → 200) but writes fail. This means the registered triage-model alias may have been lost on redeploy (in-memory only). Current workaround: `LITELLM_FALLBACK_MODEL` uses direct model name, bypassing aliases. **This must be fixed before T-48** — the prod LiteLLM instance needs reliable alias management.
+**The uncomfortable part — root cause identified precisely, and it was already sitting in DECISIONS.md:** the 2026-06-29 FQ-49 fix (LiteLLM crash-loop, `ENOIDENTIFIER`) deleted the duplicate `DATABASE_URL` rows and "re-entered `DATABASE_URL` once via Coolify UI with `postgres.yocoljutbiizdbfraapx` as username" — two days after FQ-45 had put `litellm_db_user.yocoljutbiizdbfraapx` in place. That FQ-49 fix was correct for the crash-loop (the missing Supavisor project-ref suffix) but used the **wrong username** — the plain superuser instead of the restricted role — which silently undid the ADR-0004 wall. It was never flagged at the time because the operator was focused on the crash-loop, not on preserving role identity, and the DECISIONS.md entry for FQ-49 doesn't call out the role downgrade. `DISABLE_SCHEMA_UPDATE=true` (from FQ-45's freeze step) then blocked Prisma from syncing whatever schema change the later `ANTHROPIC_API_KEY` addition needed — that's what actually produced the FQ-53 500, independent of which role was connecting. Whatever cleared that 500 between filing (07-01) and today (07-04) is not in DECISIONS.md either — but the role has been `postgres`, undetected, since 2026-06-29, through T-47/48/49/50/51/52/M6/T-56. **`litellm-prod` (T-48) has the identical posture** — also connects as `postgres`, also un-walled, confirmed via `verify-litellm-db-isolation.yml`. Current risk is latent, not active: `DISABLE_SCHEMA_UPDATE=true` is confirmed set on both, so no Prisma DDL is running today. Public tables confirmed intact via indirect evidence (T-51 e2e ticket + T-56 kb_articles write both succeeded today, 2026-07-04).
 
-**To diagnose (5 min):**
-```
-docker logs <litellm-container-name> 2>&1 | grep -i "prisma\|migration\|error" | head -20
-```
-Look for Prisma migration errors at startup. If found, run:
-```
-docker exec <litellm-container-name> python -c "from litellm.proxy.proxy_server import *; asyncio.run(prisma_setup(None))"
-```
-Or redeploy LiteLLM with `DATABASE_URL` pointing to a fresh schema and let it auto-migrate.
+**Follow-up filed as FQ-57** (below) for the actual wall restoration, staged as a proper canary rollout per `docs/deploys/2026-07-04-litellm-db-wall-restoration.md` — not fixed live in this session on purpose (flipping `DISABLE_SCHEMA_UPDATE` back on to test the restricted role could take a live service down; prod additionally needs a **new**, prod-only restricted role that doesn't exist yet).
 
-**Notify:** Tech Lead when resolved — T-48 can then proceed with alias-based model management.
+**Notify:** Tech Lead — T-48 is unaffected functionally (prod's aliases work today), but is now known to share the same isolation gap as staging.
+
+---
+
+## FQ-57 — Restore LiteLLM DB isolation wall on staging + prod (new prod-only role needed)
+
+**Filed:** 2026-07-04
+**Filed by:** Production Manager
+**Needs:** One-time superuser SQL (new prod-only restricted role) + authorization for a staged canary rollout
+**Deadline:** Non-blocking (latent risk, `DISABLE_SCHEMA_UPDATE=true` holds today) — but should not sit for long; the whole point of ADR-0004 was to make this impossible-by-construction, and right now it is possible again on both environments.
+
+See `docs/deploys/2026-07-04-litellm-db-wall-restoration.md` for the full plan. Short version:
+
+1. **Founder action (superuser SQL, ~5 min, same shape as the original `docs/engineering/litellm-db-isolation-runbook.md` Step 1):** create a **new**, prod-only restricted role `litellm_db_user_prod` owning a **new** schema `litellm_prod`, with zero rights on `public` and zero rights on the existing `litellm` schema (staging's). Reusing the existing `litellm_db_user` role for prod would NOT isolate prod from staging — that role's `search_path` is pinned to `litellm`, so prod's registrations would land in staging's schema.
+2. **Founder action:** store the new DSN as GitHub secret `LITELLM_PROD_DB_USER_URL` (same masking/never-in-chat discipline as `LITELLM_DB_USER_URL`).
+3. **Founder action (staging only, if needed):** confirm the existing `litellm_db_user` password (set 2026-06-27) still works — DECISIONS.md shows at least one unrelated Supabase password rotation in this project's history; Production Manager will pre-check this read-only before touching anything live.
+4. Production Manager then runs the two-phase canary in the deploy plan (staging first, verify clean, then prod under a 24-hour monitoring window) and reports back here.
+
+**Notify:** Production Manager once the SQL is run and the secret is set — Phase 1 (staging) can start immediately with what already exists; Phase 2 (prod) is gated on this.
 
 ---
 
