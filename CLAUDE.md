@@ -59,15 +59,17 @@ If you encounter a security concern, stop work and post to `FOUNDER_QUEUE.md` im
 
 ## Active sprint
 
-**Sprint 5 — Reliability Hardening + TTS Production Go-Live**
-Window: July 7–18, 2026
-Goal: Close reliability gaps (LiteLLM monitoring, suffix automation, LLM fallback) → deploy TTS pipeline to production → declare M6
+**Sprint 6 — Ops Dashboard MVP + Reliability Debt Closure**
+Window: July 6–20, 2026
+Goal: Ship the founder-facing Ops Dashboard as a read-only MVP (4 charter daily pillars + queue + system health), behind a real auth boundary → in parallel, restore the LiteLLM DB isolation wall regression (FQ-57) and close Sprint 5's CI/process debt. No milestone targeted this sprint — see WORK.md's "Milestone numbering note."
+
+*(Sprint 5 — Reliability Hardening + TTS Production Go-Live — COMPLETE 2026-07-03/04. M6 "TTS Live in Production" declared. Retro: `docs/retros/sprint-5.md`.)*
 
 **Live status:** `WORK.md`
 **Recent decisions:** `DECISIONS.md`
 **Founder queue:** `FOUNDER_QUEUE.md`
 
-Critical path: T-44 → T-45 → T-46 → T-47 → T-48 → T-49 → T-50 → T-51 → T-52
+Critical path: T-57 (dashboard auth) → T-58 (dashboard data feeds) → T-59 (dashboard read-only build) → T-60 (RLS verification)
 
 ---
 
