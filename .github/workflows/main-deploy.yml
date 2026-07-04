@@ -204,34 +204,14 @@ jobs:
           echo "ERROR: health check timed out after 3 minutes"
           exit 1
 
-      # ── Inngest function sync ─────────────────────────────────────────────────
-      # After the container is live, trigger an out-of-band Inngest sync so the
-      # dashboard immediately reflects new/removed functions without waiting for
-      # the next Inngest poll cycle.  An unsigned PUT to /api/inngest triggers the
-      # SDK to call api.inngest.com/fn/register directly from the running app —
-      # no Inngest API key is required here.
-      - name: Sync Inngest functions
-        env:
-          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-          STAGING_URL: ${{ secrets.COOLIFY_STAGING_APP_URL }}
-          APP_UUID: ${{ steps.coolify.outputs.app_uuid }}
-        run: |
-          if [ -z "$STAGING_URL" ] && [ -n "$APP_UUID" ]; then
-            STAGING_URL=$(curl -s --max-time 30 \
-              -H "Authorization: Bearer $TOKEN" \
-              "$COOLIFY_BASE/applications/$APP_UUID" \
-              | jq -r '.fqdn // empty' | sed 's|/$||')
-          fi
-          if [ -z "$STAGING_URL" ]; then
-            echo "STAGING_URL not available — skipping Inngest sync."
-            exit 0
-          fi
-          echo "Syncing Inngest functions at $STAGING_URL/api/inngest ..."
-          SYNC_HTTP=$(curl -s --max-time 30 -o /tmp/sync.json -w "%{http_code}" -X PUT \
-            -H "Content-Type: application/json" \
-            "$STAGING_URL/api/inngest")
-          echo "Sync HTTP $SYNC_HTTP"
-          cat /tmp/sync.json
-          if [ "$SYNC_HTTP" != "200" ] && [ "$SYNC_HTTP" != "201" ]; then
-            echo "WARNING: Inngest sync returned HTTP $SYNC_HTTP — functions may not be updated"
-          fi
+      # ── Inngest function sync — DISABLED, see T-54(B) ─────────────────────────
+      # This step used to PUT /api/inngest against staging's URL to force an
+      # immediate Inngest Cloud sync. Removed 2026-07-04: ops-hub-staging and
+      # ops-hub-prod currently share the same Inngest app id ("ops-hub" in
+      # src/inngest/client.ts), so this sync repoints Inngest's dispatch target
+      # to staging — confirmed to have silently stopped prod from processing
+      # tickets for ~7 hours on 2026-07-03/04 until manually caught and fixed
+      # by re-running prod-deploy.yml. Do not re-add this step until T-54(B)
+      # (distinct Inngest app id per environment) is fixed. Inngest Cloud still
+      # picks up staging's functions on its own poll cycle without this step;
+      # it only loses immediacy, not correctness.
