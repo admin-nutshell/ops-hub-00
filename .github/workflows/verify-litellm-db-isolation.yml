@@ -1,0 +1,84 @@
+name: Verify LiteLLM DB isolation wall (read-only, staging + prod)
+
+# Read-only check: confirms (a) which DB role litellm-staging / litellm-prod
+# currently connect as, and (b) that the shared public schema's Ops Hub +
+# FreeScout tables are still present (the survival canary from
+# docs/engineering/litellm-db-isolation-runbook.md Step 4, run standalone
+# since OPS_HUB_CANARY_DB_URL is not set as a repo secret).
+#
+# Makes ZERO writes. Safe to run at any time, including mid-incident.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_STAGING_UUID: "h12xz8887fxvbvjts2hac8if"
+  LITELLM_PROD_UUID: "hlik1d96uvkkjzpbxa3azhcv"
+
+jobs:
+  verify:
+    name: DATABASE_URL role check + public-schema canary
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      CANARY_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+
+    steps:
+      - name: Which DB role does litellm-staging connect as?
+        run: |
+          curl -s --max-time 30 -o /tmp/staging-envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_STAGING_UUID/envs"
+          echo "=== litellm-staging DATABASE_URL username(s) ==="
+          jq -r '.[] | select(.key=="DATABASE_URL") | .value' /tmp/staging-envs.json 2>/dev/null \
+            | sed -E 's#postgresql://([^:]+):[^@]+@.*#\1#' | sed 's/^/  user=/'
+          echo "=== litellm-staging DISABLE_SCHEMA_UPDATE ==="
+          jq -r '.[] | select(.key=="DISABLE_SCHEMA_UPDATE") | "  value=\(.value)"' /tmp/staging-envs.json 2>/dev/null
+
+      - name: Which DB role does litellm-prod connect as?
+        run: |
+          curl -s --max-time 30 -o /tmp/prod-envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_PROD_UUID/envs"
+          echo "=== litellm-prod DATABASE_URL username(s) ==="
+          jq -r '.[] | select(.key=="DATABASE_URL") | .value' /tmp/prod-envs.json 2>/dev/null \
+            | sed -E 's#postgresql://([^:]+):[^@]+@.*#\1#' | sed 's/^/  user=/'
+          echo "=== litellm-prod DISABLE_SCHEMA_UPDATE ==="
+          jq -r '.[] | select(.key=="DISABLE_SCHEMA_UPDATE") | "  value=\(.value)"' /tmp/prod-envs.json 2>/dev/null
+
+      - name: Canary — Ops Hub + FreeScout public tables + litellm schema table counts
+        run: |
+          if [ -z "$CANARY_URL" ]; then
+            echo "SUPABASE_STAGING_DB_URL not set — cannot run automated canary."
+            exit 0
+          fi
+          echo "::add-mask::$CANARY_URL"
+          sudo apt-get -qq update >/dev/null 2>&1 || true
+          sudo apt-get -qq install -y postgresql-client >/dev/null 2>&1 || true
+          echo "=== Ops Hub + FreeScout public tables (all must be non-null) ==="
+          psql "$CANARY_URL" -tAc \
+            "SELECT to_regclass('public.tenants') AS tenants,
+                    to_regclass('public.tickets') AS tickets,
+                    to_regclass('public.projects') AS projects,
+                    to_regclass('public.kb_articles') AS kb_articles,
+                    to_regclass('public.conversations') AS fs_conversations,
+                    to_regclass('public.threads') AS fs_threads;" \
+            2>&1 || echo "PSQL_ERROR — see above, fall back to manual SQL Editor check"
+          echo ""
+          echo "=== Row counts (proves data, not just schema, survived) ==="
+          psql "$CANARY_URL" -tAc \
+            "SELECT 'tenants=' || count(*) FROM public.tenants
+             UNION ALL SELECT 'tickets=' || count(*) FROM public.tickets;" 2>&1 || true
+          echo ""
+          echo "=== litellm_db_user ownership check (expect 0 rows = does not own any public table) ==="
+          psql "$CANARY_URL" -tAc \
+            "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tableowner='litellm_db_user';" \
+            2>&1 || true
+          echo ""
+          echo "=== schemas present (litellm / litellm_prod should exist if isolation was ever applied) ==="
+          psql "$CANARY_URL" -tAc \
+            "SELECT nspname FROM pg_namespace WHERE nspname IN ('litellm','litellm_prod');" 2>&1 || true
