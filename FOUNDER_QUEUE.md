@@ -4,6 +4,62 @@
 
 ---
 
+## FQ-59 — T-57 Ops Dashboard auth: apply Traefik basic-auth label at T-59 deploy (credential ready in scratchpad)
+
+**Filed:** 2026-07-04
+**Filed by:** Tech Lead (T-57)
+**Needs:** Authorization + place one secret; Production Manager applies the Traefik label
+**Deadline:** Non-blocking now — but is a HARD GATE on T-59: the dashboard must not be pointed at a public FQDN until this is applied and verified.
+
+**Decision recorded:** DECISIONS.md 2026-07-04 (T-57). The Ops Dashboard (T-59) is gated by
+Traefik/Coolify **HTTP Basic Auth** on its FQDN over the existing Let's Encrypt TLS — chosen over
+app-level session auth because the dashboard is greenfield Next.js that doesn't exist yet, the
+ops-hub runtime has no web-auth pattern to be consistent with, and basic auth is a reverse-proxy
+boundary that needs zero app code and is trivially swapped for session auth when the Sprint-7
+write area lands. Full threat model in DECISIONS.md.
+
+**The credential is already generated** and waiting in a LOCAL scratchpad file (never committed,
+never in chat, this FQ contains no secret material):
+
+```
+C:\Users\SACIT~1\AppData\Local\Temp\claude\C--projects-ops-hub\d4df90e8-0d7d-4dcc-9fc6-de5763b44131\scratchpad\T-57-dashboard-basic-auth-CREDENTIAL.txt
+```
+
+That file contains: the browser username+password, the `user:hash` line for Coolify (apr1/MD5,
+Traefik-compatible), a `$`->`$$` label-escaped variant, and a regeneration command.
+
+### Action 1 — DO THIS NOW (survives temp-file loss; T-59 deploy is ~a week out)
+Open the scratchpad file above and copy **both** the plaintext username+password (for browser
+login) **and** the `user:hash` line (for Coolify) into your password manager. The scratchpad is
+session-temporary and will very likely be gone by the T-59 deploy. If it's already lost, regenerate
+with the command in the file (`openssl passwd -apr1`) — any fresh value is fine, it just has to
+match between browser and Coolify.
+
+### Action 2 — AT T-59 DEPLOY TIME (Production Manager applies; founder places the secret)
+When the dashboard Coolify app/route is created (T-59), before pointing it at a public FQDN:
+- If Coolify exposes a dedicated **Basic Authentication** field for the app: paste the
+  `user:hash` line AS-IS (no `$` doubling).
+- If applying via a raw **Traefik label**: use the `$`->`$$`-escaped variant from the scratchpad
+  file (docker-compose label escaping). Standard label shape:
+  `traefik.http.middlewares.dashauth.basicauth.users=<user:hash>` +
+  `traefik.http.routers.<router>.middlewares=dashauth` — exact router name per the T-59 app config;
+  Production Manager confirms against the live Coolify/Traefik version, then tests (Action 3).
+
+### Action 3 — BLOCKING VERIFICATION before go-live (do not skip — this is T-57's entire purpose)
+From any machine, confirm the dashboard FQDN rejects unauthenticated requests:
+```
+curl -sS -o /dev/null -w '%{http_code}\n' https://<dashboard-fqdn>/
+```
+Expected: **401**. Then confirm the credential works (200 with `-u opsadmin:<password>`).
+A 200 without credentials, or a login that never accepts the password, means the label/hash is
+mis-applied (commonly the `$`->`$$` escaping) — fix before exposing the domain.
+
+**Notify:** Tech Lead + Production Manager once the 401 check passes — T-59 is then cleared to go
+live behind the gate. Security Lead already has substantive involvement scheduled at T-60
+(RLS/tenant-scoping), so no separate sign-off is needed to land this perimeter gate.
+
+---
+
 ## FQ-58 — T-61 Phase 1 blocked: litellm_db_user password no longer authenticates
 
 **Filed:** 2026-07-04
