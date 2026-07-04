@@ -63,12 +63,21 @@ jobs:
           sudo apt-get -qq install -y postgresql-client >/dev/null 2>&1 || true
 
       # ── 1. Auth + schema health AS litellm_db_user ───────────────────────────
+      # NOTE: LITELLM_DB_USER_URL carries a `?schema=litellm` suffix that Prisma
+      # understands but raw libpq/psql does NOT (libpq rejects unknown URI query
+      # params with "invalid URI query parameter"). Strip the query string before
+      # handing the DSN to psql — this does not touch user/pass/host/db, only
+      # removes the Prisma-only routing hint that psql can't parse. We qualify
+      # every table reference by schema explicitly below instead of relying on
+      # search_path, so dropping the hint doesn't weaken what's being checked.
       - name: Probe — litellm_db_user auth + litellm schema health
         id: authprobe
         run: |
           echo "::add-mask::$DB_USER_URL"
+          CONN="${DB_USER_URL%%\?*}"
+          echo "::add-mask::$CONN"
           echo "=== current_user (proves password authenticates) ==="
-          if ! psql "$DB_USER_URL" -tAc "SELECT current_user;" 2>/tmp/autherr; then
+          if ! psql "$CONN" -tAc "SELECT current_user;" 2>/tmp/autherr; then
             echo "AUTH_FAILED"
             echo "psql error output:"
             cat /tmp/autherr
@@ -78,21 +87,21 @@ jobs:
           echo "auth_ok=true" >> "$GITHUB_OUTPUT"
           echo ""
           echo "=== litellm schema owner ==="
-          psql "$DB_USER_URL" -tAc \
+          psql "$CONN" -tAc \
             "SELECT n.nspname, pg_catalog.pg_get_userbyid(n.nspowner) AS owner
              FROM pg_namespace n WHERE n.nspname = 'litellm';" 2>&1
           echo ""
           echo "=== table count in schema litellm (expect > 0 — LiteLLM's own Prisma tables) ==="
-          psql "$DB_USER_URL" -tAc \
+          psql "$CONN" -tAc \
             "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'litellm';" 2>&1
           echo ""
           echo "=== role attributes (expect all false — non-superuser, non-bypassrls, ADR-0004) ==="
-          psql "$DB_USER_URL" -tAc \
+          psql "$CONN" -tAc \
             "SELECT rolsuper, rolcreatedb, rolcreaterole, rolbypassrls
              FROM pg_roles WHERE rolname = current_user;" 2>&1
           echo ""
           echo "=== confirm STILL zero read access on public (expect: permission denied) ==="
-          if psql "$DB_USER_URL" -tAc "SELECT count(*) FROM public.tenants;" 2>/tmp/publicerr; then
+          if psql "$CONN" -tAc "SELECT count(*) FROM public.tenants;" 2>/tmp/publicerr; then
             echo "WARNING: litellm_db_user CAN read public.tenants — the wall on this role's"
             echo "own grants may have been altered. Not fatal to this precheck, but flag before"
             echo "proceeding with apply-wall."
