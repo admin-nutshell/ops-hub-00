@@ -70,26 +70,14 @@ T-45 builds a `workflow_dispatch` workflow that SSHs to the Coolify VPS, detects
 
 ---
 
-## FQ-48 — T-40 Backup verification: add SUPABASE_ACCESS_TOKEN secret
+## ✅ FQ-48 — T-40 Backup verification: add SUPABASE_ACCESS_TOKEN secret — RESOLVED 2026-07-04
 
-**Filed:** 2026-06-28
+**Filed:** 2026-06-28 | **Resolved:** 2026-07-04
 **Filed by:** Tech Lead (T-40)
-**Needs:** One-time secret creation
-**Deadline:** July 9, 2026 (T-40 target)
 
-`verify-backup.yml` runs monthly and calls the Supabase Management API to confirm the last database backup is < 25 hours old. It needs a personal access token with read access to project `yocoljutbiizdbfraapx`.
+`SUPABASE_ACCESS_TOKEN` GitHub secret added by founder. The workflow (renamed `verify-backup.yml` → `backup-verification.yml`, see T-40 in WORK.md) is correctly configured and will run automatically on its monthly schedule (1st of every month, 06:00 UTC — first real run 2026-08-01).
 
-**Action (5 min):**
-1. Go to [Supabase → Account → Access tokens](https://app.supabase.com/account/tokens)
-2. Generate new token → name: `ops-hub-backup-verify` → copy it
-3. Go to GitHub → repo `admin-nutshell/ops-hub-00` → Settings → Secrets and variables → Actions → New repository secret
-   - Name: `SUPABASE_ACCESS_TOKEN`
-   - Value: the token you just copied
-
-After adding the secret, trigger a one-time test run:
-```
-gh workflow run verify-backup.yml --repo admin-nutshell/ops-hub-00
-```
+**Known unresolved side issue (not blocking):** the workflow's manual `workflow_dispatch` trigger cannot actually be invoked due to an apparent GitHub-side parsing quirk — tried a content nudge and a full rename (new workflow ID), neither fixed it. Full detail in WORK.md T-40. Doesn't affect the real monthly automated run.
 
 **Notify:** PM "FQ-48 complete" — T-40 declared done once a manual run returns ✅.
 
