@@ -929,3 +929,44 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   deploy will reach it for the first time. Watch prod's /api/inngest and
   run a live ticket test afterward to find out whether (B) is real.
 ```
+
+### 2026-07-04 — T-54(B) confirmed: ~7hr production ticket-processing gap
+
+```
+2026-07-04 [Tech Lead] T-54(B) is confirmed, not just theorized. Timeline:
+
+  17:42 UTC 2026-07-03 — PR #237 (T-54(A) fix) merged.
+  17:44 UTC — main-deploy.yml ran end-to-end for the first time (previously
+    always crashed at the app-name collision or timed out) — including its
+    "Sync Inngest functions" step, PUT against ops-hub-staging's URL.
+  ~17:47 UTC — test email sent to support@inatechshell.ca, FreeScout
+    conversation #14 created (confirmed visible in FreeScout).
+  17:47 UTC – 00:53 UTC (2026-07-04) — no corresponding row appeared in
+    Supabase tickets. ~7 hours of silence.
+  00:53 UTC — prod-deploy.yml manually re-run (workflow_dispatch), which
+    includes its own Inngest sync step against ops-hub-prod's URL.
+  00:55 UTC — the same ticket (freescout_conversation_id=14) was ingested,
+    triaged, and responded to within 8 seconds.
+
+  Confirmation is airtight: ops-hub-prod was running its pre-#237 image
+  throughout the entire gap (prod is only updated by prod-deploy.yml,
+  which did not run again until 00:53) — meaning prod had unconditional
+  polling with no POLLING_ENABLED guard the whole time. The only
+  explanation for ~7 hours of silence despite prod's poller code being
+  unconditional is that Inngest Cloud's cron dispatch had been repointed
+  away from prod's registered app by staging's sync — both environments
+  share the same Inngest app id ("ops-hub" in src/inngest/client.ts).
+
+  Interim mitigation (shipped same commit): removed the "Sync Inngest
+  functions" step from main-deploy.yml entirely. Inngest Cloud still picks
+  up ops-hub-staging's functions on its own periodic poll cycle without an
+  explicit sync call — staging only loses sync immediacy, not correctness.
+  This closes the recurrence path without touching prod's Inngest identity,
+  which is the part of a full fix that needs live-merge verification and
+  should not be attempted at the end of a long session.
+
+  Permanent fix — a distinct Inngest app id per environment, env-var-driven
+  in src/inngest/client.ts — remains open as a separate task. Do not
+  re-add an explicit Inngest sync step to the staging deploy path before
+  that fix lands.
+```
