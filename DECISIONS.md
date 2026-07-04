@@ -1108,3 +1108,76 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   as before, and is now additionally gated behind T-61 Phase 1 completing
   cleanly, which itself now needs FQ-58 resolved first.
 ```
+
+### 2026-07-04 — T-57 Ops Dashboard auth boundary: Traefik/Coolify HTTP Basic Auth (not app-level session auth)
+
+```
+2026-07-04 [Tech Lead] T-57. The Ops Dashboard (T-59) gets its auth boundary from
+  Traefik/Coolify HTTP Basic Auth on the dashboard FQDN, over the existing
+  Let's Encrypt TLS — NOT an application-level login/session-cookie gate.
+  (Exit criteria explicitly allow either and say no ADR is required at this size;
+  this note is the record.) Single-founder, read-only console this sprint.
+
+  WHY BASIC AUTH (chosen):
+    - Zero application code and no new dependencies. Free-tier-first; nothing to
+      run, patch, or lock into. Reversible by removing one Traefik label.
+    - The dashboard is greenfield. There is no existing web-auth pattern to be
+      "consistent with": the ops-hub runtime (src/index.ts) is a bare
+      http.createServer serving ONLY /api/inngest, /api/status/webhook, and
+      /health* — an internal Inngest/webhook/health backend with no sessions,
+      no cookies, no framework. `OPS_HUB_APP_LOGIN_URL` is a Postgres DSN for the
+      ops_hub_app_login DB role (RLS path), NOT a web login URL — it implies
+      nothing about dashboard auth. So the "consistent with the rest of the app"
+      argument for app-level auth is false on inspection.
+    - The dashboard (T-59) is React/Next.js and does not exist yet. App-level
+      session auth would have to be either hand-rolled signed-cookie crypto in
+      the wrong app (the http server), or pre-written into a non-existent Next.js
+      codebase — speculative complexity this team's rules reject. Basic auth is a
+      reverse-proxy boundary decoupled from app code: it can be fully specified
+      and handed off NOW, independent of T-59, which is exactly what a gate that
+      "must land before T-59 is exposed" needs.
+    - Topology-agnostic: works whether T-59 ships as its own Coolify app or as a
+      path on an existing one — so choosing it now does NOT force the T-59
+      deployment-shape decision.
+
+  THREAT MODEL (what this does and, importantly, does NOT do):
+    - PROTECTS AGAINST: unauthenticated public-internet access to the dashboard
+      and the tenant-scoped data it will render (tickets, tenants, feature_flags).
+      A random 31-char credential over TLS makes brute-force / interception
+      infeasible; password entropy — not hash cost — is the defense (apr1/MD5
+      htpasswd hash is Traefik-compatible and sufficient here; no bcrypt dep).
+    - DOES NOT REPLACE the data-layer defense. Basic auth is a PERIMETER gate
+      only. Cross-tenant safety still depends entirely on T-59 querying via
+      ops_hub_app (never service_role at runtime) with explicit tenant/project
+      scoping, verified by T-60. A single admin user is NOT safe-by-default:
+      perimeter auth and RLS/tenant-scoping are independent layers and neither
+      substitutes for the other. Do not read "we have basic auth" as license to
+      loosen RLS.
+    - ACCEPTED LIMITATIONS (fine for a single-founder read-only MVP, documented
+      so they are chosen, not stumbled into): one shared credential (no per-user
+      attribution — but one user, read-only, no actions to attribute); no
+      logout/session-expiry UX (mitigation: close browser; credential is
+      rotatable by re-issuing the Traefik label); credential sent on every
+      request (mitigated by TLS).
+
+  UPGRADE TRIGGER (explicit, so the follow-on isn't lost): replace Traefik basic
+    auth with app-level session auth IN THE NEXT.JS APP when the Sprint-7
+    settings/WRITE area lands — a write surface needs CSRF protection, real
+    session lifecycle, and per-action audit that basic auth cannot provide. The
+    two live at different layers and swap cleanly; basic auth now does not make
+    that later work harder.
+
+  IMPLEMENTATION = decision + staged handoff (Tech Lead applies no infra config).
+    Credential generated now (openssl rand + `openssl passwd -apr1`), written to a
+    LOCAL scratchpad file only — never committed, never pasted in chat. Applied at
+    T-59 DEPLOY TIME: Production Manager adds the Traefik basic-auth label to the
+    dashboard app (owns infra config per handoff protocol); founder places the
+    secret. Tracked as FQ-59.
+
+  BLOCKING GATE ON T-59 (this is T-57's whole reason to exist): the dashboard
+    FQDN MUST return HTTP 401 to an unauthenticated request — confirmed by
+    `curl -sS -o /dev/null -w '%{http_code}' https://<dashboard-fqdn>/` returning
+    401 — BEFORE it is pointed at any public/reachable FQDN. The failure mode
+    T-57 prevents is deploying T-59 and forgetting the label. This check also
+    catches a mis-escaped hash ($ -> $$ in raw Traefik labels).
+```
