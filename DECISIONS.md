@@ -1246,3 +1246,35 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
 
   Data lineage: docs/data/t58-agent-cost-eval-health-lineage.md.
 ```
+
+### 2026-07-04 — T-58 post-merge: live LangFuse verification confirms the feed works, surfaces a real $0-cost gap
+
+```
+2026-07-04 [Data Engineer] T-58 follow-up. After PR #259 merged, dispatched
+  verify-agent-cost-feed.yml against real LangFuse Cloud data (not mocks) for
+  both ticket-triage (run 28724910365) and ticket-respond (run 28724966844).
+  Both HTTP 200. ticket-triage: 2363 traces matched over 60 days; a 20-row
+  sample parsed 20/20 with valid project_id/tenant_id, 0 skipped — including
+  real production ticket 3e9a23c5-c350-477f-a9f7-24556bda803c (T-51's E2E
+  validation ticket), correctly attributed to tts-prod/DNC-prod. Same result
+  shape for ticket-respond (24 matched, 20/20 sampled parsed cleanly). This
+  confirms the metadata contract, Basic auth, pagination, and parsing all work
+  end to end against production data — not just mocked unit tests.
+
+  REAL FINDING, NOT ROOT-CAUSED (flagging rather than guessing): every sampled
+  trace across both names returned totalCost = 0.000000. agent_cost_events
+  will faithfully mirror this once live — i.e. $0 per ticket — until whatever
+  is causing it is fixed. Most likely explanation: LangFuse Cloud computes
+  cost by matching a generation's recorded model name against its own pricing
+  catalog; if the LiteLLM-routed model names (triage-model/fallback-model
+  aliases, or the underlying NVIDIA NIM/Anthropic model strings) aren't
+  registered there, cost silently comes back 0 rather than erroring. Not
+  confirmed in this session — would require inspecting a raw
+  /api/public/observations generation's usage/costDetails fields, which is
+  past this task's scope (T-58 is the feed; this is a LangFuse project
+  configuration question). Tracked as a follow-up, not blocking T-58's
+  completion: the pipeline is correct, the input data it's relaying is
+  currently zero. Recorded here so it isn't lost before T-59's agent-cost
+  tile goes live and shows $0 across every project — that would otherwise
+  look like a dashboard bug when it's actually a LangFuse pricing-catalog gap.
+```
