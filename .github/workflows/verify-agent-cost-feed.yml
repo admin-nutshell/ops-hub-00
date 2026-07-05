@@ -1,0 +1,138 @@
+name: Verify agent-cost feed (read-only — real LangFuse data)
+
+# T-58: proves the agent-cost data feed's contract against REAL LangFuse Cloud
+# data, not just mocked unit tests. Calls the exact same endpoint/auth/field
+# shape as src/inngest/agent-cost-sync.ts (GET /api/public/traces, HTTP Basic
+# auth with the existing LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY secrets —
+# already present in this repo since 2026-06-22 for the LangFuse SDK; no new
+# credential is provisioned or required for this workflow) and prints real
+# per-trace cost + metadata to the step summary.
+#
+# Read-only: makes zero writes to LangFuse or Supabase. Safe to run any time,
+# including on a schedule, as a standing "is the feed still reachable" check —
+# separate from the actual sync, which runs as the `agent-cost-sync` Inngest
+# cron inside the deployed ops-hub app (gated by AGENT_COST_SYNC_ENABLED).
+
+on:
+  workflow_dispatch:
+    inputs:
+      trace_name:
+        description: "LangFuse trace name to query"
+        required: false
+        default: "ticket-triage"
+        type: choice
+        options:
+          - ticket-triage
+          - ticket-respond
+          - kb-learn
+      lookback_days:
+        description: "How many days back to query (fromTimestamp)"
+        required: false
+        default: "30"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Query real LangFuse traces + cost
+    runs-on: ubuntu-latest
+    env:
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      TRACE_NAME: ${{ inputs.trace_name || 'ticket-triage' }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '30' }}
+    steps:
+      - name: Verify LangFuse secrets are present
+        run: |
+          if [ -z "$LANGFUSE_PUBLIC_KEY" ] || [ -z "$LANGFUSE_SECRET_KEY" ]; then
+            echo "::error::LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY not set."
+            exit 1
+          fi
+
+      - name: Query GET /api/public/traces and summarize real cost data
+        run: |
+          python3 - <<'PYEOF'
+          import base64, json, os, sys, urllib.request, urllib.error, urllib.parse
+          from datetime import datetime, timedelta, timezone
+
+          public_key = os.environ["LANGFUSE_PUBLIC_KEY"]
+          secret_key = os.environ["LANGFUSE_SECRET_KEY"]
+          trace_name = os.environ["TRACE_NAME"]
+          lookback_days = int(os.environ["LOOKBACK_DAYS"])
+
+          base_url = "https://us.cloud.langfuse.com"
+          from_ts = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+
+          auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+          params = {
+              "name": trace_name,
+              "fromTimestamp": from_ts,
+              "page": "1",
+              "limit": "50",
+              "fields": "core,io,metrics",
+          }
+          query = urllib.parse.urlencode(params)
+          url = f"{base_url}/api/public/traces?{query}"
+
+          req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
+          try:
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  status = resp.status
+                  body = json.loads(resp.read().decode())
+          except urllib.error.HTTPError as e:
+              print(f"::error::LangFuse API returned HTTP {e.code}: {e.read().decode()[:300]}")
+              sys.exit(1)
+          except Exception as e:
+              print(f"::error::Request to LangFuse failed: {e}")
+              sys.exit(1)
+
+          traces = body.get("data", [])
+          meta = body.get("meta", {})
+
+          lines = []
+          lines.append(f"## Agent-cost feed verification — real LangFuse data")
+          lines.append("")
+          lines.append(f"Trace name: `{trace_name}` | Lookback: {lookback_days}d | HTTP {status}")
+          lines.append(f"Total matching traces (all pages): **{meta.get('totalItems', 'unknown')}**")
+          lines.append("")
+
+          if not traces:
+              lines.append(
+                  f"No `{trace_name}` traces found in the last {lookback_days} days. "
+                  "This means either no tickets have been processed recently, or "
+                  "ops-hub-staging is stopped (per T-54) and only prod is emitting traces — "
+                  "not a feed failure. Endpoint + auth are confirmed reachable (HTTP 200 above)."
+              )
+          else:
+              lines.append("| trace_id | timestamp | totalCost (USD) | project_id | tenant_id | ticket_id |")
+              lines.append("|---|---|---|---|---|---|")
+              parsed_ok, parsed_skip = 0, 0
+              for t in traces[:20]:
+                  md = t.get("metadata") or {}
+                  project_id = md.get("project_id", "—") if isinstance(md, dict) else "—"
+                  tenant_id = md.get("tenant_id", "—") if isinstance(md, dict) else "—"
+                  ticket_id = md.get("ticket_id", "—") if isinstance(md, dict) else "—"
+                  cost = t.get("totalCost")
+                  cost_str = f"{cost:.6f}" if isinstance(cost, (int, float)) else "null"
+                  if isinstance(md, dict) and md.get("project_id") and md.get("tenant_id"):
+                      parsed_ok += 1
+                  else:
+                      parsed_skip += 1
+                  lines.append(
+                      f"| `{t.get('id','')[:12]}…` | {t.get('timestamp','')} | {cost_str} | "
+                      f"`{project_id}` | `{tenant_id}` | `{ticket_id}` |"
+                  )
+              lines.append("")
+              lines.append(
+                  f"Rows the sync would write (has project_id + tenant_id): **{parsed_ok}** / "
+                  f"skipped (metadata contract not met): **{parsed_skip}**"
+              )
+              total_cost = sum(t.get("totalCost") or 0 for t in traces)
+              lines.append(f"Sum of totalCost over fetched page: **${total_cost:.6f} USD**")
+
+          summary = "\n".join(lines)
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(summary + "\n")
+          PYEOF

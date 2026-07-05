@@ -1181,3 +1181,68 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
     T-57 prevents is deploying T-59 and forgetting the label. This check also
     catches a mis-escaped hash ($ -> $$ in raw Traefik labels).
 ```
+
+### 2026-07-04 — T-58 Dashboard data feeds: agent-cost via LangFuse Traces API sync; eval-health shipped as an honest "pending real gate" placeholder
+
+```
+2026-07-04 [Data Engineer] T-58. Two new Supabase tables + one new Inngest
+  cron close the "no queryable source" gap T-59 would otherwise have hit
+  mid-build. Migration: supabase/migrations/20260704010000_t58_agent_cost_eval_health.sql.
+
+  AGENT COST — real sync, no new secret. `agent-cost-sync` (new Inngest cron,
+    src/inngest/agent-cost-sync.ts, */10 * * * *) calls LangFuse Cloud's public
+    Traces API (GET /api/public/traces, HTTP Basic auth: publicKey/secretKey —
+    the SAME LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY already in Coolify for the
+    SDK since T-09/T-31; nothing new to provision). fields=core,io,metrics
+    returns each trace's metadata (ticket_id/project_id/tenant_id — the exact
+    contract T-31 already established on all three cost-bearing traces:
+    ticket-triage, ticket-respond, kb-learn) and totalCost (confirmed against
+    LangFuse's live OpenAPI spec, cloud.langfuse.com/generated/api/openapi.yml
+    — omitting the 'metrics' field group returns totalCost=-1, so it is always
+    requested explicitly). Rows land in agent_cost_events (tenant/project-
+    scoped RLS, ticket_id deliberately NOT a FK so a later ticket
+    delete/rename can't break the sync) via ON CONFLICT (langfuse_trace_id) DO
+    UPDATE — cost can settle after a trace closes, so a later sync overwrites
+    rather than keeping a possibly-incomplete first value. A security_invoker
+    view, agent_cost_daily, gives T-59 a ready-made per-tenant/per-agent daily
+    rollup without re-deriving RLS-respecting aggregation logic itself.
+    Gated behind AGENT_COST_SYNC_ENABLED=true on exactly one environment
+    (same POLLING_ENABLED pattern as freescout-poller.ts) — LangFuse Cloud and
+    Supabase are both shared across staging/prod, so both environments running
+    this cron would double-fetch the same traces.
+
+  EVAL HEALTH — deliberately NOT faked. T-17's `Eval Gate` CI job is
+    `promptfoo validate` — schema validation only, no LLM-rubric grading, no
+    real pass/fail signal against agent behavior. Per this task's own explicit
+    guardrail (WORK.md T-58 row), storing that schema-check result as "eval
+    health" would misrepresent it as the charter's >95% quality KPI
+    (09_delivery.md) — so it wasn't done. Instead: eval_gate_runs is built and
+    RLS-protected but left genuinely EMPTY — pass_rate is a GENERATED column
+    that is structurally NULL for run_type='schema_validation', so even a
+    future careless writer cannot make a schema check masquerade as a quality
+    number. src/metrics/evalHealth.ts's getEvalHealth() returns an explicit
+    { status: "pending", message: "no eval-quality runs yet — pending real
+    gate" } when (as today) no run_type='llm_rubric' row exists. T-59 must
+    render that literally, not substitute a green check or a percentage.
+    Building the real LLM-rubric gate itself is out of scope here — eval
+    *design* is Evals Lead's territory per the team's own division of labor
+    (Data Engineer owns storage/query layer); this leaves the storage ready
+    for that follow-up without inventing data to fill it meanwhile.
+
+  VERIFIED THIS SESSION: pnpm typecheck/lint clean; 23 new unit tests green
+    (agent-cost-sync.ts, evalHealth.ts, agentCost.ts) alongside the existing 75
+    (nothing broken). A new read-only workflow,
+    .github/workflows/verify-agent-cost-feed.yml, queries the REAL LangFuse
+    Traces API with the real repo secrets and prints real trace/cost/metadata
+    rows to the run's step summary — this is what proves the feed against live
+    data rather than mocks alone; see WORK.md T-58 for the run link once
+    dispatched post-merge.
+
+  FOUNDER ACTION REQUIRED (not a business decision — routine migration
+    application, same as every prior migration; not filed as an FQ):
+    (1) apply the T-58 migration via Supabase SQL Editor as service_role;
+    (2) set AGENT_COST_SYNC_ENABLED=true on ops-hub-prod's Coolify env vars
+    and redeploy. No new secret needed for either step.
+
+  Data lineage: docs/data/t58-agent-cost-eval-health-lineage.md.
+```
