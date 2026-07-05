@@ -8,6 +8,7 @@ import { respondTicket } from "./inngest/ticket-respond";
 import { resolveTicket, sweepRespondedTickets } from "./inngest/ticket-resolve";
 import { sweepSlaBreaches } from "./inngest/sla-monitor";
 import { learnFromTicket } from "./inngest/kb-learn";
+import { syncAgentCosts } from "./inngest/agent-cost-sync";
 import { emitTrace } from "./langfuse";
 import { handleStatusWebhook } from "./statusWebhook";
 import { handleLitellmHealth } from "./healthLitellm";
@@ -25,6 +26,7 @@ const inngestHandler = serve({
     sweepRespondedTickets,
     sweepSlaBreaches,
     learnFromTicket,
+    syncAgentCosts,
   ],
 });
 
