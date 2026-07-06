@@ -77,7 +77,7 @@ jobs:
           ROLEINFO=$(psql "$LOGIN" -tAc "select current_user || '|' || (select rolsuper::text from pg_roles where rolname=current_user)" 2>/tmp/errA) || { echo "::error::login-role connect failed"; cat /tmp/errA; exit 1; }
           USER="${ROLEINFO%%|*}"; SUPER="${ROLEINFO##*|}"
           echo "login role: current_user=$USER rolsuper=$SUPER"
-          [ "$SUPER" = "f" ] || { echo "::error::login role bypasses RLS (rolsuper=$SUPER) — assertions would be vacuous"; exit 1; }
+          [ "$SUPER" = "false" ] || { echo "::error::login role bypasses RLS (rolsuper=$SUPER) — assertions would be vacuous"; exit 1; }
           # Fail-closed floor: no GUC set, RLS must return zero ticket rows.
           NGUC=$(psql "$LOGIN" -tAc "select count(*) from tickets")
           echo "no-GUC SELECT count(*) FROM tickets -> $NGUC"
@@ -90,7 +90,7 @@ jobs:
           ROLEINFO=$(psql "$SETUP_DB_URL" -tAc "select current_user || '|' || (select rolsuper::text from pg_roles where rolname=current_user)" 2>/tmp/errB) || { echo "::error::setup DSN connect failed"; cat /tmp/errB; exit 1; }
           USER="${ROLEINFO%%|*}"; SUPER="${ROLEINFO##*|}"
           echo "setup role: current_user=$USER rolsuper=$SUPER"
-          if [ "$SUPER" != "t" ]; then
+          if [ "$SUPER" != "true" ]; then
             echo "::warning::setup DSN role is NOT superuser (rolsuper=$SUPER) — fixture setup (project/tenant/audit_log NULL-tenant inserts) may fail; may need SUPABASE_SERVICE_ROLE_KEY."
           else
             echo "PROBE B PASS: setup role is superuser."

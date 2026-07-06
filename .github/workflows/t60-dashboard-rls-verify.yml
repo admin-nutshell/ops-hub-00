@@ -73,6 +73,20 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Diagnose DSN parsing (safe — no passwords printed)
+        run: |
+          node -e '
+            const { parse } = require("pg-connection-string");
+            for (const k of ["SUPABASE_SETUP_DB_URL", "OPS_HUB_APP_LOGIN_URL"]) {
+              const raw = process.env[k] || "";
+              const scheme = raw.slice(0, raw.indexOf("://") + 3) || "(no ://)";
+              try {
+                const p = parse(raw);
+                console.log(k, "scheme=" + scheme, JSON.stringify({ host: p.host, port: p.port, user: p.user, database: p.database, ssl: p.ssl, hasPassword: !!p.password }));
+              } catch (e) { console.log(k, "PARSE ERROR", e.message); }
+            }
+          '
+
       - name: Run T-60 live RLS verification
         run: pnpm vitest run src/integration/t60-dashboard-rls.test.ts --reporter=verbose
 
