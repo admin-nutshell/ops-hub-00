@@ -1,0 +1,40 @@
+name: Diagnose Ops Dashboard staging (read-only)
+
+# One-shot read-only diagnostic for the T-68/FQ-60 dashboard app: prints
+# status, ports_exposes, decoded custom_labels, and recent container logs.
+# Safe to dispatch repeatedly; makes no changes.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  DASHBOARD_UUID: "r14c3p7jzwo4wxyprd4yxyev"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: App detail
+        run: |
+          curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$DASHBOARD_UUID" -o /tmp/app.json
+          jq '{name, status, fqdn, ports_exposes, ports_mappings, health_check_enabled, docker_registry_image_name, docker_registry_image_tag}' /tmp/app.json
+          echo "=== custom_labels (decoded) ==="
+          jq -r '.custom_labels // ""' /tmp/app.json | base64 -d 2>/dev/null || echo "(none/undecodable)"
+
+      - name: Recent deployments
+        run: |
+          curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$DASHBOARD_UUID/deployments" -o /tmp/deps.json || true
+          jq '.[0:3]' /tmp/deps.json 2>/dev/null || cat /tmp/deps.json
+
+      - name: Container logs
+        run: |
+          curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$DASHBOARD_UUID/logs" 2>/dev/null | tail -c 6000 || echo "(no logs endpoint response)"
