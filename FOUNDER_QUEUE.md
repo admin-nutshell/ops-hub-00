@@ -4,10 +4,14 @@
 
 ---
 
-## FQ-62 — T-66: apply audit_log platform-select RLS migration via Supabase SQL Editor (service_role)
+## ✅ FQ-62 — T-66: apply audit_log platform-select RLS migration via Supabase SQL Editor (service_role)
 
-**Filed:** 2026-07-06
+**Filed:** 2026-07-06 | **Closed:** 2026-07-06
 **Filed by:** Security Lead (T-66)
+**Status:** RESOLVED — founder action complete
+
+**Resolution:** Founder applied the migration via Supabase SQL Editor as `service_role`. Confirmed live: `SELECT polname FROM pg_policy WHERE polname='audit_log_select_platform'` returns 1 row. QA re-ran `t60-dashboard-rls-verify.yml` on main → [run 28827786102](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28827786102), **21/21 pass**, Check 2 ("FIXED T-66") green — the platform-incidents feed is now readable, fail-closed and no-cross-tenant properties both hold. Code side (widened policy + corrected comment + updated test) was already merged in PR #265. T-66 marked done in WORK.md.
+
 **Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, T-11 runbook, ADR-0005 risk #2: "SQL Editor access is restricted to the founder; agents never hold service_role")
 **Deadline:** Non-blocking for the dashboard MVP go-live (the platform-incidents feed has no writer yet, so nothing user-visible changes today) — but required before T-60's Check 2 can go green and T-66 can close. Convenient to run in the same SQL Editor sitting as FQ-61.
 
