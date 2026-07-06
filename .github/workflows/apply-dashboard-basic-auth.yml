@@ -29,6 +29,17 @@ name: Apply FQ-59 Basic Auth to Ops Dashboard staging + verify (401/200)
 
 on:
   workflow_dispatch: {}
+  # Fallback trigger: this repo has a documented, unresolved GitHub-side quirk
+  # where a freshly-added workflow's workflow_dispatch trigger sometimes can't
+  # actually be invoked via API/CLI (HTTP 422 "Workflow does not have
+  # 'workflow_dispatch' trigger", even though the committed YAML plainly has
+  # one) -- see FOUNDER_QUEUE.md FQ-48 (backup-verification.yml hit the same
+  # thing; a full rename didn't fix it there either). repository_dispatch is
+  # a different API path (POST /repos/{owner}/{repo}/dispatches with an
+  # event_type, not tied to a specific workflow's cached trigger metadata),
+  # so it is used here as the reliable way to fire this workflow on demand.
+  repository_dispatch:
+    types: [apply-dashboard-basic-auth]
 
 permissions:
   contents: read
