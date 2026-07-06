@@ -4,6 +4,61 @@
 
 ---
 
+## FQ-61 — T-67: apply T-58 migration via Supabase SQL Editor (service_role) — blocks Sprint 6 dashboard MVP
+
+**Filed:** 2026-07-06
+**Filed by:** Production Manager (T-67, escalating a live blocker QA proved in T-60)
+**Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, T-11 runbook, ADR-0005 risk #2: "SQL Editor access is restricted to the founder; agents never hold service_role")
+**Deadline:** Blocking — this is the Sprint 6 dashboard-MVP critical path (T-58 → T-59 → T-60). QA cannot close T-60 or clear T-59 until this lands.
+
+**Context:** QA's live T-60 verification ([run 28807345913](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28807345913)) proved via `pg_class` (world-readable) that the T-58 migration —
+`supabase/migrations/20260704010000_t58_agent_cost_eval_health.sql` — was **never applied** to the live
+Supabase project (`yocoljutbiizdbfraapx`). `agent_cost_daily`, `agent_cost_events`, and `eval_gate_runs`
+are **absent** while `tenants`/`projects`/`tickets`/`audit_log` are present. This is exactly the
+"founder/ops action still required" step T-58's own WORK.md row flagged on 2026-07-04 and it was never
+actioned. Consequence: the agent-cost and eval-health dashboard tiles (2 of the 4 charter daily pillars)
+render "failed to load" against the live DB — graceful (each tile has its own try/catch, page still
+HTTP 200), **not a crash and not an RLS defect** (RLS/tenant-scoping was separately verified clean, no
+cross-tenant leak, by the same T-60 run).
+
+I (Production Manager) checked whether I could apply this myself before filing: no Coolify/Supabase MCP
+tool exists in my toolset, no `service_role`/`SUPABASE_DB_URL`-equivalent credential is present in my
+local environment, and the one CI-held Supabase credential this repo does use
+(`SUPABASE_STAGING_DB_URL`, a GitHub Actions secret) is — by this team's own established convention —
+reserved for read-only checks (`precheck-litellm-db-wall.yml`, `verify-litellm-db-isolation.yml`), never
+DDL. The clearest precedent: `restart-freescout-regrant.yml` deliberately *prints* a GRANT command "for
+founder" rather than executing it, even though that workflow already holds an equivalent owner-level
+connection. Writing a new CI workflow to auto-apply this migration would defeat a mitigation ADR-0005
+names explicitly, so I did not build one.
+
+**What's needed (founder, via Supabase Dashboard → SQL Editor, as the project owner/`service_role`):**
+1. Open the SQL Editor for project `yocoljutbiizdbfraapx` and run the full contents of
+   `supabase/migrations/20260704010000_t58_agent_cost_eval_health.sql` (forward-only, idempotent-safe —
+   creates 2 tables, 1 view, RLS policies, and grants; no destructive statements). Expected output:
+   `CREATE TABLE` (x2), `CREATE INDEX` (x4), `CREATE VIEW`, `ALTER TABLE`/`CREATE POLICY` (RLS), `GRANT` —
+   no errors, since QA already confirmed all three objects are absent (clean first apply, not a re-run).
+2. **Verify** with: `SELECT relname FROM pg_class WHERE relname IN ('agent_cost_events','agent_cost_daily','eval_gate_runs');`
+   — expect all 3 names back.
+3. Reply here or in WORK.md once done — Production Manager will then dispatch the already-prepared
+   `provision-agent-cost-sync-env.yml` workflow (sets `AGENT_COST_SYNC_ENABLED=true` on ops-hub-prod,
+   UUID `sbke5gqru1n54rj7gssgca2y`, and redeploys) and hand back to QA Manager to re-run
+   `t60-dashboard-rls-verify.yml` so Checks 1 & 3 go green and T-60/T-59 can close.
+
+**Single-project note (documentary, not live-probed — no DSN was read or printed to avoid any secret
+exposure):** ADR-0005 (`docs/adr/0005-prod-db-same-project.md`) records that staging and prod are the
+**same physical Supabase project** (`yocoljutbiizdbfraapx`), with environment separation done entirely
+via RLS-scoped rows (`tts`/`tts-prod` projects, distinct tenant UUIDs), not a separate schema or project.
+A schema-level migration like this one is therefore project-wide — **one apply covers both environments.**
+This is consistent with T-47's prod seed migration having applied cleanly against the same project with
+no separate "prod migration" step.
+
+**Recommendation:** Apply as written — no design decision needed, this is routine migration application
+(same pattern as every prior migration in this repo, all "applied via SQL Editor, not tracked by Supabase
+CLI" per CLAUDE.md). Recommend prioritizing given it's the sole blocker on the Sprint 6 dashboard-MVP
+anchor.
+
+---
+
 ## FQ-60 — T-59 Ops Dashboard needs a Coolify deploy target (doesn't exist yet)
 
 **Filed:** 2026-07-05
