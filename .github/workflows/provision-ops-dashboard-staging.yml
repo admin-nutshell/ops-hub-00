@@ -1,0 +1,340 @@
+name: Provision Ops Dashboard — staging Coolify app (T-59 / FQ-60, staging ONLY)
+
+# FQ-60: creates the Coolify deploy target for the read-only Ops Dashboard
+# (web/, T-59) — it does not have anywhere to run in Coolify yet, unlike
+# ops-hub's backend. Built from web/Dockerfile with the MONOREPO ROOT as
+# build context (docker build -f web/Dockerfile .) because the app imports
+# src/metrics/* directly (see web/next.config.js outputFileTracingRoot and
+# web/Dockerfile's own header comment).
+#
+# STAGING ONLY BY DESIGN. Do not repoint this at ops-hub-prod
+# (UUID sbke5gqru1n54rj7gssgca2y) — FQ-60's own recommendation is staging
+# first, confirm T-60's RLS audit, THEN promote (T-60 passed 2026-07-06 per
+# WORK.md/DECISIONS.md, but prod promotion is deliberately out of THIS
+# task's scope and is filed as a follow-up).
+#
+# Anchored by UUID once created — never by display name. ops-hub-staging and
+# ops-hub-prod both show as "ops-hub-app (localhost)" in the Coolify UI
+# (T-54 precedent) — a name-based /applications lookup is not trustworthy
+# for THOSE two apps. This workflow's own APP_NAME ("ops-hub-dashboard-staging")
+# has no prod counterpart yet, so a one-time name-based existence check here
+# (idempotent re-run guard only) is safe.
+#
+# What this does:
+#   1. Builds web/Dockerfile from the repo root, pushes to GHCR
+#   2. Discovers ops-hub-staging's Coolify project/server/environment
+#   3. Creates a new "dockerimage" Coolify app (idempotent — patches image
+#      tag and reuses the existing app if one of this name already exists)
+#   4. Starts a real deployment (pulls the pushed image, runs the container)
+#   5. Copies OPS_HUB_APP_LOGIN_URL from ops-hub-staging — the SAME DSN,
+#      never a newly generated credential — and sets
+#      POLLING_PROJECT_ID / POLLING_TENANT_ID (staging scope). Health-check
+#      URL overrides (OPS_HUB_HEALTH_URL etc.) are deliberately left unset —
+#      web/lib/health.ts defaults to the staging FQDNs from CLAUDE.md.
+#
+# What this deliberately does NOT do (Coolify API limitation — same
+# HTTP 422 "This field is not allowed" precedent as FQ-24/T-10): attach a
+# custom domain (fqdn). Coolify rejects `fqdn` on both create AND PATCH for
+# docker-image apps; it can only be set via the Coolify UI. See
+# FOUNDER_QUEUE.md FQ-60 for the consolidated ask. FQ-59's Traefik Basic
+# Auth gate is applied by a SEPARATE workflow,
+# apply-dashboard-basic-auth.yml, dispatched AFTER the domain exists —
+# there is no Traefik router to attach a middleware to until Coolify
+# generates host-routing labels for a real FQDN.
+#
+# Rollback: this app does not exist in prod and carries no traffic — the
+# rollback path is simply DELETE /applications/{uuid} via the Coolify API
+# (or the UI). Mean rollback time target < 15 minutes; this is a ~1 minute
+# action since nothing depends on this app existing.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ops-hub-dashboard-staging-provision
+  cancel-in-progress: false
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  IMAGE: "ghcr.io/${{ github.repository }}-dashboard"
+  APP_NAME: "ops-hub-dashboard-staging"
+  # Stable Coolify app UUID for ops-hub-staging — the SOURCE of the DSN we
+  # copy (never regenerate). Do NOT resolve by name (T-54 collision).
+  OPS_HUB_STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+  STAGING_PROJECT_ID: "00000000-0000-0000-0000-000000000001"
+  STAGING_TENANT_ID: "00000000-0000-0000-0000-000000000010"
+
+jobs:
+  provision:
+    name: Build image + create Coolify app + set env vars
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Guard — required secrets present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      # ── Build & push the dashboard image (repo-root context, web/Dockerfile) ──
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build dashboard image (repo root context, per web/Dockerfile header)
+        run: |
+          docker build \
+            -f web/Dockerfile \
+            --tag "$IMAGE:latest" \
+            --tag "$IMAGE:${{ github.sha }}" \
+            .
+
+      - name: Push dashboard image to GHCR
+        run: |
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          echo "Pushed $IMAGE:latest and $IMAGE:${{ github.sha }}"
+
+      # ── Discover ops-hub-staging's Coolify project/server/environment ───────
+      - name: Discover server UUID
+        id: server
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/servers.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers")
+          [ "$HTTP" = "200" ] || { echo "::error::/servers HTTP $HTTP"; cat /tmp/servers.json; exit 1; }
+          UUID=$(jq -r '.[0].uuid' /tmp/servers.json)
+          [ -n "$UUID" ] && [ "$UUID" != "null" ] || { echo "::error::no server found"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "Server UUID: $UUID"
+
+      - name: Discover project UUID + environment name (ops-hub-staging)
+        id: project
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/projects.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects")
+          [ "$HTTP" = "200" ] || { echo "::error::/projects HTTP $HTTP"; cat /tmp/projects.json; exit 1; }
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-staging") | .uuid' /tmp/projects.json)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "::error::ops-hub-staging project not found. Available:"
+            jq -r '.[].name' /tmp/projects.json
+            exit 1
+          fi
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+          HTTP2=$(curl -s --max-time 30 -o /tmp/proj_detail.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects/$UUID")
+          if [ "$HTTP2" = "200" ]; then
+            ENV_NAME=$(jq -r '.environments[0].name // "production"' /tmp/proj_detail.json)
+          else
+            ENV_NAME="production"
+          fi
+          echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+          echo "Project UUID: $UUID | Environment: $ENV_NAME"
+
+      # ── Create (or reuse) the dashboard app ──────────────────────────────────
+      - name: Check for an existing app of this name (idempotent re-run guard)
+        id: existing
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          [ "$HTTP" = "200" ] || { echo "::error::/applications HTTP $HTTP"; exit 1; }
+          UUID=$(jq -r --arg n "$APP_NAME" '[.[] | select(.name == $n)] | .[0].uuid // empty' /tmp/apps.json)
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          if [ -n "$UUID" ]; then
+            echo "Found existing '$APP_NAME' ($UUID) — will patch image tag + reuse, not recreate."
+          else
+            echo "No existing '$APP_NAME' app — will create."
+          fi
+
+      - name: Create dashboard app (dockerimage type)
+        id: create
+        if: steps.existing.outputs.uuid == ''
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg proj "${{ steps.project.outputs.uuid }}" \
+            --arg srv  "${{ steps.server.outputs.uuid }}" \
+            --arg env  "${{ steps.project.outputs.env_name }}" \
+            --arg name "$APP_NAME" \
+            --arg img  "$IMAGE" \
+            --arg tag  "${{ github.sha }}" \
+            '{
+              project_uuid:               $proj,
+              server_uuid:                $srv,
+              environment_name:           $env,
+              name:                       $name,
+              docker_registry_image_name: $img,
+              docker_registry_image_tag:  $tag,
+              ports_exposes:              "3000",
+              instant_deploy:             false
+            }')
+          HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/dockerimage" -d "$PAYLOAD")
+          echo "Create HTTP $HTTP"
+          jq . /tmp/create.json 2>/dev/null || cat /tmp/create.json
+          [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || { echo "::error::create failed (HTTP $HTTP)"; exit 1; }
+          UUID=$(jq -r '.uuid // .application_uuid // empty' /tmp/create.json)
+          [ -n "$UUID" ] || { echo "::error::no UUID in create response"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "Created $APP_NAME: $UUID"
+
+      - name: Resolve final app UUID
+        id: app
+        run: |
+          UUID="${{ steps.existing.outputs.uuid }}"
+          [ -z "$UUID" ] && UUID="${{ steps.create.outputs.uuid }}"
+          [ -n "$UUID" ] || { echo "::error::no app UUID resolved"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "Dashboard app UUID: $UUID"
+
+      - name: Patch image tag on existing app (re-run path only)
+        if: steps.existing.outputs.uuid != ''
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          PATCH_BODY=$(jq -n --arg img "$IMAGE" --arg tag "${{ github.sha }}" \
+            '{docker_registry_image_name:$img, docker_registry_image_tag:$tag}')
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$UUID" -d "$PATCH_BODY")
+          echo "PATCH image tag → HTTP $HTTP"
+          jq . /tmp/patch.json 2>/dev/null || cat /tmp/patch.json
+
+      # ── Env vars — reuse OPS_HUB_APP_LOGIN_URL, never regenerate ─────────────
+      - name: Fetch OPS_HUB_APP_LOGIN_URL from ops-hub-staging (masked)
+        id: login
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/staging_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-staging envs (HTTP $HTTP)"; exit 1; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/staging_envs.json | head -1)
+          [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL absent on ops-hub-staging"; exit 1; }
+          echo "::add-mask::$LOGIN"
+          echo "login=$LOGIN" >> "$GITHUB_OUTPUT"
+          echo "Fetched OPS_HUB_APP_LOGIN_URL (masked): $(printf '%s' "$LOGIN" | sed -E 's#(://[^:]+):[^@]*@#\1:***@#')"
+
+      - name: Set env vars on dashboard app (delete-then-set — Coolify Save appends rows, not upsert)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          LOGIN="${{ steps.login.outputs.login }}"
+
+          set_var() {
+            key="$1"; val="$2"
+            HTTP=$(curl -s --max-time 30 -o /tmp/envs_now.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs")
+            [ "$HTTP" = "200" ] || { echo "::error::cannot list envs for $UUID (HTTP $HTTP)"; exit 1; }
+            for eu in $(jq -r --arg k "$key" '.[] | select(.key==$k) | .uuid' /tmp/envs_now.json 2>/dev/null); do
+              curl -s --max-time 30 -o /dev/null -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$UUID/envs/$eu"
+            done
+            RC=$(curl -s --max-time 30 -o /tmp/set_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" \
+              -d "$(jq -n --arg k "$key" --arg v "$val" '{key:$k,value:$v}')")
+            echo "  $key → HTTP $RC"
+            [ "$RC" = "200" ] || [ "$RC" = "201" ] || { echo "::error::failed to set $key"; cat /tmp/set_resp.json; exit 1; }
+          }
+
+          set_var "OPS_HUB_APP_LOGIN_URL" "$LOGIN"
+          set_var "POLLING_PROJECT_ID" "$STAGING_PROJECT_ID"
+          set_var "POLLING_TENANT_ID" "$STAGING_TENANT_ID"
+          echo "Env vars set. Health-check URL overrides (OPS_HUB_HEALTH_URL / LITELLM_HEALTH_URL / FREESCOUT_HEALTH_URL) left unset — defaults to staging FQDNs."
+
+      # ── Deploy for real (pull image, start container) ────────────────────────
+      - name: Start dashboard app deployment
+        id: start
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 180 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/start")
+          echo "Start HTTP $HTTP"
+          jq . /tmp/start.json 2>/dev/null || cat /tmp/start.json
+          DEPLOYMENT_UUID=$(jq -r '.deployment_uuid // empty' /tmp/start.json 2>/dev/null || true)
+          echo "deployment_uuid=$DEPLOYMENT_UUID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Coolify deployment to complete
+        if: steps.start.outputs.deployment_uuid != ''
+        run: |
+          DEPLOYMENT_UUID="${{ steps.start.outputs.deployment_uuid }}"
+          UUID="${{ steps.app.outputs.uuid }}"
+          for i in $(seq 1 30); do
+            STATUS_HTTP=$(curl -s --max-time 15 -o /tmp/dep.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/deployments/$DEPLOYMENT_UUID" 2>/dev/null || true)
+            if [ "$STATUS_HTTP" = "200" ]; then
+              STATUS=$(jq -r '.status // empty' /tmp/dep.json 2>/dev/null || true)
+              echo "Attempt $i: deployment status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Deployment finished."; exit 0 ;;
+                failed|error)
+                  echo "=== Deployment FAILED — container logs ==="
+                  curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" \
+                    "$COOLIFY_BASE/applications/$UUID/logs" 2>/dev/null | tail -c 4000 || true
+                  exit 1
+                  ;;
+              esac
+            else
+              echo "Attempt $i: deployment API HTTP $STATUS_HTTP — waiting 10s"
+            fi
+            sleep 10
+          done
+          echo "WARNING: deployment status poll timed out after 5 min — check Coolify UI"
+
+      - name: Check whether a domain (fqdn) is already assigned
+        id: fqdn
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/app_final.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          FQDN=""
+          [ "$HTTP" = "200" ] && FQDN=$(jq -r '.fqdn // empty' /tmp/app_final.json | sed 's#,.*##; s#/$##')
+          echo "fqdn=$FQDN" >> "$GITHUB_OUTPUT"
+          if [ -n "$FQDN" ]; then
+            echo "Domain already assigned: $FQDN — apply-dashboard-basic-auth.yml can be dispatched now (no founder wait needed)."
+          else
+            echo "No fqdn set yet (expected — API rejects fqdn for docker-image apps). Also probing the direct sslip.io preview path Coolify sometimes exposes by default (seen working for litellm-staging):"
+            # Try to discover the server's public IP from /servers so the probe isn't hardcoded.
+            SRV_IP=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/servers" | jq -r '.[0].ip // empty')
+            if [ -n "$SRV_IP" ]; then
+              PREVIEW="http://${UUID}.${SRV_IP}.sslip.io"
+              PHTTP=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$PREVIEW/") || true
+              echo "Probe: $PREVIEW/ -> HTTP $PHTTP"
+              if [ "$PHTTP" != "000" ]; then
+                echo "preview_url=$PREVIEW" >> "$GITHUB_OUTPUT"
+                echo "Direct sslip.io path is routable (HTTP $PHTTP) even without a custom domain."
+              else
+                echo "sslip.io preview path not reachable either — a real founder-attached domain is required before FQ-59 can be applied/verified."
+              fi
+            fi
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "=== Ops Dashboard staging app ==="
+          echo "App name: $APP_NAME"
+          echo "App UUID: ${{ steps.app.outputs.uuid }}"
+          echo "Image:    $IMAGE:${{ github.sha }}"
+          echo "fqdn (if any): ${{ steps.fqdn.outputs.fqdn }}"
+          echo "sslip.io preview (if reachable): ${{ steps.fqdn.outputs.preview_url }}"
+          echo ""
+          echo "Remaining (founder, Coolify UI — API rejects fqdn for docker-image apps, HTTP 422, same limitation as FQ-24):"
+          echo "  1. Coolify -> ops-hub-staging project -> $APP_NAME -> General/Settings -> Domains"
+          echo "  2. Set: https://ops-dashboard-staging.inatechshell.ca (no separate DNS record expected -- same wildcard pattern as the other *.inatechshell.ca staging apps)"
+          echo "  3. Save, then click Deploy (full redeploy, not Restart)"
+          echo "Then dispatch apply-dashboard-basic-auth.yml to apply the FQ-59 Basic Auth gate and run the blocking 401/200 verification."
