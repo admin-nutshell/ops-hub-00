@@ -1,0 +1,86 @@
+name: T-60 dashboard RLS verify (live — real staging DB)
+
+# T-60 (QA Manager): the LIVE half of the dashboard RLS/tenant-scoping sign-off.
+# Runs src/integration/t60-dashboard-rls.test.ts against the REAL shared Supabase
+# database, proving all 5 Security-Lead checks (per-widget fail-closed, agent_cost
+# invoker, audit_log platform-row CONCERN, eval_gate_runs scoping).
+#
+# ALL DB work — assertions AND fixtures — runs as ops_hub_app_login (fetched from
+# the ops-hub-STAGING Coolify app; non-superuser, RLS engaged). There is NO
+# superuser/service_role credential in CI by design (CLAUDE.md #3). Fixtures are
+# created with INSERT inside a transaction that always ROLLBACKs, so nothing is
+# ever committed and the shared prod rows are never read or mutated. This is the
+# exact runtime path the Inngest functions use.
+#
+# The positive-control + insert/rollback suite needs a real, FK-valid scope, so we
+# feed it the staging POLLING_PROJECT_ID / POLLING_TENANT_ID (non-secret scope
+# UUIDs). If those are absent, that suite auto-skips and the per-widget fail-closed
+# checks still run.
+#
+# NEVER prints a DSN password (masked; passed to the test step via $GITHUB_ENV).
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+
+jobs:
+  verify:
+    name: Live RLS verification of dashboard queries
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Guard — required secrets present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+
+      - name: Fetch login DSN + staging scope from Coolify (DSN masked → $GITHUB_ENV)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$STAGING_UUID/envs")
+          echo "GET staging($STAGING_UUID)/envs -> HTTP $HTTP"
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read staging envs (HTTP $HTTP)"; head -c 300 /tmp/envs.json; exit 1; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/envs.json | head -1)
+          if [ -z "$LOGIN" ] || [ "$LOGIN" = "null" ]; then
+            echo "::error::OPS_HUB_APP_LOGIN_URL absent on staging app"; exit 1
+          fi
+          echo "::add-mask::$LOGIN"
+          echo "Fetched ops_hub_app_login DSN: $(printf '%s' "$LOGIN" | sed -E 's#(://[^:]+):[^@]*@#\1:***@#')"
+          echo "OPS_HUB_APP_LOGIN_URL=$LOGIN" >> "$GITHUB_ENV"
+          # Non-secret scope UUIDs — needed for FK-valid insert/rollback fixtures.
+          SP=$(jq -r '.[] | select(.key=="POLLING_PROJECT_ID") | .value' /tmp/envs.json | head -1)
+          ST=$(jq -r '.[] | select(.key=="POLLING_TENANT_ID") | .value' /tmp/envs.json | head -1)
+          echo "staging scope: POLLING_PROJECT_ID=${SP:-<unset>} POLLING_TENANT_ID=${ST:-<unset>}"
+          [ -n "$SP" ] && [ "$SP" != "null" ] && echo "STAGING_PROJECT_ID=$SP" >> "$GITHUB_ENV" || true
+          [ -n "$ST" ] && [ "$ST" != "null" ] && echo "STAGING_TENANT_ID=$ST" >> "$GITHUB_ENV" || true
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run T-60 live RLS verification
+        run: pnpm vitest run src/integration/t60-dashboard-rls.test.ts --reporter=verbose
+
+      - name: Note
+        if: always()
+        run: |
+          echo "If green: every dashboard widget is confirmed fail-closed and tenant-scoped against the real DB."
+          echo "Record the T-60 sign-off in WORK.md / DECISIONS.md."

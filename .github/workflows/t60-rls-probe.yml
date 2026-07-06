@@ -1,0 +1,133 @@
+name: T-60 RLS probe (read-only — de-risk + prod env audit)
+
+# T-60 (QA Manager): read-only pre-flight for the dashboard RLS live-verification.
+# Does TWO things, both read-only (zero writes to any DB or Coolify env):
+#
+#   1. Credential de-risk for the full harness (t60-dashboard-rls-verify.yml):
+#      - fetch OPS_HUB_APP_LOGIN_URL from the ops-hub-STAGING Coolify app,
+#        confirm the role is NON-superuser (assertions must run as a role that
+#        does NOT bypass RLS, or every check is a vacuous pass), and confirm a
+#        no-GUC read of `tickets` returns 0 rows (fail-closed floor).
+#      - confirm SUPABASE_STAGING_DB_URL is a superuser role (needed by the
+#        harness for fixture setup/teardown, which must bypass RLS by design).
+#
+#   2. Check 5 of the T-60 action list — prod env audit: report the EFFECTIVE
+#      POLLING_PROJECT_ID / POLLING_TENANT_ID / OPS_HUB_APP_LOGIN_URL presence on
+#      the ops-hub-PROD Coolify app, anchored by UUID (not display name — staging
+#      and prod both show as "ops-hub-app"). This matters because web/lib/project.ts
+#      silently falls back to hardcoded staging UUIDs if these are unset.
+#
+# NEVER prints any DSN password (masked + redacted). POLLING_* values are
+# non-secret scope UUIDs (already in WORK.md plaintext) and are printed in full.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+  PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+
+jobs:
+  probe:
+    name: RLS credential de-risk + prod env audit
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      SETUP_DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+    steps:
+      - name: Guard — required secrets present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+          [ -n "$SETUP_DB_URL" ] || { echo "::error::SUPABASE_STAGING_DB_URL not set"; exit 1; }
+          echo "::add-mask::$SETUP_DB_URL"
+
+      - name: Fetch staging OPS_HUB_APP_LOGIN_URL from Coolify (masked)
+        id: staging
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/staging_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$STAGING_UUID/envs")
+          echo "GET staging($STAGING_UUID)/envs -> HTTP $HTTP"
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read staging envs (HTTP $HTTP)"; head -c 300 /tmp/staging_envs.json; exit 1; }
+
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/staging_envs.json | head -1)
+          if [ -z "$LOGIN" ] || [ "$LOGIN" = "null" ]; then
+            echo "::error::OPS_HUB_APP_LOGIN_URL absent on staging app — cannot run RLS assertions"; exit 1
+          fi
+          echo "::add-mask::$LOGIN"
+          # Redacted structural view (password stripped) — safe to print.
+          REDACTED=$(printf '%s' "$LOGIN" | sed -E 's#(://[^:]+):[^@]*@#\1:***@#')
+          echo "staging OPS_HUB_APP_LOGIN_URL present. Redacted: $REDACTED"
+          # Persist masked value to a file for later steps (never echoed).
+          printf '%s' "$LOGIN" > /tmp/login_dsn
+          echo "polling_project=$(jq -r '.[] | select(.key=="POLLING_PROJECT_ID") | .value' /tmp/staging_envs.json | head -1)" >> "$GITHUB_OUTPUT"
+          echo "polling_tenant=$(jq -r '.[] | select(.key=="POLLING_TENANT_ID") | .value' /tmp/staging_envs.json | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Probe A — ops_hub_app_login is NON-superuser + no-GUC tickets = 0 rows
+        run: |
+          LOGIN=$(cat /tmp/login_dsn); echo "::add-mask::$LOGIN"
+          ROLEINFO=$(psql "$LOGIN" -tAc "select current_user || '|' || (select rolsuper::text from pg_roles where rolname=current_user)" 2>/tmp/errA) || { echo "::error::login-role connect failed"; cat /tmp/errA; exit 1; }
+          USER="${ROLEINFO%%|*}"; SUPER="${ROLEINFO##*|}"
+          echo "login role: current_user=$USER rolsuper=$SUPER"
+          [ "$SUPER" = "false" ] || { echo "::error::login role bypasses RLS (rolsuper=$SUPER) — assertions would be vacuous"; exit 1; }
+          # Fail-closed floor: no GUC set, RLS must return zero ticket rows.
+          NGUC=$(psql "$LOGIN" -tAc "select count(*) from tickets")
+          echo "no-GUC SELECT count(*) FROM tickets -> $NGUC"
+          [ "$NGUC" = "0" ] || { echo "::error::no-GUC tickets returned $NGUC rows — RLS floor NOT fail-closed"; exit 1; }
+          echo "PROBE A PASS: login role is non-superuser and fail-closed."
+
+      - name: Probe B — setup DSN diagnostic (informational; harness no longer needs it)
+        continue-on-error: true
+        run: |
+          echo "::add-mask::$SETUP_DB_URL"
+          # NOTE: the live harness (t60-dashboard-rls-verify.yml) creates fixtures via
+          # INSERT-then-ROLLBACK on the ops_hub_app_login role — it needs NO superuser
+          # DSN. This probe is kept only to characterise SUPABASE_STAGING_DB_URL.
+          if ROLEINFO=$(psql "$SETUP_DB_URL" -tAc "select current_user || '|' || (select rolsuper::text from pg_roles where rolname=current_user)" 2>/tmp/errB); then
+            echo "setup role: current_user=${ROLEINFO%%|*} rolsuper=${ROLEINFO##*|}"
+          else
+            echo "::notice::SUPABASE_STAGING_DB_URL is not a usable DSN (len=${#SETUP_DB_URL}) — expected; harness uses insert/rollback on the login role instead."
+            head -c 200 /tmp/errB || true
+          fi
+
+      - name: Check 5 — prod env audit (Coolify, by UUID)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/prod_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$PROD_UUID/envs")
+          echo "GET prod($PROD_UUID)/envs -> HTTP $HTTP"
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read prod envs (HTTP $HTTP)"; head -c 300 /tmp/prod_envs.json; exit 1; }
+
+          NAME=$(curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$PROD_UUID" | jq -r '.name // "?"')
+          PP=$(jq -r '.[] | select(.key=="POLLING_PROJECT_ID") | .value' /tmp/prod_envs.json | head -1)
+          PT=$(jq -r '.[] | select(.key=="POLLING_TENANT_ID") | .value' /tmp/prod_envs.json | head -1)
+          PLOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/prod_envs.json | head -1)
+          if [ -n "$PLOGIN" ] && [ "$PLOGIN" != "null" ]; then
+            echo "::add-mask::$PLOGIN"
+            PRED=$(printf '%s' "$PLOGIN" | sed -E 's#(://[^:]+):[^@]*@#\1:***@#')
+            LOGIN_PRESENT="yes  (redacted: $PRED)"
+          else
+            LOGIN_PRESENT="NO — MISSING (web/lib/project.ts would silently fall back to hardcoded staging UUIDs!)"
+          fi
+
+          {
+            echo "## Check 5 — ops-hub-PROD env audit (UUID $PROD_UUID, app name: $NAME)"
+            echo ""
+            echo "| var | effective value on prod |"
+            echo "|---|---|"
+            echo "| POLLING_PROJECT_ID | \`${PP:-<UNSET>}\` |"
+            echo "| POLLING_TENANT_ID | \`${PT:-<UNSET>}\` |"
+            echo "| OPS_HUB_APP_LOGIN_URL | $LOGIN_PRESENT |"
+            echo ""
+            echo "Expected prod scope (per WORK.md T-47): POLLING_PROJECT_ID=00000000-0000-0000-0000-000000000003 (tts-prod), POLLING_TENANT_ID=00000000-0000-0000-0000-000000000030 (DNC-prod)."
+            echo "web/lib/project.ts fallback UUIDs (staging): project 00..0001, tenant 00..0010 — a drift/unset here silently scopes prod to staging."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Verdict
+        run: |
+          echo "Probe complete. If PROBE A + B passed, the full harness (t60-dashboard-rls-verify.yml) can run live."

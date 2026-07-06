@@ -1381,3 +1381,83 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   ends up on). Not filing a redundant copy of FQ-59's content — FQ-60
   references it.
 ```
+
+### 2026-07-06 — T-60 RLS/tenant-scoping verification: live-proven no cross-tenant leak; surfaced a missing-migration blocker on T-59
+
+```
+2026-07-06 [QA Manager] T-60. Verified the dashboard query layer against the
+  REAL Supabase DB — analytical audit (Security Lead's code + migration-SQL
+  cross-read) PLUS a live harness run through the exact runtime path.
+
+  METHOD (the reusable decision worth recording): CI has NO service_role /
+  superuser DB credential by design (CLAUDE.md #3), and SUPABASE_STAGING_DB_URL
+  turned out to be a bare hostname (38 chars, no scheme/@/:), not a usable DSN.
+  So instead of privileged fixture setup, every fixture is created with
+  INSERT-then-ROLLBACK on the ops_hub_app_login role itself — the identical
+  non-superuser, RLS-bound path the Inngest functions and the dashboard use at
+  runtime. Nothing is ever committed; the shared tts-prod/DNC-prod rows are
+  never read or mutated; teardown is automatic (ROLLBACK). Positive controls
+  run against real staging scope (POLLING_PROJECT_ID/TENANT_ID) so "everything
+  returns 0" can't be a vacuous pass on a dead connection. Harness lives at
+  src/integration/t60-dashboard-rls.test.ts (login-DSN-gated, skips in normal
+  CI); driven by two throwaway workflows (t60-dashboard-rls-verify.yml,
+  t60-rls-probe.yml). This pattern is how any future RLS check runs live
+  without ever pulling an elevated credential into CI.
+
+  RESULT — the load-bearing security question ("can any dashboard widget return
+  cross-tenant rows?") is answered LIVE: NO.
+    verify run 28807345913: 14/21 pass. probe run 28806935632: Probe A + Check 5.
+    - Check 4 (literal exit criterion, one fail-closed check per widget): PASS
+      for all 7 existing widgets. No-GUC reads of projects/tenants/tickets/
+      audit_log → 0 rows; all 7 widget functions return empty for a random
+      scope; CROSS-TENANT PROOF: an inserted ticket is invisible under a
+      different tenant's GUC even when the WHERE targets its id, visible under
+      the correct one.
+    - Check 2 (audit_log platform-incident CONCERN): PASS LIVE. Inserted a
+      tenant_id IS NULL platform_incident (confirmed via rowCount=1 — RETURNING
+      is RLS-filtered to 0, so not used), then the exact getPlatformIncidents
+      SQL with only the project GUC returned 0 rows. Proves the CONCERN with a
+      real row present: audit_log_select USING (tenant_id = current_tenant_id())
+      denies NULL-tenant rows unconditionally → that feed is dead code
+      (deny-direction; NOT a leak). Row rolled back. Fix tracked as T-66.
+    - Check 5 (prod env audit, ops-hub-PROD by UUID sbke5gqru1n54rj7gssgca2y):
+      PASS. POLLING_PROJECT_ID=00…0003 (tts-prod), POLLING_TENANT_ID=00…0030
+      (DNC-prod) — correct prod scope, NOT web/lib/project.ts's staging
+      fallback UUIDs; OPS_HUB_APP_LOGIN_URL present. No silent-fallback risk.
+
+  BLOCKER FOUND (this is why T-59 is NOT done): the T-58 migration
+  (20260704010000_t58_agent_cost_eval_health.sql) was never applied to the live
+  DB. pg_class — world-readable, no per-role row filtering — reports
+  agent_cost_daily, agent_cost_events, eval_gate_runs as ABSENT while
+  tenants/projects/tickets/audit_log are present. All 7 failing checks are
+  42P01 undefined_table, 1:1 with the absent objects (NOT RLS failures).
+  getSlaAttainment/getOpenTicketCounts ran without column errors → t22/t39 are
+  applied, so it is specifically T-58 that is missing (this is T-58's own
+  still-pending "apply via SQL Editor as service_role" step). Because the
+  dashboard connects via this same OPS_HUB_APP_LOGIN_URL (web/lib/queries.ts),
+  the agent-cost + eval-health tiles (2 of the 4 charter daily pillars) render
+  "failed to load" cards on the live DB — GRACEFUL (each tile has its own
+  try/catch → ErrorNote, page still HTTP 200), not a crash, and a
+  missing-migration defect, not an RLS defect. Single Supabase project per
+  CLAUDE.md ⇒ prod DB is the same DB ⇒ prod dashboard affected too (inferred;
+  both DSNs target db postgres:5432, host masked by CI — not tested against
+  prod on purpose).
+
+  DISPOSITION:
+    - RLS/tenant-scoping (T-60's actual remit): VERIFIED, no cross-tenant leak.
+    - Checks 1 & 3 (agent_cost_daily security_invoker; eval_gate_runs scoping):
+      analytical proof stands (migration defines both correctly); live check
+      deferred until the objects exist.
+    - T-60 stays OPEN (literal "one live check per widget" met 7/9); the 7
+      failing tests are left intentionally RED — the red IS the finding.
+    - T-59 must NOT be declared done until T-67 lands.
+    - T-67 (Production Manager): apply the T-58 migration to the live DB, then
+      re-run t60-dashboard-rls-verify.yml — the 7 RED checks go green,
+      completing T-60 and clearing T-59.
+    - T-66 (Security Lead): widen audit_log_select to
+      tenant_id = current_tenant_id() OR (tenant_id IS NULL AND
+      project_id = current_project_id()); fix the misleading comment at
+      dashboard.ts ~L434-437 and the test at dashboard.test.ts ~L246-279.
+    - Did NOT fix either issue in this task — verification, not remediation;
+      and service_role is not held by QA (CLAUDE.md #3).
+```
