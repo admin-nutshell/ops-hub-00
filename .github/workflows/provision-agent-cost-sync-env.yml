@@ -1,0 +1,143 @@
+name: Provision AGENT_COST_SYNC_ENABLED env var on ops-hub-prod (one-shot)
+
+# T-58/T-67: sets AGENT_COST_SYNC_ENABLED=true on ops-hub-prod in Coolify, then
+# redeploys, so the agent-cost-sync Inngest cron (src/inngest/agent-cost-sync.ts,
+# */10 * * * *) begins writing real rows into agent_cost_events.
+#
+# DO NOT DISPATCH THIS UNTIL the T-58 migration
+# (supabase/migrations/20260704010000_t58_agent_cost_eval_health.sql) has been
+# applied to the live Supabase project (yocoljutbiizdbfraapx) and
+# agent_cost_events/agent_cost_daily/eval_gate_runs are confirmed to exist.
+# Enabling the cron before the migration lands means every 10-minute run
+# throws 42P01 (undefined_table) against live prod — see FOUNDER_QUEUE.md FQ-61
+# and WORK.md T-67. QA (T-60) verified the tables are absent as of 2026-07-06.
+#
+# Anchored by UUID, NOT by app name — ops-hub-staging and ops-hub-prod both
+# display as "ops-hub-app (localhost)" in the Coolify UI (T-54(A) app-name
+# collision precedent). Do not add a name-search step.
+#
+# Prerequisites (GitHub Actions secrets):
+#   COOLIFY_API_TOKEN — Coolify admin API token
+#
+# Rollback: re-run with mode=delete to remove the var and redeploy. Mean
+# rollback time target < 15 minutes (Production Manager quality bar) — this
+# workflow's delete+redeploy path takes ~2-3 minutes end to end.
+#
+# After running (mode=set): watch Sentry/LangFuse for the first agent-cost-sync
+# cron run (up to 10 min) and confirm it completes without 42P01. Cost values
+# will legitimately read $0 per T-58's separate LangFuse-pricing-catalog
+# finding — that is expected and out of scope here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'set = provision var + redeploy; delete = remove var + redeploy'
+        required: false
+        default: 'set'
+        type: choice
+        options: ['set', 'delete']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ops-hub-prod-env
+  cancel-in-progress: false
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  # Stable Coolify app UUID for ops-hub-prod — do NOT resolve by name.
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  PROD_URL: "https://ops-hub-prod.inatechshell.ca"
+
+jobs:
+  provision:
+    name: Provision AGENT_COST_SYNC_ENABLED on ops-hub-prod
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Delete existing AGENT_COST_SYNC_ENABLED entries (idempotent, handles Coolify's append-not-upsert Save)
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "AGENT_COST_SYNC_ENABLED")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Existing AGENT_COST_SYNC_ENABLED entries: $COUNT"
+          for eu in $(jq -r '.[] | select(.key == "AGENT_COST_SYNC_ENABLED") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs/$eu")
+            echo "  DELETE AGENT_COST_SYNC_ENABLED $eu → HTTP $DEL"
+          done
+
+      - name: Set AGENT_COST_SYNC_ENABLED=true
+        if: inputs.mode == 'set'
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/set-var.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs" \
+            -d "$(jq -n --arg k "AGENT_COST_SYNC_ENABLED" --arg v "true" '{key:$k,value:$v}')")
+          echo "POST AGENT_COST_SYNC_ENABLED=true → HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set AGENT_COST_SYNC_ENABLED (HTTP $HTTP)"
+            cat /tmp/set-var.json | head -5
+            exit 1
+          fi
+          echo "AGENT_COST_SYNC_ENABLED set to: true"
+
+      - name: Redeploy ops-hub-prod
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Redeploying ops-hub-prod ($OPS_HUB_PROD_UUID) to apply env change..."
+          HTTP=$(curl -s --max-time 180 -o /tmp/deploy.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/restart")
+          echo "Redeploy → HTTP $HTTP"
+          jq . /tmp/deploy.json 2>/dev/null || cat /tmp/deploy.json
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "WARNING: redeploy returned HTTP $HTTP — verify manually in Coolify."
+          else
+            echo "Redeploy queued. Waiting 30s..."
+            sleep 30
+          fi
+
+      - name: Verify ops-hub-prod health
+        run: |
+          set -euo pipefail
+          MAX=6; WAIT=10; n=0
+          until curl -sf --max-time 10 "$PROD_URL/health" > /tmp/health.json 2>/dev/null; do
+            n=$((n+1))
+            if [ $n -ge $MAX ]; then
+              echo "ERROR: health check failed after $((MAX*WAIT))s"
+              cat /tmp/health.json 2>/dev/null || true
+              exit 1
+            fi
+            echo "  [$n/$MAX] waiting ${WAIT}s..."
+            sleep $WAIT
+          done
+          echo "ops-hub-prod healthy:"
+          cat /tmp/health.json
+
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=== AGENT_COST_SYNC_ENABLED (mode=${{ inputs.mode }}) on ops-hub-prod ==="
+          echo "UUID: $OPS_HUB_PROD_UUID"
+          echo ""
+          echo "Next steps (mode=set only):"
+          echo "  1. Confirm agent_cost_events/agent_cost_daily/eval_gate_runs exist in Supabase"
+          echo "     BEFORE this run, or the cron will 42P01 every 10 minutes."
+          echo "  2. Watch Sentry + LangFuse for the first agent-cost-sync cron run (<=10 min)."
+          echo "  3. Expect \$0 costs per T-58's LangFuse pricing-catalog finding — out of scope here."
+          echo "  4. Notify QA Manager to re-run t60-dashboard-rls-verify.yml."

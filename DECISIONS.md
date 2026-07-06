@@ -1461,3 +1461,55 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
     - Did NOT fix either issue in this task — verification, not remediation;
       and service_role is not held by QA (CLAUDE.md #3).
 ```
+
+### 2026-07-06 — T-67: escalated the T-58 migration apply to the founder, did not build an auto-apply workflow
+
+```
+2026-07-06 [Production Manager] T-67. Before escalating, checked whether this
+  role could apply supabase/migrations/20260704010000_t58_agent_cost_eval_health.sql
+  directly: no Coolify/Supabase MCP tool is registered in this environment, no
+  service_role/DB-URL-equivalent credential exists locally, and the one Supabase
+  credential this repo's CI does hold (SUPABASE_STAGING_DB_URL, a GitHub Actions
+  secret used via psql) is, by this team's own established convention, scoped to
+  READ-ONLY checks only — precheck-litellm-db-wall.yml and
+  verify-litellm-db-isolation.yml both use it for canary SELECTs, never DDL.
+  The decisive precedent: restart-freescout-regrant.yml already holds an
+  equivalent owner-level DB connection in CI and STILL prints its GRANT command
+  "for founder" rather than executing it. ADR-0005 names the same boundary as a
+  named mitigation for its risk #2 ("SQL Editor access is restricted to the
+  founder; agents never hold service_role"). Writing a new workflow to
+  auto-apply this migration would defeat a documented control, not route around
+  a gap — so none was built. Filed FQ-61 with the exact SQL + a one-line verify
+  query instead.
+
+  SINGLE-PROJECT CONFIRMATION (part of this task): ADR-0005
+  (docs/adr/0005-prod-db-same-project.md) documents that staging and prod are
+  the same physical Supabase project (yocoljutbiizdbfraapx) — environment
+  separation is RLS-scoped rows (tts/tts-prod, distinct tenant UUIDs), not a
+  separate schema or project. This is a documentary confirmation, not a live
+  probe — deliberately did not read or print either environment's
+  OPS_HUB_APP_LOGIN_URL DSN to check this, since that risks printing a
+  credential-bearing string for no informational gain beyond what ADR-0005
+  already settles. Conclusion: a schema-level apply against yocoljutbiizdbfraapx
+  is project-wide — one apply covers both staging and prod.
+
+  PREPARED FOR WHEN FQ-61 CLOSES: new one-shot workflow
+  .github/workflows/provision-agent-cost-sync-env.yml, modeled on the existing
+  provision-litellm-triage-model-env.yml idempotent set/delete pattern, but
+  anchored to ops-hub-prod's UUID (sbke5gqru1n54rj7gssgca2y) rather than by
+  app name — ops-hub-staging and ops-hub-prod both display as "ops-hub-app
+  (localhost)" in Coolify (per the standing project note on this collision).
+  Deliberately NOT dispatched this session: enabling AGENT_COST_SYNC_ENABLED
+  before the migration lands means the agent-cost-sync cron (*/10 * * * *)
+  throws 42P01 against live prod on every run until it does — sequencing, not
+  an oversight. Rollback path: re-run with mode=delete (removes the var,
+  redeploys) — well under the <15-minute mean-rollback-time bar.
+
+  DISPOSITION: T-67 is NOT done. Status is "escalated + prepared, pending
+  founder apply" — the correct terminal state for a task whose blocking step
+  is a credential this role must not hold. Once FQ-61 closes: (1) confirm the
+  three objects exist, (2) dispatch provision-agent-cost-sync-env.yml
+  (mode=set), (3) confirm health check + no 42P01 in Sentry/LangFuse on the
+  first cron run, (4) hand back to QA Manager to re-run
+  t60-dashboard-rls-verify.yml so Checks 1 & 3 go green and T-60/T-59 close.
+```
