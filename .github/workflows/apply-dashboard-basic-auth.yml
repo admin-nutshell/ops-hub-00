@@ -124,8 +124,7 @@ jobs:
               MW_VALUE="dashauth"
             fi
             WORK=$(echo "$WORK" | grep -vE "^traefik\.http\.routers\.${R}\.middlewares=")
-            NEW_MW_LINES="${NEW_MW_LINES}traefik.http.routers.${R}.middlewares=${MW_VALUE}
-"
+            NEW_MW_LINES="${NEW_MW_LINES}$(printf 'traefik.http.routers.%s.middlewares=%s\n' "$R" "$MW_VALUE")"
           done
 
           NEW_LABELS=$(printf '%s\ntraefik.http.middlewares.dashauth.basicauth.users=%s\n%s' "$WORK" "$USERHASH" "$NEW_MW_LINES")
