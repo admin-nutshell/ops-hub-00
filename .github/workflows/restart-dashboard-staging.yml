@@ -1,0 +1,58 @@
+name: Restart Ops Dashboard staging (force container recreation)
+
+# One-shot: stop then start ops-hub-dashboard-staging via the Coolify API
+# (no SSH / no shell on the VPS -- API calls only), to see whether a full
+# stop+start (rather than the single /start done at creation) resolves a
+# persistent 502 from Traefik despite the container's own logs showing the
+# Next.js server up and listening on port 3000.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  DASHBOARD_UUID: "r14c3p7jzwo4wxyprd4yxyev"
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Stop
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/stop.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$DASHBOARD_UUID/stop")
+          echo "Stop -> HTTP $HTTP"
+          cat /tmp/stop.json 2>/dev/null || true
+          sleep 10
+
+      - name: Start
+        run: |
+          HTTP=$(curl -s --max-time 60 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$DASHBOARD_UUID/start")
+          echo "Start -> HTTP $HTTP"
+          cat /tmp/start.json 2>/dev/null || true
+
+      - name: Poll status until running, then wait a bit more for Traefik
+        run: |
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$DASHBOARD_UUID")
+            STATUS=$(echo "$HTTP" | jq -r '.status // empty')
+            echo "Attempt $i: status=$STATUS"
+            echo "$STATUS" | grep -q '^running' && break
+            sleep 10
+          done
+          echo "Waiting additional 30s for Traefik docker-provider refresh..."
+          sleep 30
+
+      - name: Final status + fqdn
+        run: |
+          curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$DASHBOARD_UUID" | jq '{status, fqdn, restart_count, last_online_at}'
