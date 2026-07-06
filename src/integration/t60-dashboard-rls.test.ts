@@ -66,6 +66,31 @@ describe.skipIf(!hasLogin)("T-60 dashboard RLS / tenant-scoping (live, login-rol
 
   beforeAll(async () => {
     pool = new Pool({ connectionString: OPS_HUB_APP_LOGIN_URL!, max: 4 });
+    // Diagnostic: pg_class lists every relation in the DB across all schemas,
+    // readable by any role regardless of privilege. This unambiguously reports
+    // whether each object the dashboard queries actually EXISTS in the live DB
+    // (distinguishes "RLS returned 0" from "relation is absent / migration
+    // not applied"). Printed once, never fails the suite.
+    const rel = await pool.query<{ relname: string; kind: string; schema: string }>(
+      `SELECT relname, relkind::text AS kind, relnamespace::regnamespace::text AS schema
+         FROM pg_class
+        WHERE relname IN
+          ('tenants','projects','tickets','audit_log','agent_cost_daily','agent_cost_events','eval_gate_runs')
+        ORDER BY relname`
+    );
+    const found = new Map(rel.rows.map((r) => [r.relname, `${r.schema} (relkind=${r.kind})`]));
+    const report = [
+      "tenants",
+      "projects",
+      "tickets",
+      "audit_log",
+      "agent_cost_daily",
+      "agent_cost_events",
+      "eval_gate_runs",
+    ]
+      .map((n) => `  ${n}: ${found.get(n) ?? "*** ABSENT (not in this DB) ***"}`)
+      .join("\n");
+    console.log(`T-60 live-DB relation existence (via pg_class):\n${report}`);
   });
   afterAll(async () => {
     if (pool) await pool.end();
@@ -87,6 +112,11 @@ describe.skipIf(!hasLogin)("T-60 dashboard RLS / tenant-scoping (live, login-rol
       const { rows } = await c.query<T>(sql, params);
       await c.query("COMMIT");
       return rows;
+    } catch (err) {
+      // MUST clear the aborted-transaction state before returning the client to
+      // the pool, or the next borrower hits 25P02 (in_failed_sql_transaction).
+      await c.query("ROLLBACK").catch(() => {});
+      throw err;
     } finally {
       c.release();
     }
