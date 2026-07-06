@@ -20,19 +20,21 @@ jobs:
     env:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
     steps:
-      - name: App detail
+      - name: App detail (full JSON — network/destination fields included)
         run: |
           curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$DASHBOARD_UUID" -o /tmp/app.json
-          jq '{name, status, fqdn, ports_exposes, ports_mappings, health_check_enabled, docker_registry_image_name, docker_registry_image_tag}' /tmp/app.json
+          jq 'del(.custom_labels)' /tmp/app.json
           echo "=== custom_labels (decoded) ==="
           jq -r '.custom_labels // ""' /tmp/app.json | base64 -d 2>/dev/null || echo "(none/undecodable)"
 
-      - name: Recent deployments
+      - name: Compare against a known-working app (ops-hub-staging) for network/destination fields
         run: |
           curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
-            "$COOLIFY_BASE/applications/$DASHBOARD_UUID/deployments" -o /tmp/deps.json || true
-          jq '.[0:3]' /tmp/deps.json 2>/dev/null || cat /tmp/deps.json
+            "$COOLIFY_BASE/applications/ajqplom2mghf5a8h6vf1q6xg" -o /tmp/staging.json
+          jq '{name, status, fqdn, destination_uuid, connect_to_docker_network, docker_network, additional_networks, server_uuid}' /tmp/app.json
+          echo "--- ops-hub-staging (known working, for comparison) ---"
+          jq '{name, status, fqdn, destination_uuid, connect_to_docker_network, docker_network, additional_networks, server_uuid}' /tmp/staging.json
 
       - name: Container logs
         run: |
