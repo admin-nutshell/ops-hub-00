@@ -266,7 +266,11 @@ describe("getPlatformIncidents", () => {
 
     const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls[1]).toEqual(["SELECT set_config('app.current_project', $1, true)", [PROJECT_ID]]);
-    expect(calls.length).toBe(4); // BEGIN, project GUC, SELECT, COMMIT — no tenant GUC call
+    // BEGIN, project GUC, SELECT, COMMIT — no tenant GUC call. Tenant scoping
+    // for this feed comes from the RLS policy (audit_log_select_platform,
+    // migration 20260706000000 / T-66: tenant_id IS NULL AND project_id =
+    // current_project_id()), not from a GUC set in this function.
+    expect(calls.length).toBe(4);
 
     expect(rows).toEqual([
       {
@@ -278,7 +282,7 @@ describe("getPlatformIncidents", () => {
     ]);
   });
 
-  it("returns an empty array today (honest — nothing writes this table yet), never fabricated rows", async () => {
+  it("maps an empty result set to [] (shape), never fabricates rows", async () => {
     const client = makeClient([{ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }]);
     const pool = makePool(client);
     const rows = await getPlatformIncidents(pool, PROJECT_ID);

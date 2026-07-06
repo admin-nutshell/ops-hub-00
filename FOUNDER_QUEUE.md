@@ -4,6 +4,50 @@
 
 ---
 
+## FQ-62 — T-66: apply audit_log platform-select RLS migration via Supabase SQL Editor (service_role)
+
+**Filed:** 2026-07-06
+**Filed by:** Security Lead (T-66)
+**Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, T-11 runbook, ADR-0005 risk #2: "SQL Editor access is restricted to the founder; agents never hold service_role")
+**Deadline:** Non-blocking for the dashboard MVP go-live (the platform-incidents feed has no writer yet, so nothing user-visible changes today) — but required before T-60's Check 2 can go green and T-66 can close. Convenient to run in the same SQL Editor sitting as FQ-61.
+
+**Context:** T-60's live verification (Check 2, DECISIONS.md 2026-07-06) proved that platform-incident
+rows in `audit_log` (`tenant_id IS NULL`) are unreadable through RLS: the original `audit_log_select`
+policy is `USING (tenant_id = current_tenant_id())`, and `NULL = current_tenant_id()` is never true, so
+`getPlatformIncidents` (the dashboard's platform-incidents feed) was permanently empty — dead code in
+the deny direction, **not a leak**. T-66's fix is a new migration,
+`supabase/migrations/20260706000000_t66_widen_audit_log_select_platform.sql`, which adds a second,
+`ops_hub_app`-only permissive SELECT policy (`audit_log_select_platform`) exposing NULL-tenant rows only
+when the caller's project GUC matches the row's `project_id`. The original `audit_log_select` policy is
+untouched; the `authenticated` role gains nothing (split-policy decision + fail-closed derivation
+recorded in DECISIONS.md 2026-07-06 T-66 — that entry is the security review for this widening).
+
+**Independent of FQ-61/T-67 — no ordering dependency:** `audit_log` predates T-58's tables (it ships in
+the initial schema), so this migration applies cleanly whether or not FQ-61's T-58 migration has landed.
+Run them in either order, or in the same sitting.
+
+**What's needed (founder, via Supabase Dashboard → SQL Editor, as the project owner/`service_role`):**
+1. Open the SQL Editor for project `yocoljutbiizdbfraapx` and run the full contents of
+   `supabase/migrations/20260706000000_t66_widen_audit_log_select_platform.sql` (forward-only,
+   idempotent — `drop policy if exists` then `create policy`; no table/data changes, no destructive
+   statements). Expected output: `DROP POLICY` (no-op notice on first apply) then `CREATE POLICY`.
+2. **Verify** with: `SELECT polname FROM pg_policy WHERE polrelid = 'audit_log'::regclass;`
+   — expect `audit_log_select_platform` in the list (alongside the existing `audit_log_insert` and
+   `audit_log_select`).
+3. Reply here or in WORK.md once done — QA Manager then re-dispatches `t60-dashboard-rls-verify.yml`
+   to confirm Check 2 goes green (the harness now asserts the NULL-tenant row IS visible with the
+   correct project scope and hidden without one).
+
+**Single-project note:** per ADR-0005 (`docs/adr/0005-prod-db-same-project.md`), staging and prod are
+the same physical Supabase project (`yocoljutbiizdbfraapx`) — **one apply covers both environments.**
+
+**Recommendation:** Apply as written — the policy widening was deliberately scoped to the narrowest
+read path that fixes the bug (ops_hub_app only, project-matched, NULL-tenant rows only) and security
+review is already recorded; this is routine migration application, same pattern as every prior
+migration in this repo.
+
+---
+
 ## FQ-61 — T-67: apply T-58 migration via Supabase SQL Editor (service_role) — blocks Sprint 6 dashboard MVP
 
 **Filed:** 2026-07-06

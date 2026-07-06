@@ -411,6 +411,9 @@ export async function getTicketQueue(
 // that's correct, not a bug. The dashboard must render "no incidents
 // recorded in this feed" plus the Cstate-not-wired-in caveat, never invent
 // rows to fill the panel.
+// (Until T-66, an RLS deny bug ALSO hid any such row even if one existed;
+//  that is now fixed — today the feed is empty purely because no writer
+//  exists yet, not because RLS blocks it.)
 // ---------------------------------------------------------------------------
 export type PlatformIncident = {
   id: string;
@@ -431,10 +434,14 @@ export async function getPlatformIncidents(
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    // Platform incidents are project-scoped, not tenant-scoped (audit_log
-    // allows tenant_id IS NULL for platform-level events — see initial schema
-    // comment). No app.current_tenant GUC is set on purpose: this query only
-    // ever reads tenant_id IS NULL rows, so tenant scoping does not apply.
+    // Platform incidents are project-scoped: they live in audit_log with
+    // tenant_id IS NULL and a non-null project_id. Only the project GUC is
+    // set; audit_log_select_platform (migration 20260706000000, T-66)
+    // exposes a NULL-tenant row exactly when the caller's project GUC
+    // matches that row's project_id. Before T-66 the tenant-only USING
+    // clause on audit_log_select denied every NULL-tenant row, so this feed
+    // was silently empty (deny-direction dead code, not a leak) — see
+    // DECISIONS.md 2026-07-06 T-60 Check 2 / T-66.
     await client.query("SELECT set_config('app.current_project', $1, true)", [projectId]);
     const { rows } = await client.query<IncidentRow>(
       `SELECT id::text, timestamp::text, action, payload
