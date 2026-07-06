@@ -21,7 +21,17 @@ RUN pnpm --filter ops-hub-dashboard build
 # Runtime: Next.js standalone output — self-contained, no monorepo checkout needed.
 FROM node:20-slim AS runtime
 WORKDIR /app
-ENV NODE_ENV=production PORT=3000
+# HOSTNAME must be 0.0.0.0 -- Next.js standalone's server.js binds to
+# process.env.HOSTNAME, and Docker sets HOSTNAME=<container-id> by default
+# in every container. Without this override the server binds to the
+# container's own hostname interface instead of all interfaces, so Traefik
+# (or any reverse proxy on the docker network) gets connection-refused ->
+# 502, even though the container itself is healthy and "Ready". Confirmed
+# live 2026-07-06 (T-68): ops-hub-dashboard-staging 502'd from Traefik while
+# its own container logs showed "Ready in 0ms" listening on the container ID
+# hostname. Matches Next.js's own official with-docker example, which sets
+# this for the same reason.
+ENV NODE_ENV=production PORT=3000 HOSTNAME=0.0.0.0
 RUN addgroup --system --gid 1001 appgroup && \
     adduser --system --uid 1001 --ingroup appgroup appuser
 COPY --from=build /app/web/.next/standalone ./
