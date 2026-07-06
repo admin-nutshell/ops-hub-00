@@ -188,7 +188,7 @@ describe.skipIf(!hasLogin)("T-60 dashboard RLS / tenant-scoping (live, login-rol
     it("getDailyCostForTenant → []", async () => {
       expect((await getDailyCostForTenant(pool, rp(), rp(), 3650)).length).toBe(0);
     });
-    it("getPlatformIncidents → [] (also: dead/no-op per the CONCERN)", async () => {
+    it("getPlatformIncidents → [] (wrong-scope negative control: a non-matching project GUC sees no platform rows, post-T-66)", async () => {
       expect((await getPlatformIncidents(pool, rp(), 20)).length).toBe(0);
     });
     it("getEvalHealth → pending (no llm_rubric rows visible)", async () => {
@@ -274,7 +274,7 @@ describe.skipIf(!hasLogin)("T-60 dashboard RLS / tenant-scoping (live, login-rol
       }
     });
 
-    it("Check 2 (CONCERN): a NULL-tenant platform_incident exists yet getPlatformIncidents SQL returns 0", async () => {
+    it("Check 2 (FIXED T-66): a NULL-tenant platform_incident IS visible with the project GUC, and hidden without it", async () => {
       const c = await pool.connect();
       try {
         await c.query("BEGIN");
@@ -285,7 +285,8 @@ describe.skipIf(!hasLogin)("T-60 dashboard RLS / tenant-scoping (live, login-rol
            VALUES ($1, NULL, 'qa-t60', 'platform_incident', 'incident', $2)`,
           [P(), JSON.stringify({ run_tag: RUN_TAG })]
         );
-        // Confirm creation via rowCount — RETURNING would be RLS-filtered to 0 and mislead.
+        // Confirm creation via rowCount — RETURNING would have been RLS-filtered
+        // pre-T-66 and could still mislead; rowCount is policy-independent.
         expect(ins.rowCount).toBe(1);
         // Exact getPlatformIncidents SQL (project GUC only, no tenant GUC):
         const feed = await c.query(
@@ -294,10 +295,23 @@ describe.skipIf(!hasLogin)("T-60 dashboard RLS / tenant-scoping (live, login-rol
             ORDER BY timestamp DESC LIMIT $3`,
           [P(), ["platform_incident"], 20]
         );
-        // CONCERN proven: audit_log_select USING (tenant_id = current_tenant_id())
-        // denies the NULL-tenant row unconditionally, so the row exists but the
-        // feed can never surface it — RLS is the sole excluder (WHERE matched).
-        expect(feed.rowCount).toBe(0);
+        // FIXED (T-66, migration 20260706000000): audit_log_select_platform
+        // (`tenant_id IS NULL AND project_id = current_project_id()`) now
+        // exposes the row to the matching project scope. Pre-T-66 this was 0
+        // — the original audit_log_select tenant-only USING clause denied
+        // every NULL-tenant row unconditionally.
+        expect(feed.rowCount).toBe(1);
+        // FAIL-CLOSED proof: clear the project GUC and re-run the identical
+        // query — current_project_id() resolves to NULL, `project_id = NULL`
+        // is never true, so an unscoped session sees nothing.
+        await c.query("SELECT set_config('app.current_project', '', true)");
+        const unscoped = await c.query(
+          `SELECT id::text FROM audit_log
+            WHERE project_id = $1 AND tenant_id IS NULL AND action = ANY($2)
+            ORDER BY timestamp DESC LIMIT $3`,
+          [P(), ["platform_incident"], 20]
+        );
+        expect(unscoped.rowCount).toBe(0);
       } finally {
         await c.query("ROLLBACK");
         c.release();

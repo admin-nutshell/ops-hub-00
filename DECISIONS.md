@@ -1513,3 +1513,81 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   first cron run, (4) hand back to QA Manager to re-run
   t60-dashboard-rls-verify.yml so Checks 1 & 3 go green and T-60/T-59 close.
 ```
+
+### 2026-07-06 — T-66: audit_log platform-incident RLS fix — split policy, ops_hub_app only (this entry is the security review of the widened read path)
+
+```
+2026-07-06 [Security Lead] T-66. Fixed the RLS deny bug T-60 proved live in
+  Check 2: audit_log_select is USING (tenant_id = current_tenant_id()), and for
+  a platform-level row (tenant_id IS NULL) `NULL = current_tenant_id()` is NULL
+  — never true — so RLS denied every such row unconditionally and the
+  dashboard's platform-incidents feed (getPlatformIncidents,
+  src/metrics/dashboard.ts) was permanently empty. Deny-direction dead code,
+  NOT a leak; but WORK.md's T-66 row required a security review of the widened
+  policy before it ships, and this entry is that review.
+
+  THE DECISION (Option A — split policy — over Option B — rewriting
+  audit_log_select's USING clause to
+  `tenant_id = current_tenant_id() OR (tenant_id IS NULL AND project_id =
+  current_project_id())` as originally sketched in the T-60 disposition):
+  new migration 20260706000000_t66_widen_audit_log_select_platform.sql ADDS a
+  second permissive SELECT policy instead of touching the original:
+
+    create policy audit_log_select_platform on audit_log
+      for select to ops_hub_app
+      using (tenant_id is null and project_id = current_project_id());
+
+  WHY SPLIT, WHY ops_hub_app ONLY (minimal blast radius):
+    - Permissive policies OR together per-role, so ops_hub_app now sees
+      (tenant branch, via the untouched audit_log_select) OR (platform
+      branch, via this policy) — functionally identical to Option B FOR
+      ops_hub_app, the only role that actually reads this feed.
+    - The single-clause rewrite (Option B) would also have granted the
+      `authenticated` role (Supabase Auth portal users, JWT-scoped) the new
+      NULL-tenant read path, because audit_log_select is `to ops_hub_app,
+      authenticated`. There is NO current authenticated consumer of platform
+      incidents — the dashboard runs on ops_hub_app_login — so widening
+      authenticated would have been unused surface area, exactly what a
+      review should refuse. If a portal need arises later, extend it
+      deliberately in its own migration (same doctrine as the C1 note on
+      audit_log_insert in 20260618120100).
+    - The original migration is forward-only; adding a policy respects that.
+      The original audit_log_select is NOT dropped or altered.
+
+  FAIL-CLOSED DERIVATION (from 20260618120100 L43-63): current_project_id() is
+  coalesce(jwt claim, nullif(GUC,''))::uuid → NULL when no project scope is
+  set, and `project_id = NULL` evaluates to NULL — never true — so an
+  unscoped session matches nothing under the new policy. A NULL-tenant +
+  NULL-project row also stays hidden (NULL = NULL is NULL). Proven live-style
+  in the updated harness: t60-dashboard-rls.test.ts Check 2 now asserts the
+  row IS visible (rowCount=1) with the matching project GUC AND returns 0
+  after `set_config('app.current_project','',true)` clears the scope — both
+  inside the existing INSERT-then-ROLLBACK transaction (nothing commits, no
+  service_role, per the T-60 method).
+
+  NO CROSS-TENANT / CROSS-PROJECT READ INTRODUCED (confirmation): the new
+  branch requires tenant_id IS NULL, so no tenant's rows become visible to any
+  other tenant — tenant-owned audit rows are reachable only through the
+  untouched tenant-equality policy. Project scoping is exact-match equality on
+  the caller's own project GUC/claim, so project A's platform incidents are
+  invisible to a session scoped to project B (the harness's random-scope
+  getPlatformIncidents negative control now genuinely exercises this).
+  Predicate is covered by audit_log_project_tenant_ts_idx — no new index
+  needed. audit_log remains append-only for the app role (no update/delete
+  policy exists; this migration adds SELECT surface only).
+
+  ALSO IN THIS CHANGE: corrected the actively-misleading comment in
+  getPlatformIncidents ("tenant scoping does not apply" — that tenant-only
+  scoping was precisely what hid the rows) and its HONEST STATE block (feed is
+  now empty only because no writer exists yet, not because RLS blocks it);
+  reframed dashboard.test.ts narrative (mocked pg — no RLS surface there);
+  Check 2 retitled "FIXED T-66"; wrong-scope negative control relabeled.
+
+  APPLY PATH: FQ-62 — founder runs the migration via SQL Editor as
+  service_role (CLAUDE.md #3; same boundary T-67/FQ-61 held). Independent of
+  FQ-61 — audit_log predates T-58's tables, no ordering dependency; one apply
+  covers staging + prod (ADR-0005, single Supabase project). Post-apply
+  verify: SELECT polname FROM pg_policy WHERE polrelid='audit_log'::regclass
+  → expect audit_log_select_platform; then QA re-dispatches
+  t60-dashboard-rls-verify.yml and Check 2 goes green.
+```
