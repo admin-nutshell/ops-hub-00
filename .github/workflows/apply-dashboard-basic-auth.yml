@@ -37,7 +37,7 @@ env:
   COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
   # Stable Coolify app UUID for ops-hub-dashboard-staging, pinned after
   # provision-ops-dashboard-staging.yml created it -- do NOT resolve by name.
-  DASHBOARD_UUID: "__DASHBOARD_UUID__"
+  DASHBOARD_UUID: "r14c3p7jzwo4wxyprd4yxyev"
 
 jobs:
   apply-and-verify:
