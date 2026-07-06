@@ -74,16 +74,29 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Diagnose DSN parsing (safe — no passwords printed)
+        continue-on-error: true
         run: |
           node -e '
-            const { parse } = require("pg-connection-string");
             for (const k of ["SUPABASE_SETUP_DB_URL", "OPS_HUB_APP_LOGIN_URL"]) {
               const raw = process.env[k] || "";
-              const scheme = raw.slice(0, raw.indexOf("://") + 3) || "(no ://)";
+              const info = {
+                len: raw.length,
+                scheme: raw.slice(0, Math.max(0, raw.indexOf("://"))) || "(no ://)",
+                ats: (raw.match(/@/g) || []).length,
+                colons: (raw.match(/:/g) || []).length,
+              };
               try {
-                const p = parse(raw);
-                console.log(k, "scheme=" + scheme, JSON.stringify({ host: p.host, port: p.port, user: p.user, database: p.database, ssl: p.ssl, hasPassword: !!p.password }));
-              } catch (e) { console.log(k, "PARSE ERROR", e.message); }
+                const u = new URL(raw);
+                info.hostname = u.hostname;
+                info.port = u.port || "(none)";
+                info.hasUser = !!u.username;
+                info.hasPassword = !!u.password;
+                info.pathname = u.pathname;
+                info.search = u.search;
+              } catch (e) {
+                info.urlError = e.message;
+              }
+              console.log(k, JSON.stringify(info));
             }
           '
 
