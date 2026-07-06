@@ -1591,3 +1591,20 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   → expect audit_log_select_platform; then QA re-dispatches
   t60-dashboard-rls-verify.yml and Check 2 goes green.
 ```
+
+---
+
+### 2026-07-06 — T-66 close: FQ-62 migration applied live, verified, closed
+
+```
+2026-07-06 [Security Lead] T-66/FQ-62 closed. Founder applied
+  supabase/migrations/20260706000000_t66_widen_audit_log_select_platform.sql
+  via Supabase SQL Editor as service_role. Live confirmation: SELECT polname
+  FROM pg_policy WHERE polname='audit_log_select_platform' → 1 row. QA
+  re-ran t60-dashboard-rls-verify.yml on main → run 28827786102, 21/21 pass,
+  Check 2 ("FIXED T-66": NULL-tenant platform_incident visible with the
+  project GUC, hidden without it) green — fail-closed and no-cross-tenant
+  properties both hold. Code (widened policy, corrected dashboard.ts
+  comment ~L434-437, updated test) already merged via PR #265. T-66 marked
+  done in WORK.md; FQ-62 marked resolved in FOUNDER_QUEUE.md.
+```
