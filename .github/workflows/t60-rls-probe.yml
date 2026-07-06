@@ -22,10 +22,6 @@ name: T-60 RLS probe (read-only — de-risk + prod env audit)
 
 on:
   workflow_dispatch: {}
-  # TEMPORARY (removed before merge): lets this run on the QA branch without
-  # first landing on the default branch (workflow_dispatch requires that).
-  push:
-    branches: [qa/t60-rls-verification]
 
 permissions:
   contents: read
