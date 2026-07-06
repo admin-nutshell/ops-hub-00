@@ -84,16 +84,18 @@ jobs:
           [ "$NGUC" = "0" ] || { echo "::error::no-GUC tickets returned $NGUC rows — RLS floor NOT fail-closed"; exit 1; }
           echo "PROBE A PASS: login role is non-superuser and fail-closed."
 
-      - name: Probe B — setup DSN is superuser (needed for fixture setup)
+      - name: Probe B — setup DSN diagnostic (informational; harness no longer needs it)
+        continue-on-error: true
         run: |
           echo "::add-mask::$SETUP_DB_URL"
-          ROLEINFO=$(psql "$SETUP_DB_URL" -tAc "select current_user || '|' || (select rolsuper::text from pg_roles where rolname=current_user)" 2>/tmp/errB) || { echo "::error::setup DSN connect failed"; cat /tmp/errB; exit 1; }
-          USER="${ROLEINFO%%|*}"; SUPER="${ROLEINFO##*|}"
-          echo "setup role: current_user=$USER rolsuper=$SUPER"
-          if [ "$SUPER" != "true" ]; then
-            echo "::warning::setup DSN role is NOT superuser (rolsuper=$SUPER) — fixture setup (project/tenant/audit_log NULL-tenant inserts) may fail; may need SUPABASE_SERVICE_ROLE_KEY."
+          # NOTE: the live harness (t60-dashboard-rls-verify.yml) creates fixtures via
+          # INSERT-then-ROLLBACK on the ops_hub_app_login role — it needs NO superuser
+          # DSN. This probe is kept only to characterise SUPABASE_STAGING_DB_URL.
+          if ROLEINFO=$(psql "$SETUP_DB_URL" -tAc "select current_user || '|' || (select rolsuper::text from pg_roles where rolname=current_user)" 2>/tmp/errB); then
+            echo "setup role: current_user=${ROLEINFO%%|*} rolsuper=${ROLEINFO##*|}"
           else
-            echo "PROBE B PASS: setup role is superuser."
+            echo "::notice::SUPABASE_STAGING_DB_URL is not a usable DSN (len=${#SETUP_DB_URL}) — expected; harness uses insert/rollback on the login role instead."
+            head -c 200 /tmp/errB || true
           fi
 
       - name: Check 5 — prod env audit (Coolify, by UUID)
