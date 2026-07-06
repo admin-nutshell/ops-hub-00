@@ -5,6 +5,10 @@ node_modules
 # Lockfile (managed by pnpm, not prettier)
 pnpm-lock.yaml
 
+# web/ is its own pnpm workspace package (T-59 dashboard) with its own
+# next lint / prettier config surface — governed there, not by the root gate.
+web
+
 # Pre-existing planning & documentation content (hand-authored; not governed by prettier)
 # Prettier governs the app scaffold (src/, config files) only; T-15 does not reformat docs.
 docs

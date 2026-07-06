@@ -1278,3 +1278,106 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   tile goes live and shows $0 across every project — that would otherwise
   look like a dashboard bug when it's actually a LangFuse pricing-catalog gap.
 ```
+
+### 2026-07-05 — T-59 Ops Dashboard: read-only build, monorepo import strategy, and two honesty-over-polish calls
+
+```
+2026-07-05 [Frontend Engineer] T-59. Shipped the read-only Ops Dashboard as a
+  new Next.js 16 + React 19 + Tailwind 4 app at web/ (new pnpm workspace
+  member, added to pnpm-workspace.yaml). Single page, no Settings tab/forms —
+  that whole surface stays deferred to Sprint 7 per WORK.md.
+
+  MONOREPO IMPORT STRATEGY (the one architectural call worth recording):
+    web/ has NO SQL of its own. Every dashboard query — the pre-existing
+    agentCost.ts/evalHealth.ts (T-58) plus 6 new functions this task added
+    (getOpenTicketCounts, getSlaAttainment, getDeflectionRate,
+    getPipelineStageCounts, getTicketQueue, getPlatformIncidents,
+    getScopeLabel) — lives in src/metrics/ in the ROOT package, not web/lib.
+    web/lib/queries.ts imports those functions directly via relative path
+    (../../src/metrics/*) and just binds them to this dashboard's configured
+    project/tenant scope. Reasoning: T-60's RLS/tenant-scoping audit needs
+    ONE place to look, not SQL scattered across a web/ app and a src/ backend
+    that could drift apart. Verified this actually works end-to-end (not just
+    typechecks): `next build` compiles cross-package TS from src/ cleanly,
+    and next.config.js sets outputFileTracingRoot to the monorepo root +
+    serverExternalPackages: ["pg"] so the standalone Docker build (web/
+    Dockerfile, built from repo root with `-f web/Dockerfile .`) bundles those
+    files correctly. Auth is NOT app code — T-57's Traefik/Coolify Basic Auth
+    perimeter gate applies unchanged; this app assumes requests already
+    passed it.
+
+  TWO REAL BUGS CAUGHT BY SEEDING A LOCAL POSTGRES AND ACTUALLY LOOKING AT
+  THE NUMBERS (not mocks — see verification note below):
+    1. SLA attainment's live "at risk / breached" sub-count originally used
+       the same "not yet terminal" filter as the open-tickets widget
+       (includes 'responded', 'investigating', etc). That's wrong: it kept
+       clocking the SLA breach timer on tickets that had ALREADY been
+       responded to, for as long as they sat in 'responded' state before the
+       24h auto-resolve sweep — producing a nonsensical "7 of 7 open tickets
+       breached" reading. Fixed to match sla-monitor.ts's own real
+       enforcement scope exactly: only t.state IN ('new', 'triaged') is
+       subject to the response-SLA clock. Documented in-line in
+       src/metrics/dashboard.ts so the two don't drift apart again.
+    2. The per-row "SLA remaining" column in the ticket queue intentionally
+       keeps measuring against every open ticket regardless of state (useful
+       context — "how does this responded ticket look against the target it
+       was supposed to hit"), which is a DIFFERENT definition from the
+       pillar's breach count above it. Left as-is (it's not wrong, just a
+       different question) but added a one-line caption in the UI so the two
+       numbers don't read as contradictory to the founder.
+
+  HONESTY-OVER-POLISH CALLS (explicit, not accidental):
+    - Deflection/auto-resolve rate: this codebase has no human-handoff path
+      today (every responded/resolved ticket got there via
+      owner_agent='ticket-respond'/'ticket-resolve' — there is no "escalated
+      to a human" state). So the rate is labeled and captioned as an
+      upper-bound proxy for deflection, not presented as a clean
+      industry-standard split it can't actually measure yet.
+    - Agent cost tile: shows real USD dollars (getTotalCostForTenant), not
+      the mockup's fictional CAD figure. When the total is $0 (expected right
+      now per T-58's LangFuse pricing-catalog finding), the tile says so
+      explicitly instead of implying zero real usage.
+    - Eval health: renders T-58's "pending real gate" state literally, per
+      that task's hard guardrail — no green checkmark, no fabricated rate.
+    - Platform incidents: audit_log has no writer for infra-incident rows
+      today (T-38's Cstate feed lives on a separate git branch/Pages site,
+      not wired into Supabase). The query is real (project-scoped,
+      tenant_id IS NULL) and will legitimately return empty until that gap is
+      closed — rendered as an explained empty state, not a fake incident feed
+      and not a blank panel.
+    - Every widget is its own async Server Component wrapped in its own
+      <Suspense>, with its own try/catch rendering an inline error card
+      (ErrorNote). One failing/slow query degrades only that widget — never
+      a blank page. Confirmed by running with no DB credentials configured
+      at all: page still returns HTTP 200 with 5 honest "X failed to load"
+      cards instead of crashing.
+
+  VERIFIED THIS SESSION (real execution, not "should work"):
+    - pnpm typecheck/lint/test green at the repo root (87 tests passing, up
+      from 85 — 14 new dashboard.ts tests including the SLA-scope fix above);
+      web's own typecheck/lint/build all green independently.
+    - Spun up a local pgvector/pgvector:pg16 container, applied all 11
+      migrations in order (plus the 3 Supabase-managed roles — authenticated/
+      anon/service_role — that a vanilla Postgres doesn't have), created
+      ops_hub_app_login exactly per docs/engineering/t12-vault-runbook.md's
+      documented convention (LOGIN INHERIT + GRANT ops_hub_app, NOBYPASSRLS),
+      and seeded 9 realistic tickets against the real tts-prod/DNC-prod
+      UUIDs from T-47's seed migration.
+    - Ran `next start` against that local DB and hand-verified every number
+      against the seed data by arithmetic (75.0% SLA attainment = 3 of 4
+      met; 44.4% deflection = 4 of 9; 7 open tickets split 1/2/3/1 by
+      urgency) — this is what caught bug #1 above.
+    - System health panel made REAL live HTTP calls from this dashboard to
+      ops-hub-staging, its /health/litellm proxy, and FreeScout — all
+      returned real HTTP 200s over the actual network, not a mock.
+    - Built and ran the actual production Docker image (web/Dockerfile,
+      Next.js standalone output) — confirmed it starts and serves HTTP 200.
+    - Screenshots taken via headless Edge against the local-Postgres-backed
+      instance (not committed to the repo — verification evidence only).
+
+  FOUNDER ACTION REQUIRED: filed as FQ-60 (new Coolify deploy target for
+  web/, OPS_HUB_APP_LOGIN_URL on that app, health-check env vars, and the
+  FQ-59 Traefik Basic Auth label + 401 check applied to WHICHEVER domain this
+  ends up on). Not filing a redundant copy of FQ-59's content — FQ-60
+  references it.
+```

@@ -4,3 +4,5 @@ dist
 .githooks
 *.log
 .env*
+web/.next
+web/node_modules
