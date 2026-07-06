@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+/* Design tokens lifted from docs/design/ops-dashboard-mockup-v1.html (visual
+   reference only) — dark ops-console aesthetic, system fonts. */
+@theme {
+  --color-bg: #10141b;
+  --color-surface: #171c25;
+  --color-surface-raised: #1d2430;
+  --color-border: #262e3d;
+  --color-border-soft: #1e2531;
+  --color-text: #e9ecf1;
+  --color-text-muted: #8791a3;
+  --color-text-faint: #5b6478;
+  --color-accent: #5aa2e6;
+  --color-good: #48b583;
+  --color-warn: #db9a3c;
+  --color-critical: #dd5c5c;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", ui-monospace, monospace;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+}
+
+* {
+  box-sizing: border-box;
+}

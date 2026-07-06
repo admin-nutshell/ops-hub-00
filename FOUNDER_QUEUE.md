@@ -4,6 +4,45 @@
 
 ---
 
+## FQ-60 — T-59 Ops Dashboard needs a Coolify deploy target (doesn't exist yet)
+
+**Filed:** 2026-07-05
+**Filed by:** Frontend Engineer (T-59)
+**Needs:** Authorization + infrastructure setup (Production Manager executes; founder authorizes + places one env value)
+**Deadline:** Non-blocking for code review — the app is built, tested, and verified locally (see DECISIONS.md 2026-07-05 T-59). This is what's left to make it reachable.
+
+**Context:** T-59 built the read-only Ops Dashboard as a new Next.js app at `web/` in this repo (new
+pnpm workspace member). It runs, builds, and has been verified against a local Postgres seeded with
+the real schema (see DECISIONS.md entry for exact steps and numbers). It does **not** have anywhere
+to run in Coolify yet — unlike ops-hub's backend (`ops-hub-staging`/`ops-hub-prod`, already
+provisioned), this is a genuinely new deploy target.
+
+**What's needed:**
+1. **A new Coolify application** (staging first; prod once T-60's RLS audit signs off) built from
+   `web/Dockerfile` — note the build context is the **repo root**, not `web/`, because the app
+   imports `src/metrics/*` directly (`docker build -f web/Dockerfile .`). Production Manager owns
+   this per the team's infra-config handoff protocol.
+2. **`OPS_HUB_APP_LOGIN_URL`** set on that new app — the same `ops_hub_app_login` DSN pattern
+   already used by `ops-hub-staging`/`ops-hub-prod` (see `docs/engineering/t12-vault-runbook.md`).
+   Not a new credential to generate — reuse the existing one for whichever environment (staging/prod)
+   this points at.
+3. **`POLLING_PROJECT_ID` / `POLLING_TENANT_ID`** — same values already set on the corresponding
+   ops-hub environment (staging: `00000000-0000-0000-0000-000000000001` / `...0010`; prod:
+   `00000000-0000-0000-0000-000000000003` / `...0030`), so the dashboard reads the same
+   project/tenant scope as the backend it's reporting on.
+4. **Optional health-check overrides** — `OPS_HUB_HEALTH_URL`, `LITELLM_HEALTH_URL`,
+   `FREESCOUT_HEALTH_URL` — default to the staging FQDNs from CLAUDE.md if unset, so only prod
+   needs these explicitly set.
+5. **FQ-59's Traefik Basic Auth label + 401 verification** — this is FQ-59's existing content, not
+   duplicated here. Once this app has a domain, FQ-59's Action 2/3 apply to it directly.
+
+**Recommendation:** Stand up staging first, confirm T-60's RLS/tenant-scoping audit passes against
+it, then promote to prod the same way ops-hub's backend was promoted (T-49). No new decision
+needed — this is routine provisioning of an already-decided pattern, surfaced here only because the
+deploy target itself doesn't exist yet.
+
+---
+
 ## FQ-59 — T-57 Ops Dashboard auth: apply Traefik basic-auth label at T-59 deploy (credential ready in scratchpad)
 
 **Filed:** 2026-07-04
