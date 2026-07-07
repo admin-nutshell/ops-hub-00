@@ -124,7 +124,16 @@ jobs:
               MW_VALUE="dashauth"
             fi
             WORK=$(echo "$WORK" | grep -vE "^traefik\.http\.routers\.${R}\.middlewares=")
-            NEW_MW_LINES="${NEW_MW_LINES}$(printf 'traefik.http.routers.%s.middlewares=%s\n' "$R" "$MW_VALUE")"
+            # NOTE: $(...) command substitution strips the trailing newline
+            # printf emits, so concatenating substitution output directly
+            # across loop iterations silently joins lines with no separator
+            # once there is more than one router (never triggered before --
+            # the old sslip.io preview only ever had a single router; a real
+            # custom domain gets both an http redirect router AND an https
+            # content router, exposing this on the very first two-router
+            # run). Fix: append a LITERAL newline ($'\n', not inside the
+            # substitution) after each line so it survives concatenation.
+            NEW_MW_LINES="${NEW_MW_LINES}$(printf 'traefik.http.routers.%s.middlewares=%s' "$R" "$MW_VALUE")"$'\n'
           done
 
           NEW_LABELS=$(printf '%s\ntraefik.http.middlewares.dashauth.basicauth.users=%s\n%s' "$WORK" "$USERHASH" "$NEW_MW_LINES")
