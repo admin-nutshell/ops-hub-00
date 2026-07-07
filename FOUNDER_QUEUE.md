@@ -4,6 +4,38 @@
 
 ---
 
+## FQ-64 — Ops Dashboard (prod AND staging) both stuck at 404: shared Traefik proxy needs a restart; out of Production Manager's authorized scope
+
+**Filed:** 2026-07-07
+**Filed by:** Production Manager (T-70 incident response)
+**Needs:** Decision/Authorization — restarting the shared Coolify/Traefik ingress proxy (`coolify-proxy`), which fronts every production and staging app on this server, not just the dashboard
+**Deadline:** Non-blocking for customer traffic (see "current safe state" below) — the dashboard itself is not usable until this is resolved, but nothing is exposed and no other service is degraded
+
+**In plain language:** the production Ops Dashboard deploy you authorized this session ran, built correctly, and applied the password gate correctly — but the dashboard is currently unreachable (a plain 404 "not found", not a working page, gated or otherwise). While investigating, the SAME 404 turned up on the staging dashboard too, even though it was confirmed working (password-gated, live) earlier today. Every other product on this server (ops-hub-staging, FreeScout, LiteLLM) is completely unaffected and working normally. **Nothing is leaking — the dashboard is simply offline, not exposed.** The fix requires briefly restarting the shared traffic router that sits in front of all our Coolify-hosted apps, which is outside what I'll do without your sign-off, since a restart briefly touches every product on this server, not just the dashboard.
+
+**What happened (evidence, not guesswork):**
+1. The T-70 workflow ([run 28875816358](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28875816358)) built the prod dashboard image, created the Coolify app (`ops-hub-dashboard-prod`, UUID `om6qsemx9upajj9yemid1ti3`), deployed it (Coolify confirmed the deployment `finished`), applied the Basic Auth gate to its Traefik labels (confirmed correctly merged — `middlewares=gzip,dashauth`, digest present, rule/service/entryPoints intact), then blocking-verified with 10 retries. All 10 got HTTP 404, so the workflow correctly refused to declare it live (it needed 401).
+2. QA independently confirmed the URL returns a 404 with an 18-byte body — zero dashboard content, zero data exposure.
+3. I diagnosed rather than guessed: the container is healthy (`restart_count: 0`, clean `Next.js ... Ready in 0ms` boot log, no crash loop) and its Traefik labels are well-formed and correctly gated. Ruled out the two most likely causes (crash-looping container, a broken label rewrite).
+4. I then found the staging dashboard (`ops-hub-dashboard-staging`, previously verified 401-gated and working the same day, per T-69/DECISIONS.md) had ALSO started returning the identical bare 404 — with zero staging-side actions taken by anyone. Every real-domain app on the same server/IP (`ops-hub-staging.inatechshell.ca`, `freescout-staging.inatechshell.ca`, `litellm-staging.inatechshell.ca`, `coolify.inatechshell.ca` itself) responded normally throughout.
+5. I tried the two safest, most in-scope, already-precedented fixes, in order:
+   - Restarted the staging dashboard container via the existing `restart-dashboard-staging.yml` (stop+start) — container came back healthy, still 404.
+   - Ran a full, genuine redeploy of staging via the existing `provision-ops-dashboard-staging.yml` (Coolify confirmed deployment `finished`, a real container recreation, not just a restart) — still 404.
+6. Conclusion: this isn't the dashboard app, its image, its labels, or its container. Both dashboard apps are healthy and correctly configured, yet the shared Traefik proxy on this server isn't routing to either of them, while it continues routing every "real domain" app fine. The apps that broke are exactly the ones discovered dynamically via Docker container labels (auto-assigned `*.sslip.io` preview addresses); apps with a real, Coolify-managed custom domain are unaffected. The server's own Coolify record showed `unreachable_count: 5` around the time of the T-70 deploy, consistent with a brief host hiccup that could have interrupted Traefik's live container-label watch without Traefik ever restarting to pick it back up.
+
+**Options:**
+- **(A) — Recommended.** Restart the `coolify-proxy` (Traefik) container via the Coolify UI or API (Server → coolify-proxy → Restart). This is a few seconds of interruption for every app on this server (ops-hub-prod, ops-hub-staging, FreeScout, LiteLLM, the dashboard) while Traefik comes back up and re-reads all current container labels — the standard fix for a stuck docker-label provider. I did not do this myself: it's outside "prod dashboard app only," and briefly affects every customer-facing product on this server, which needs your sign-off per our own guardrails.
+- **B.** Wait/monitor — if this is a transient host issue, it may self-resolve. I have no evidence it's self-healing (staging has been broken since ~14:55 and a real redeploy at 15:25 didn't restore it), so I don't recommend waiting.
+- **C.** Ask Hostinger/infra support if there's a known host-level event in this window (the `unreachable_count: 5` datapoint) before restarting, in case there's a deeper cause. Slower, but rules out a recurring problem.
+
+**Recommendation:** (A) — restart `coolify-proxy`. It's the standard remedy for this exact failure signature (healthy containers, correct labels, only label-discovered routes affected), low-risk (brief blip, no data/config change), and reversible in seconds if it doesn't help. Once you (or I, on your go-ahead) restart it, I will re-verify both dashboards (expect 401 unauthenticated / 200 authenticated on both, no further action needed on either app — their labels and containers are already correct) and close this out.
+
+**Current safe state (unchanged since the original T-70 failure):** both dashboard apps return 404 to unauthenticated requests — no dashboard content, no data exposure, confirmed by both QA and me. No other production service is affected. I made no changes to `ops-hub-prod` (the backend), no prod data was touched, and I did not attempt the proxy restart myself.
+
+**Notify:** Production Manager, on completion — I'll run the verification and update `WORK.md`/`DECISIONS.md`.
+
+---
+
 ## FQ-63 — Ops Dashboard staging is live and gated; one action needed for a real (TLS) domain
 
 **Filed:** 2026-07-06
