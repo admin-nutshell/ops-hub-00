@@ -118,6 +118,19 @@ jobs:
             EXISTING_LINE=$(echo "$WORK" | grep -E "^traefik\.http\.routers\.${R}\.middlewares=" || true)
             EXISTING_MW=$(echo "$EXISTING_LINE" | sed -E "s/^traefik\.http\.routers\.${R}\.middlewares=//" \
               | sed -E 's/(^|,)dashauth(,|$)/\1/' | sed -E 's/^,//; s/,$//')
+            # Defensive: a valid middlewares value is a bare comma-separated
+            # list of names -- it can never legitimately contain "=" or a
+            # second "traefik.http.routers." key. If it does, this line is
+            # corrupted (e.g. a prior run hit the newline-concatenation bug
+            # above and glued two routers' lines into one) -- discard it
+            # entirely rather than propagate/compound the corruption. Falls
+            # back to "no prior middleware for this router", which is safe:
+            # worst case we lose a cosmetic extra (e.g. gzip) that a later
+            # manual pass can restore, never worse than what was already broken.
+            if echo "$EXISTING_MW" | grep -qE '=|traefik\.http\.routers\.'; then
+              echo "::warning::Discarding corrupted existing middlewares value for router ${R}: ${EXISTING_MW}"
+              EXISTING_MW=""
+            fi
             if [ -n "$EXISTING_MW" ]; then
               MW_VALUE="${EXISTING_MW},dashauth"
             else
