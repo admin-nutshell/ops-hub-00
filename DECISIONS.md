@@ -1778,3 +1778,73 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   `http://r14c3p7jzwo4wxyprd4yxyev.187.124.76.235.sslip.io/` (FQ-63's
   real-domain swap is still pending founder action, still non-blocking).
 ```
+
+### 2026-07-07 — T-70: Prod dashboard deploy correct but blocked at 404 (not 401); root-caused to shared Traefik proxy, out of authorized scope — FQ-64 filed
+
+2026-07-07 [Production Manager] T-70. Founder authorized "deploy the
+  dashboard to production" this session. `provision-ops-dashboard-prod.yml`
+  (PR #279) executed every step correctly — build, create
+  `ops-hub-dashboard-prod` (UUID `om6qsemx9upajj9yemid1ti3`), deploy
+  (Coolify `finished`), copy `OPS_HUB_APP_LOGIN_URL` from `ops-hub-prod`,
+  set prod-scoped env vars, apply the FQ-59-proven `dashauth` Basic Auth
+  Traefik middleware to every router — then blocking-verified. All 10
+  unauthenticated attempts returned HTTP 404, not 401
+  ([run 28875816358](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28875816358)).
+  The workflow correctly failed closed. QA confirmed independently: 18-byte
+  404 body, zero data exposure — an offline app, not an exposed one.
+
+  DIAGNOSIS METHOD: used a throwaway branch (`diag/t70-404-investigation`,
+  `git worktree add /c/tmp/diag-dashboard`) to dispatch the ALREADY-CATALOGUED
+  `diagnose-dashboard-staging.yml` via `--ref` with extra read-only steps
+  appended — this lets `workflow_dispatch` use repo secrets from a
+  non-default branch without merging anything to main (GitHub only allows
+  dispatching workflows that already exist on the default branch; brand-new
+  workflow files on a branch are NOT dispatchable, confirmed empirically —
+  had to reuse/extend an existing catalogued file instead of authoring a new
+  one). Zero writes from this diagnostic pass.
+
+  ROOT CAUSE, PROVEN NOT GUESSED: ruled out both of the task's leading
+  hypotheses. (1) NOT a crash-looping container — `restart_count: 0`, clean
+  `Next.js 16.2.10 ... Ready in 0ms` boot log. (2) NOT a malformed label
+  rewrite — decoded `custom_labels` showed `middlewares=gzip,dashauth`
+  correctly merged, rule/service/entryPoints all intact. Then found the
+  SAME bare 404 had appeared on `ops-hub-dashboard-staging`
+  (`r14c3p7jzwo4wxyprd4yxyev`) — a dashboard verified working (401-gated) via
+  T-69 earlier the SAME day, with zero staging-side actions taken by
+  anyone. Every real-domain app on the same server/IP (187.124.76.235) —
+  `ops-hub-staging.inatechshell.ca`, `freescout-staging.inatechshell.ca`,
+  `litellm-staging.inatechshell.ca`, `coolify.inatechshell.ca` itself —
+  continued routing normally throughout (confirmed by direct curl, real
+  DNS resolution checked and matched across all hosts, ruling out an IP/DNS
+  drift theory too). Tried the two safest, already-precedented, in-scope
+  remedies on staging (chosen over touching prod further, since staging
+  carries no real risk and was already broken): a container restart via
+  the existing `restart-dashboard-staging.yml` (stop+start — container
+  came back healthy in ~15s, STILL 404); then a full genuine redeploy via
+  the existing `provision-ops-dashboard-staging.yml` (Coolify confirmed a
+  real `finished` deployment — a fresh container create, not just a
+  restart — STILL 404). Both rule out app/image/container/label causes
+  definitively. CONCLUSION: the shared Traefik proxy's Docker-label
+  discovery (the `--providers.docker` half of its dual file+docker
+  provider config) is not reflecting either dashboard app's routers, while
+  its file-provider-routed (real-domain) apps are completely unaffected.
+  The server's own Coolify record showed `unreachable_count: 5` around the
+  T-70 deploy window — consistent with a brief host hiccup interrupting
+  Traefik's live container-events watch, which does not self-heal without
+  Traefik itself restarting to do a fresh full listing.
+
+  SCOPE DECISION: the standard remedy (restart the shared `coolify-proxy`
+  Traefik container) was identified but deliberately NOT executed. It
+  briefly affects every app on this server — `ops-hub-prod`, FreeScout,
+  LiteLLM, both dashboards — not just the prod dashboard this task scoped
+  Production Manager to touch ("prod dashboard app ONLY" guardrail). Filed
+  **FQ-64** with full evidence chain + recommendation (restart
+  `coolify-proxy`) for founder sign-off rather than acting unilaterally on
+  shared production ingress.
+
+  SAFE STATE MAINTAINED THROUGHOUT: both dashboard apps return 404 to
+  unauthenticated requests (no content, no data exposure) for the entire
+  session — never touched, never left ungated-and-reachable at any point.
+  `ops-hub-prod` (the backend) was not touched; no prod data was altered;
+  no service_role held; the proxy restart was not attempted without
+  authorization. Deploy record: `docs/deploys/2026-07-07-t70-dashboard-prod-404-incident.md`.
