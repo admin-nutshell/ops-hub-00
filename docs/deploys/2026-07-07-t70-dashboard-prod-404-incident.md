@@ -1,12 +1,49 @@
 # Deploy incident — Ops Dashboard PRODUCTION provision (T-70): blocked at 404, root-caused, escalated
 
+**⚠️ CORRECTION (2026-07-07, same day):** the root cause and "What's left"
+sections below (as originally written) concluded this was a shared,
+proxy-global fault requiring a `coolify-proxy` restart. **That conclusion
+was wrong and has been superseded** — see the "CORRECTED root cause"
+section right after this banner, and `FOUNDER_QUEUE.md` FQ-64 (amended in
+place) for the current, better-supported theory and the actual recommended
+fix. The original investigation steps (1–5 below) are accurate and
+unchanged; only step 6's conclusion and the "What's left" section are
+superseded. Nothing here has been deleted — the original text is kept,
+struck through where superseded, for the record.
+
 **Status:** BLOCKED — deploy mechanics correct and completed; external
 verification failed closed (404, not the required 401); root cause
-identified as a shared-infra issue outside this role's authorized scope.
-**FQ-64 filed** for founder decision. See WORK.md T-70 and DECISIONS.md
-2026-07-07 T-70 for the full write-up; this file is the deploy-plan/incident
-record required by the Production Manager quality bar (rollback path
-defined before dispatch, canary target, monitoring).
+corrected to a Traefik middleware-name collision (see below), fix prepared
+in PR #281, **not yet founder-reviewed/merged, not yet live-verified.**
+See WORK.md T-70 and DECISIONS.md 2026-07-07 T-70 (+ same-day follow-up)
+for the full write-up; this file is the deploy-plan/incident record
+required by the Production Manager quality bar (rollback path defined
+before dispatch, canary target, monitoring).
+
+## CORRECTED root cause (read this instead of the original step 6/"What's left")
+
+Both `provision-ops-dashboard-prod.yml` and `apply-dashboard-basic-auth.yml`
+(staging) name their Basic Auth Traefik middleware identically —
+`dashauth` — with different per-environment password hashes. Traefik
+treats a middleware name as one global identity across every container it
+watches; two conflicting definitions makes it drop the middleware
+entirely, and every router referencing it (only these two apps' routers
+do) 404s — symmetric on both apps, exactly matching what was observed,
+and exactly timed to when the T-70 workflow created the second,
+conflicting definition. This fits the evidence better than a proxy-global
+fault: if the shared proxy's docker-label provider were actually broken,
+every label-discovered app on the server would be affected, not just the
+two that happen to share this one middleware name — and every other app
+on the server (`ops-hub-staging`, `freescout-staging`, `litellm-staging`,
+`coolify` itself) was confirmed routing normally throughout.
+
+**Fix, not yet live-verified:** PR #281 (`fix/t70-dashauth-name-collision`)
+renames prod's middleware to `dashauth-prod`, a per-environment-unique
+name that can never collide with staging's `dashauth` again. It is
+gated on founder review/merge (prod-infra change, no self-merge) —
+see `FOUNDER_QUEUE.md` FQ-64 for the immediate code-free alternative (a
+~1-minute manual Coolify UI relabel, which doubles as the live test of
+this theory).
 
 **Scope guardrail:** prod dashboard app ONLY. Did NOT touch `ops-hub-prod`
 (the backend), did NOT alter prod data, `service_role` never held. The one
@@ -90,7 +127,7 @@ a verified-live state to canary.
      `provision-ops-dashboard-staging.yml` — Coolify confirmed a real
      `finished` deployment (a fresh container create event, not just a
      restart) — **still 404**.
-6. **Conclusion:** not the app, not the image, not the container, not the
+6. ~~**Conclusion:** not the app, not the image, not the container, not the
    labels. The shared Traefik proxy's Docker-label discovery (the
    `--providers.docker` half of its dual file+docker provider
    configuration) is not reflecting either dashboard app's routers, while
@@ -98,23 +135,44 @@ a verified-live state to canary.
    unaffected. The Coolify server record showed `unreachable_count: 5`
    around the T-70 deploy window — consistent with a brief host hiccup
    interrupting Traefik's live container-events watch, which does not
-   self-heal without Traefik itself restarting to do a fresh full listing.
+   self-heal without Traefik itself restarting to do a fresh full listing.~~
+   **SUPERSEDED — see "CORRECTED root cause" at the top of this file.**
+   Steps 1–5 above (the evidence gathered) are accurate and unchanged; only
+   this conclusion was wrong. The `unreachable_count: 5` datapoint is real
+   but was a red herring, not the cause — the actual mechanism is the
+   `dashauth` middleware-name collision between the two dashboard apps.
 
-## What's left — FQ-64 filed
+## What's left — FQ-64 filed (ORIGINAL, SUPERSEDED — see below for current status)
 
-The standard remedy (restart the shared `coolify-proxy` Traefik container)
+~~The standard remedy (restart the shared `coolify-proxy` Traefik container)
 was identified but **deliberately not executed**: it briefly touches every
 app on this server — `ops-hub-prod`, FreeScout, LiteLLM, both
 dashboards — not just the prod dashboard app this task authorized
 Production Manager to touch. Filed to the founder as **FQ-64** with the
-full evidence chain and a recommendation (restart `coolify-proxy`).
+full evidence chain and a recommendation (restart `coolify-proxy`).~~
 
-Once authorized and executed, re-verification is a 2-minute check (both
-apps already have correct containers, images, and gate labels — nothing
-else needs to change): `curl` unauthenticated -> expect 401 on both
+**Current status (corrected):** FQ-64 was amended in place the same day,
+before any founder action, to withdraw the proxy-restart recommendation.
+The fix now on the table is narrower and lower-risk: rename prod's
+`dashauth` middleware to `dashauth-prod` (per-environment-unique name).
+Two paths, both pending founder action:
+1. Immediate manual Coolify UI relabel on the prod dashboard app only
+   (no shared-proxy touch) — see FQ-64 for the exact steps. This doubles
+   as the live test of the corrected theory.
+2. Merge PR #281 (`fix/t70-dashauth-name-collision`), which makes the
+   same change permanent in the workflow and auto-heals the current state
+   on its next dispatch — held for founder review, not self-merged.
+
+Once either path is taken and confirmed, re-verification is a 2-minute
+check (both apps already have correct containers, images, and otherwise-
+correct gate labels — nothing else needs to change): `curl`
+unauthenticated -> expect 401 on both
 `http://om6qsemx9upajj9yemid1ti3.187.124.76.235.sslip.io/` and
 `http://r14c3p7jzwo4wxyprd4yxyev.187.124.76.235.sslip.io/`; authenticated
--> expect 200 with real rendered content on both.
+-> expect 200 with real rendered content on both. **If either dashboard
+does NOT flip to 401**, the collision theory is wrong and the
+investigation reopens — do not treat PR #281 as safe to merge on theory
+alone.
 
 ## Current safe state
 
