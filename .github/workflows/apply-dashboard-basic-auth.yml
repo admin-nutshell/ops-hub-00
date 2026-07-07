@@ -118,13 +118,35 @@ jobs:
             EXISTING_LINE=$(echo "$WORK" | grep -E "^traefik\.http\.routers\.${R}\.middlewares=" || true)
             EXISTING_MW=$(echo "$EXISTING_LINE" | sed -E "s/^traefik\.http\.routers\.${R}\.middlewares=//" \
               | sed -E 's/(^|,)dashauth(,|$)/\1/' | sed -E 's/^,//; s/,$//')
+            # Defensive: a valid middlewares value is a bare comma-separated
+            # list of names -- it can never legitimately contain "=" or a
+            # second "traefik.http.routers." key. If it does, this line is
+            # corrupted (e.g. a prior run hit the newline-concatenation bug
+            # above and glued two routers' lines into one) -- discard it
+            # entirely rather than propagate/compound the corruption. Falls
+            # back to "no prior middleware for this router", which is safe:
+            # worst case we lose a cosmetic extra (e.g. gzip) that a later
+            # manual pass can restore, never worse than what was already broken.
+            if echo "$EXISTING_MW" | grep -qE '=|traefik\.http\.routers\.'; then
+              echo "::warning::Discarding corrupted existing middlewares value for router ${R}: ${EXISTING_MW}"
+              EXISTING_MW=""
+            fi
             if [ -n "$EXISTING_MW" ]; then
               MW_VALUE="${EXISTING_MW},dashauth"
             else
               MW_VALUE="dashauth"
             fi
             WORK=$(echo "$WORK" | grep -vE "^traefik\.http\.routers\.${R}\.middlewares=")
-            NEW_MW_LINES="${NEW_MW_LINES}$(printf 'traefik.http.routers.%s.middlewares=%s\n' "$R" "$MW_VALUE")"
+            # NOTE: $(...) command substitution strips the trailing newline
+            # printf emits, so concatenating substitution output directly
+            # across loop iterations silently joins lines with no separator
+            # once there is more than one router (never triggered before --
+            # the old sslip.io preview only ever had a single router; a real
+            # custom domain gets both an http redirect router AND an https
+            # content router, exposing this on the very first two-router
+            # run). Fix: append a LITERAL newline ($'\n', not inside the
+            # substitution) after each line so it survives concatenation.
+            NEW_MW_LINES="${NEW_MW_LINES}$(printf 'traefik.http.routers.%s.middlewares=%s' "$R" "$MW_VALUE")"$'\n'
           done
 
           NEW_LABELS=$(printf '%s\ntraefik.http.middlewares.dashauth.basicauth.users=%s\n%s' "$WORK" "$USERHASH" "$NEW_MW_LINES")
