@@ -1707,3 +1707,74 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   domain exists. Prod promotion (a separate, later step per FQ-60's own
   recommendation) was not started in this task.
 ```
+
+### 2026-07-07 — T-69: Ops Dashboard staging redeployed with theme-v2 (PR #277); confirmed the Basic Auth gate survives a full image redeploy
+
+2026-07-07 [Production Manager] T-69. Founder said "deploy to staging" this
+  session for the merged Slate/Indigo dark theme (PR #277, human-reviewed
+  and merged to `main` at `7da28d1` — a genuine founder authorization, not
+  an agent self-merge). Redeployed the existing staging dashboard app
+  (`ops-hub-dashboard-staging`, UUID `r14c3p7jzwo4wxyprd4yxyev`, from T-68)
+  by re-dispatching `provision-ops-dashboard-staging.yml` on `--ref main`.
+  Deliberately did NOT use `restart-dashboard-staging.yml` — that workflow
+  only stop/starts the already-running container and would have kept
+  serving the pre-theme image; the task called for a real rebuild from
+  `7da28d1`, which requires patching the app's `docker_registry_image_tag`
+  to a freshly built+pushed image, which only the provision workflow does.
+
+  ROLLBACK PATH, DEFINED BEFORE DISPATCH (per team quality bar — never
+  after): re-run the same workflow pointed at the prior `main` commit
+  (`7742d1d`, the pre-theme HEAD) to rebuild and redeploy that image, or
+  `PATCH .../applications/r14c3p7jzwo4wxyprd4yxyev` with the prior image
+  tag followed by `/start`. Same idempotent mechanics as the forward
+  deploy, no manual container work, comfortably under the 15-minute mean
+  rollback target. Not exercised — the deploy succeeded clean on the first
+  attempt.
+
+  REAL QUESTION ANSWERED, NOT ASSUMED: whether the FQ-59 Traefik
+  `custom_labels` Basic Auth gate (applied in T-68 via a separate
+  workflow, `apply-dashboard-basic-auth.yml`) survives a full image
+  redeploy, as opposed to the stop/start T-68's own evidence already
+  covered. Sequenced deliberately to observe rather than assume: captured
+  a pre-deploy baseline (curl unauthenticated -> 401; curl authenticated
+  -> 200, 41,283-byte body, old theme marker `max-w-[1280px]` present in
+  the server-rendered HTML) BEFORE redeploying, then re-dispatched the
+  provision workflow, confirmed via its own log output that the deployed
+  image tag was `ghcr.io/admin-nutshell/ops-hub-00-dashboard:7da28d10ea067
+  988f29dc8f6f17009252547a475` (exact PR #277 HEAD sha) and that Coolify's
+  own deployment status reached `finished`
+  ([run 28838676819](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28838676819)),
+  then — before dispatching any re-gate workflow — curled the FQDN
+  unauthenticated FIRST. Result: **401 on the first attempt.** The gate
+  was untouched by an image-tag-only redeploy through this API path (the
+  provision workflow's PATCH payload only ever contains
+  `docker_registry_image_name`/`docker_registry_image_tag`, never
+  `custom_labels`). CONCLUSION FOR THE RUNBOOK: a code/theme redeploy via
+  `provision-ops-dashboard-staging.yml` does NOT require re-running
+  `apply-dashboard-basic-auth.yml` afterward — only a change that touches
+  `custom_labels` directly (or a from-scratch app recreation) would.
+  Recorded here so a future session doesn't burn a reapply cycle
+  reflexively "just in case."
+
+  POST-DEPLOY VERIFICATION (theme, not just HTTP status): authenticated
+  curl -> 200, 44,575-byte body (up from 41,283 pre-deploy). Grepped the
+  server-rendered HTML — not the compiled CSS bundle, which doesn't
+  appear in the body — for JSX-level class markers pulled directly from
+  PR #277's diff of `web/app/page.tsx` (`max-w-[1320px]`, `gap-[30px]`,
+  both new in the theme-v2 restyle): both present; the old marker
+  (`max-w-[1280px]`) absent. All 7 pillar/widget labels render (SLA
+  attainment, open tickets, agent cost, eval health, pipeline, system
+  health, platform incidents); zero "failed to load" cards — matches
+  T-68's original honesty-over-polish bar, unaffected by the restyle.
+  Coolify health confirmed via the existing read-only
+  `diagnose-dashboard-staging.yml`
+  ([run 28838765351](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28838765351)):
+  `restart_count: 0`, container boot log shows a clean
+  `Next.js 16.2.10 ... Ready in 0ms`, no crash-loop signature.
+
+  SCOPE: staging only, per the task's explicit guardrail — `ops-hub-prod`
+  (UUID `sbke5gqru1n54rj7gssgca2y`) was not touched; there is no prod
+  dashboard app to promote to yet. Reachable URL unchanged:
+  `http://r14c3p7jzwo4wxyprd4yxyev.187.124.76.235.sslip.io/` (FQ-63's
+  real-domain swap is still pending founder action, still non-blocking).
+```
