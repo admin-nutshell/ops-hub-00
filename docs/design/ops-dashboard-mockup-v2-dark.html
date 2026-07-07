@@ -1,0 +1,495 @@
+<title>Ops Hub — Daily Console (Theme v2 — Slate/Indigo)</title>
+<style>
+  :root {
+    --bg: #0a0d13;
+    --surface: #12151e;
+    --surface-raised: #191d29;
+    --border: #232838;
+    --border-soft: #1a1e2a;
+    --text: #eef1f7;
+    --text-muted: #9aa3b8;
+    --text-faint: #626c83;
+    --accent: #7c8cf8;
+    --accent-dim: #7c8cf824;
+    --accent-text: #a4b0fa;
+    --good: #3ecf8e;
+    --good-dim: #3ecf8e1f;
+    --warn: #eaa64a;
+    --warn-dim: #eaa64a1f;
+    --critical: #f2596f;
+    --critical-dim: #f2596f1f;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", ui-monospace, monospace;
+    --radius-card: 14px;
+    --radius-sm: 8px;
+    --shadow-card: 0 1px 2px rgba(0,0,0,0.35), 0 12px 32px -16px rgba(0,0,0,0.55);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-image:
+      radial-gradient(ellipse 1100px 600px at 10% -15%, #7c8cf81a, transparent),
+      radial-gradient(ellipse 800px 500px at 105% 5%, #3ecf8e10, transparent);
+    background-attachment: fixed;
+  }
+
+  a { color: inherit; }
+
+  .banner {
+    background: linear-gradient(90deg, #7c8cf822, #7c8cf80a);
+    border-bottom: 1px solid var(--border);
+    padding: 9px 32px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
+  }
+  .banner strong { color: var(--accent-text); }
+
+  .console {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 32px 32px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+  }
+
+  /* ── Top bar ─────────────────────────────────────────────────────────── */
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .brand { display: flex; align-items: center; gap: 13px; }
+
+  .brand-mark {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: linear-gradient(155deg, var(--accent), #4c56c9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 13px;
+    color: #0a0d1a;
+    flex-shrink: 0;
+    box-shadow: 0 4px 14px -4px #7c8cf866;
+  }
+
+  .brand-text h1 { margin: 0; font-size: 15.5px; font-weight: 650; letter-spacing: 0.01em; }
+  .brand-text .sub { font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); letter-spacing: 0.02em; margin-top: 1px; }
+
+  .topbar-right { display: flex; align-items: center; gap: 18px; }
+
+  .readonly-tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    text-align: right;
+  }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 13px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    background: var(--good-dim);
+    color: var(--good);
+    border: 1px solid #3ecf8e3d;
+  }
+  .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px currentColor22; }
+
+  /* ── Metric strip ────────────────────────────────────────────────────── */
+
+  .metric-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+  }
+
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    padding: 20px 22px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: var(--shadow-card);
+  }
+  .metric-card::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 20px; right: 20px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, currentColor, transparent);
+    opacity: 0.35;
+  }
+  .metric-card.good::before { color: var(--good); }
+  .metric-card.warn::before { color: var(--warn); }
+  .metric-card.neutral::before { color: var(--accent); }
+
+  .metric-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+    font-weight: 650;
+  }
+
+  .metric-value {
+    font-family: var(--mono);
+    font-size: 32px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+  }
+  .metric-value .unit { font-size: 13px; font-weight: 500; color: var(--text-muted); }
+  .metric-card.good .metric-value { color: var(--good); }
+  .metric-card.warn .metric-value { color: var(--warn); }
+
+  .metric-sub { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+  .metric-sub strong { color: var(--text); font-weight: 600; }
+
+  /* honest / pending state card */
+  .metric-card.pending {
+    background: var(--warn-dim);
+    border: 1px solid #eaa64a3d;
+  }
+  .metric-card.pending .metric-label { color: var(--warn); }
+  .metric-card.pending .pending-title { font-size: 14px; font-weight: 650; color: var(--warn); }
+  .metric-card.pending .metric-sub { color: var(--text-muted); }
+
+  /* ── Main grid ───────────────────────────────────────────────────────── */
+
+  .main-grid { display: grid; grid-template-columns: 1.7fr 1fr; gap: 20px; align-items: start; }
+
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); overflow: hidden; box-shadow: var(--shadow-card); }
+
+  .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 17px 22px; border-bottom: 1px solid var(--border-soft); }
+  .panel-head h2 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: 0.01em; }
+  .panel-head .count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); white-space: nowrap; margin-top: 1px; }
+  .panel-note-inline { font-size: 11px; color: var(--text-faint); margin-top: 4px; max-width: 480px; line-height: 1.5; }
+
+  /* ── Ticket table ────────────────────────────────────────────────────── */
+
+  .ticket-table-wrap { overflow-x: auto; }
+  table.tickets { width: 100%; border-collapse: collapse; min-width: 660px; }
+  table.tickets thead th {
+    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-faint); font-weight: 650; padding: 11px 22px; border-bottom: 1px solid var(--border-soft); white-space: nowrap;
+  }
+  table.tickets tbody tr { border-bottom: 1px solid var(--border-soft); }
+  table.tickets tbody tr:last-child { border-bottom: none; }
+  table.tickets tbody tr:hover { background: var(--surface-raised); }
+  table.tickets td { padding: 13px 22px; vertical-align: middle; }
+
+  .sev-stripe { display: flex; align-items: center; gap: 10px; }
+  .sev-bar { width: 3px; height: 28px; border-radius: 2px; flex-shrink: 0; }
+  .sev-bar.critical { background: var(--critical); }
+  .sev-bar.high { background: var(--warn); }
+  .sev-bar.normal { background: var(--accent); }
+  .sev-bar.low { background: var(--text-faint); }
+
+  .ticket-id { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+  .ticket-title { font-weight: 600; font-size: 13px; }
+  .ticket-meta { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+
+  .chip { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 6px; font-size: 11px; font-weight: 650; white-space: nowrap; }
+  .chip.new { background: var(--accent-dim); color: var(--accent-text); }
+  .chip.triaged { background: #c99ef322; color: #d0aaf5; }
+  .chip.responded { background: var(--good-dim); color: var(--good); }
+  .chip.investigating { background: var(--warn-dim); color: var(--warn); }
+
+  .sla-cell { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .sla-cell.ok { color: var(--good); }
+  .sla-cell.tight { color: var(--warn); }
+  .sla-cell.breach { color: var(--critical); font-weight: 650; }
+
+  .tenant-tag { font-size: 12px; color: var(--text-muted); }
+
+  /* ── Right rail ──────────────────────────────────────────────────────── */
+
+  .rail { display: flex; flex-direction: column; gap: 18px; }
+
+  .pipeline { padding: 19px 22px 22px; display: flex; flex-direction: column; gap: 13px; }
+  .pipeline-row { display: flex; align-items: center; gap: 12px; }
+  .pipeline-label { width: 88px; flex-shrink: 0; font-size: 11.5px; color: var(--text-muted); font-weight: 550; }
+  .pipeline-bar-track { flex: 1; height: 7px; background: var(--surface-raised); border-radius: 4px; overflow: hidden; }
+  .pipeline-bar-fill { height: 100%; border-radius: 4px; }
+  .pipeline-count { font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; width: 30px; text-align: right; color: var(--text); font-weight: 650; }
+
+  .health-list { display: flex; flex-direction: column; }
+  .health-row { display: flex; align-items: center; justify-content: space-between; padding: 13px 22px; border-bottom: 1px solid var(--border-soft); font-size: 12.5px; }
+  .health-row:last-child { border-bottom: none; }
+  .health-name { display: flex; align-items: center; gap: 9px; }
+  .health-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .health-dot.good { background: var(--good); box-shadow: 0 0 0 3px var(--good-dim); }
+  .health-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-dim); }
+  .health-dot.critical { background: var(--critical); box-shadow: 0 0 0 3px var(--critical-dim); }
+  .health-latency { font-family: var(--mono); font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+  /* honest empty state */
+  .empty-state { padding: 20px 22px 24px; font-size: 12.5px; color: var(--text-muted); line-height: 1.6; }
+
+  /* ── Component states reference strip ───────────────────────────────── */
+
+  .states-section { display: flex; flex-direction: column; gap: 14px; padding-top: 8px; border-top: 1px dashed var(--border); }
+  .states-heading { font-size: 12px; font-weight: 650; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+  .states-sub { font-size: 12px; color: var(--text-faint); margin-top: -8px; }
+  .states-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+
+  .error-card { display: flex; flex-direction: column; gap: 5px; border-radius: 12px; border: 1px solid #f2596f4d; background: var(--critical-dim); padding: 18px 20px; font-size: 13px; }
+  .error-card .error-title { font-weight: 650; color: var(--critical); }
+  .error-card .error-detail { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
+
+  .skeleton-card { display: flex; flex-direction: column; gap: 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); padding: 18px 20px; }
+  .sk-line { border-radius: 5px; background: linear-gradient(90deg, var(--surface-raised), #232941, var(--surface-raised)); background-size: 200% 100%; animation: shimmer 1.6s ease-in-out infinite; }
+  .sk-line.w1 { width: 40%; height: 10px; }
+  .sk-line.w2 { width: 65%; height: 26px; }
+  .sk-line.w3 { width: 85%; height: 10px; }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  @media (max-width: 980px) {
+    .metric-strip { grid-template-columns: repeat(2, 1fr); }
+    .main-grid { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="banner"><strong>Theme proposal — Slate/Indigo (dark)</strong> · not deployed · for founder review only</div>
+
+<div class="console">
+
+  <!-- ── Top bar ──────────────────────────────────────────────────── -->
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-mark">OH</div>
+      <div class="brand-text">
+        <h1>Ops Hub</h1>
+        <div class="sub">TTS · Daily Needs Canada</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="status-pill"><span class="dot"></span>All systems nominal</div>
+      <div class="readonly-tag">Read-only console · Sprint 6 (T-59)</div>
+    </div>
+  </div>
+
+  <!-- ── 4 charter pillars + deflection ───────────────────────────── -->
+  <div class="metric-strip">
+
+    <div class="metric-card good">
+      <div class="metric-label">SLA attainment</div>
+      <div class="metric-value">98.4<span class="unit">%</span></div>
+      <div class="metric-sub">121 of 123 within target, last 30d · <strong>1</strong> breached now, <strong>1</strong> at risk</div>
+    </div>
+
+    <div class="metric-card neutral">
+      <div class="metric-label">Open tickets</div>
+      <div class="metric-value">7</div>
+      <div class="metric-sub"><strong style="color:var(--critical)">1</strong> critical · <strong style="color:var(--warn)">2</strong> high · 3 normal · 1 low</div>
+    </div>
+
+    <div class="metric-card warn">
+      <div class="metric-label">Agent cost (30d)</div>
+      <div class="metric-value">$0.00<span class="unit">USD</span></div>
+      <div class="metric-sub">$0 across all synced traces — known gap (T-58): LangFuse has no pricing entry registered for the LiteLLM-routed model names yet, not zero real usage.</div>
+    </div>
+
+    <div class="metric-card pending">
+      <div class="metric-label">Eval pass rate</div>
+      <div class="pending-title">Eval health — pending real gate</div>
+      <div class="metric-sub">Promptfoo suite is wired in CI but no run has posted a result to ops-hub yet — gate goes live when T-63 lands. No pass rate is being estimated or faked in the meantime.</div>
+    </div>
+
+    <div class="metric-card good">
+      <div class="metric-label">Auto-resolved</div>
+      <div class="metric-value">84.8<span class="unit">%</span></div>
+      <div class="metric-sub">162 of 191 reached an agent-delivered response with no human touch — no human-handoff path exists yet, so this is an <strong>upper-bound proxy</strong>, not a true deflection split.</div>
+    </div>
+
+  </div>
+
+  <!-- ── Main grid: queue + rail ──────────────────────────────────── -->
+  <div class="main-grid">
+
+    <div class="panel">
+      <div class="panel-head">
+        <div>
+          <h2>Ticket queue</h2>
+          <div class="panel-note-inline">SLA remaining is measured continuously from creation to the response target — it does not stop once a ticket is marked responded, so a negative value on an already-responded row isn't double-counted in the SLA tile above.</div>
+        </div>
+        <span class="count">7 open</span>
+      </div>
+      <div class="ticket-table-wrap">
+        <table class="tickets">
+          <thead>
+            <tr><th>Ticket</th><th>Tenant</th><th>State</th><th>SLA remaining</th><th>Age</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><div class="sev-stripe"><div class="sev-bar critical"></div><div>
+                <div class="ticket-title">Checkout fails on payment step</div>
+                <div class="ticket-meta"><span class="ticket-id">#a3f9c281</span> · billing · critical</div>
+              </div></div></td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip investigating">investigating</span></td>
+              <td class="sla-cell breach">−00:04:12</td>
+              <td class="sla-cell">00:34:12</td>
+            </tr>
+            <tr>
+              <td><div class="sev-stripe"><div class="sev-bar high"></div><div>
+                <div class="ticket-title">Order #8821 never arrived</div>
+                <div class="ticket-meta"><span class="ticket-id">#b17d4e02</span> · shipping · high</div>
+              </div></div></td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip triaged">triaged</span></td>
+              <td class="sla-cell tight">00:11:40</td>
+              <td class="sla-cell">00:48:20</td>
+            </tr>
+            <tr>
+              <td><div class="sev-stripe"><div class="sev-bar high"></div><div>
+                <div class="ticket-title">Can&rsquo;t reset account password</div>
+                <div class="ticket-meta"><span class="ticket-id">#c98a1123</span> · auth · high</div>
+              </div></div></td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip responded">responded</span></td>
+              <td class="sla-cell ok">00:52:03</td>
+              <td class="sla-cell">00:07:57</td>
+            </tr>
+            <tr>
+              <td><div class="sev-stripe"><div class="sev-bar normal"></div><div>
+                <div class="ticket-title">Refund request — duplicate charge</div>
+                <div class="ticket-meta"><span class="ticket-id">#d4e5f678</span> · billing · normal</div>
+              </div></div></td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip responded">responded</span></td>
+              <td class="sla-cell ok">03:41:09</td>
+              <td class="sla-cell">00:18:51</td>
+            </tr>
+            <tr>
+              <td><div class="sev-stripe"><div class="sev-bar normal"></div><div>
+                <div class="ticket-title">How do I update billing address</div>
+                <div class="ticket-meta"><span class="ticket-id">#e0123abc</span> · billing · normal</div>
+              </div></div></td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip new">new</span></td>
+              <td class="sla-cell ok">03:58:30</td>
+              <td class="sla-cell">00:01:30</td>
+            </tr>
+            <tr>
+              <td><div class="sev-stripe"><div class="sev-bar normal"></div><div>
+                <div class="ticket-title">Delivery window for bulk order</div>
+                <div class="ticket-meta"><span class="ticket-id">#f4567def</span> · shipping · normal</div>
+              </div></div></td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip triaged">triaged</span></td>
+              <td class="sla-cell ok">02:29:44</td>
+              <td class="sla-cell">01:30:16</td>
+            </tr>
+            <tr>
+              <td><div class="sev-stripe"><div class="sev-bar low"></div><div>
+                <div class="ticket-title">Feature request — dark mode in app</div>
+                <div class="ticket-meta"><span class="ticket-id">#071122aa</span> · product · low</div>
+              </div></div></td>
+              <td class="tenant-tag">Daily Needs Canada</td>
+              <td><span class="chip new">new</span></td>
+              <td class="sla-cell ok">07:52:01</td>
+              <td class="sla-cell">00:07:59</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="rail">
+
+      <div class="panel pipeline">
+        <div class="panel-head" style="padding:0 0 13px; border:none;">
+          <h2>Pipeline</h2>
+          <span class="count">all tickets</span>
+        </div>
+        <div class="pipeline-row"><div class="pipeline-label">New</div><div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:2%; background:var(--accent)"></div></div><div class="pipeline-count">3</div></div>
+        <div class="pipeline-row"><div class="pipeline-label">Triaged</div><div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:2%; background:#d0aaf5"></div></div><div class="pipeline-count">4</div></div>
+        <div class="pipeline-row"><div class="pipeline-label">Responded</div><div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:3%; background:var(--good)"></div></div><div class="pipeline-count">6</div></div>
+        <div class="pipeline-row"><div class="pipeline-label">In progress</div><div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:1%; background:var(--warn)"></div></div><div class="pipeline-count">2</div></div>
+        <div class="pipeline-row"><div class="pipeline-label">Resolved</div><div class="pipeline-bar-track"><div class="pipeline-bar-fill" style="width:100%; background:var(--text-faint)"></div></div><div class="pipeline-count">187</div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2>System health</h2></div>
+        <div class="health-list">
+          <div class="health-row"><div class="health-name"><span class="health-dot good"></span>ops-hub-prod</div><div class="health-latency">200 · 41ms</div></div>
+          <div class="health-row"><div class="health-name"><span class="health-dot good"></span>litellm-prod</div><div class="health-latency">healthy · db ok</div></div>
+          <div class="health-row"><div class="health-name"><span class="health-dot good"></span>FreeScout</div><div class="health-latency">200 · IMAP ok</div></div>
+          <div class="health-row"><div class="health-name"><span class="health-dot good"></span>Inngest sync</div><div class="health-latency">registered</div></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Platform incidents</h2>
+          <span class="count">infra, not ticket QA</span>
+        </div>
+        <div class="empty-state">
+          No platform incidents recorded in ops-hub&rsquo;s audit trail. The richer Cstate status feed (T-38) tracks real infra incidents today but isn&rsquo;t wired into this dashboard yet — this panel is real and empty, not a stub, until that feed is connected.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Component states reference (not live data) ───────────────── -->
+  <div class="states-section">
+    <div class="states-heading">Reference — component states in this theme</div>
+    <div class="states-sub">Not live data. Shown so error / loading states are reviewed in the new theme too, not just the happy path.</div>
+    <div class="states-grid">
+      <div class="error-card">
+        <span class="error-title">System health failed to load</span>
+        <span class="error-detail">Error: fetch to litellm-staging.inatechshell.ca timed out after 5000ms</span>
+      </div>
+      <div class="skeleton-card">
+        <div class="sk-line w1"></div>
+        <div class="sk-line w2"></div>
+        <div class="sk-line w3"></div>
+      </div>
+      <div class="metric-card pending" style="box-shadow:none;">
+        <div class="metric-label">Example — pending / not-wired state</div>
+        <div class="pending-title">Feature name — pending</div>
+        <div class="metric-sub">Distinct treatment from an error: nothing is broken, the data source just isn&rsquo;t connected yet.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
