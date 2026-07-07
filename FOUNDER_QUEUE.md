@@ -4,6 +4,36 @@
 
 ---
 
+## FQ-63 — Ops Dashboard staging is live and gated; one action needed for a real (TLS) domain
+
+**Filed:** 2026-07-06
+**Filed by:** Production Manager (T-68)
+**Needs:** One Coolify UI action (~2 minutes)
+**Deadline:** Non-blocking — the dashboard already works and is password-protected today. This is only about upgrading from a plain-HTTP preview link to a proper `https://` address.
+
+**In plain language:** the Ops Dashboard is built, deployed, working, and locked behind a username/password on our staging server. Right now you can reach it at:
+
+```
+http://r14c3p7jzwo4wxyprd4yxyev.187.124.76.235.sslip.io/
+```
+
+That's a temporary, auto-generated address (no padlock/HTTPS) — fine for checking that it works, not what we want to actually use day to day. To give it a normal, secure address:
+
+1. Log into Coolify: `https://coolify.inatechshell.ca`
+2. Go to the `ops-hub-staging` project → find the app named **`ops-hub-dashboard-staging`**
+3. Open its Settings/General tab → find the **Domains** field
+4. Enter: `ops-dashboard-staging.inatechshell.ca` (matches the naming of our other staging tools, e.g. `ops-hub-staging.inatechshell.ca`)
+5. Click **Save**, then click **Deploy** (not just Restart)
+6. Reply here (or in WORK.md) once done — Production Manager will then re-run the already-prepared `apply-dashboard-basic-auth.yml` workflow to re-apply the password gate to the new address and confirm it with the same 401/200 checks already passing on the temporary address today.
+
+**The password is already handled — nothing to do there.** The credential Tech Lead generated back on 2026-07-04 (FQ-59) was still sitting in a local scratchpad file this session, so it was reused as-is (never regenerated, never shown in chat or committed anywhere). It has now also been stored as two GitHub repo secrets so future automation can reuse it without ever displaying it again. **If you haven't already saved the username + password from that original FQ-59 note into your password manager, please do that now** — that's the one thing only you can do; everything else about this credential is handled.
+
+**Not done in this task (separate follow-up, on purpose):** the production dashboard (`ops-hub-prod`) was NOT created or touched — this task was scoped to staging only, per the original plan's own recommendation to validate the deploy shape on staging first. Standing up prod the same way is a small follow-up task once you're happy with staging.
+
+**Recommendation:** do this whenever convenient — it's a cosmetic/production-hygiene upgrade (real domain + normal TLS padlock), not a functional fix. The dashboard is already secure (password-gated) and fully working on the temporary address.
+
+---
+
 ## ✅ FQ-62 — T-66: apply audit_log platform-select RLS migration via Supabase SQL Editor (service_role)
 
 **Filed:** 2026-07-06 | **Closed:** 2026-07-06
@@ -107,6 +137,15 @@ anchor.
 
 ---
 
+## 🟡 FQ-60 — T-59 Ops Dashboard needs a Coolify deploy target (doesn't exist yet) — STAGING DONE, see FQ-63 for what's left
+
+**Update 2026-07-06 (Production Manager, T-68):** staging deploy target created and working —
+`ops-hub-dashboard-staging` (UUID `r14c3p7jzwo4wxyprd4yxyev`), all env vars set, a real 502 bug
+found and fixed along the way (Next.js standalone bind-address, see WORK.md T-68 / DECISIONS.md
+for the full writeup). **Only remaining action is FQ-63** (attach a real domain) — everything
+else below is done. Prod (`ops-hub-prod`) deliberately not touched; this was staging-only per
+this item's own recommendation.
+
 ## FQ-60 — T-59 Ops Dashboard needs a Coolify deploy target (doesn't exist yet)
 
 **Filed:** 2026-07-05
@@ -145,6 +184,21 @@ needed — this is routine provisioning of an already-decided pattern, surfaced 
 deploy target itself doesn't exist yet.
 
 ---
+
+## ✅ FQ-59 — T-57 Ops Dashboard auth: applied and verified live on staging (2026-07-06)
+
+**Update 2026-07-06 (Production Manager, T-68):** Action 2 and Action 3 (the blocking
+401/200 verification) are both done, on staging, against the app's current (temporary,
+plain-HTTP) address. `curl` unauthenticated → **401**; `curl -u opsadmin:<password>` → **200**,
+real dashboard content confirmed (no "failed to load" cards). The scratchpad credential file
+was still present this session, so it was reused as-is — nothing was regenerated. One real,
+worth-recording finding: the `$`-doubled ("`$$`") label variant this item's own note says to
+use for "a raw Traefik label" did NOT work when applied via the Coolify API's `custom_labels`
+field (401 even with the right password) — the plain, unescaped `user:hash` line is what
+actually works through that specific path; recorded in DECISIONS.md 2026-07-06 T-68 so a future
+session doesn't reapply the escaped form here. **Only remaining step:** once FQ-63's domain is
+attached, re-run `apply-dashboard-basic-auth.yml` to re-gate the new address (already prepared,
+idempotent, no founder action needed beyond FQ-63 itself).
 
 ## FQ-59 — T-57 Ops Dashboard auth: apply Traefik basic-auth label at T-59 deploy (credential ready in scratchpad)
 

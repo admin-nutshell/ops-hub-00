@@ -1608,3 +1608,102 @@ For substantial decisions, include `→ ADR-NNNN` pointing to the full record in
   comment ~L434-437, updated test) already merged via PR #265. T-66 marked
   done in WORK.md; FQ-62 marked resolved in FOUNDER_QUEUE.md.
 ```
+
+### 2026-07-06 — T-68: Ops Dashboard stood up on Coolify staging (FQ-60); FQ-59 Basic Auth applied and verified live
+
+```
+2026-07-06 [Production Manager] T-68, staging only. Created a new Coolify
+  app for the T-59 dashboard, ops-hub-dashboard-staging
+  (UUID r14c3p7jzwo4wxyprd4yxyev), via provision-ops-dashboard-staging.yml:
+  builds web/Dockerfile from the repo root (per its own header comment),
+  pushes to GHCR, creates a dockerimage-type Coolify app on the
+  ops-hub-staging project, deploys it, and copies OPS_HUB_APP_LOGIN_URL from
+  ops-hub-staging (never regenerated) plus staging POLLING_PROJECT_ID/
+  POLLING_TENANT_ID. Deliberately did not touch ops-hub-prod
+  (UUID sbke5gqru1n54rj7gssgca2y) or provision a prod dashboard app — out of
+  scope for this task per FQ-60's own "staging first" recommendation.
+
+  REAL BUG FOUND AND FIXED (not just provisioning): first deploy returned
+  HTTP 502 from Traefik despite the container's own boot log showing the
+  Next.js server "Ready" and listening on port 3000. Diagnosed via a
+  read-only workflow (diagnose-dashboard-staging.yml) that confirmed
+  Coolify's destination network ("coolify", same network the Traefik proxy
+  itself runs on), decoded custom_labels (correct host rule, correct
+  service->port 3000 wiring), and the container's stdout log side by side —
+  every routing-layer fact checked out. Root cause: Next.js standalone's
+  server.js binds to process.env.HOSTNAME, and Docker auto-sets
+  HOSTNAME=<container-id> in every container, so the server was listening on
+  the container-ID hostname's interface, not 0.0.0.0 — Traefik got
+  connection-refused, not a routing failure. Fixed with one Dockerfile line
+  (ENV HOSTNAME=0.0.0.0 in the runtime stage — the same fix Next.js's own
+  official with-docker example applies, for the same reason). Confirmed:
+  restarting the container without this fix did not help (ruled out a
+  Traefik-refresh-timing theory before landing on the real cause); redeploying
+  after the fix returned HTTP 200 immediately with real rendered widget data.
+
+  DOMAIN: Coolify auto-assigned a reachable default domain
+  (http://r14c3p7jzwo4wxyprd4yxyev.187.124.76.235.sslip.io, a server-IP-based
+  sslip.io preview) at app-creation time, even though its API rejects an
+  explicit custom fqdn for docker-image apps on both create and PATCH (the
+  same HTTP 422 "This field is not allowed" limitation as FQ-24/T-10). This
+  meant FQ-59's gate could be applied and its blocking verification completed
+  in this same session, rather than deferred to a founder domain action.
+
+  FQ-59 APPLIED AND VERIFIED LIVE. New workflow apply-dashboard-basic-auth.yml
+  reused T-57's already-generated credential (the scratchpad file was still
+  present in this session — no regeneration needed) and merged a "dashauth"
+  Traefik basicauth middleware into every router Coolify generated for the
+  app (not clobbering the pre-existing "gzip" middleware on the http
+  router) — mirroring fix-litellm-traefik-label.yml's GET/decode/modify/PATCH
+  approach, the only prior precedent in this repo for editing an app's
+  Traefik labels via the Coolify API.
+
+  REAL FINDING ON THE $ ESCAPING: FQ-59's credential file offered two label
+  variants — an unescaped user:hash (for a dedicated "Basic Auth" UI field)
+  and a $->$$ -escaped variant explicitly for "a raw Traefik label" (standard
+  docker-compose label-escaping). Empirically, applying the ESCAPED ($$)
+  variant via PATCH .../applications/{uuid} custom_labels produced a
+  consistent 401 even with the correct password — Coolify's API path for
+  custom_labels does not appear to run the value through docker-compose's
+  $->$$ un-escaping the way a human hand-editing a compose file would need.
+  Switching DASHBOARD_BASIC_AUTH_USERHASH to the UNESCAPED, single-$ variant
+  fixed it immediately (confirmed by re-running the same workflow with only
+  that secret changed: 401 unescaped -> still 401 with credentials; then
+  200 with the single-$ hash). Recorded here so a future session applying
+  Traefik basic auth via THIS API path (Coolify custom_labels PATCH, not a
+  hand-edited compose file) uses the unescaped form directly.
+
+  ALSO FOUND AND FIXED: a real YAML bug in apply-dashboard-basic-auth.yml (a
+  bash multi-line variable assignment embedded a literal newline followed by
+  a bare closing quote at column 0, which is less indented than a `run: |`
+  block scalar allows — this silently terminated the block scalar mid-file).
+  This, not a platform quirk, is what produced a set of
+  "HTTP 422 Workflow does not have 'workflow_dispatch' trigger" failures
+  that initially looked identical to the documented FQ-48 GitHub-side quirk
+  (backup-verification.yml). Distinguished by validating the file with
+  PyYAML locally (real parse error, exact line/column) rather than assuming
+  the known-quirk explanation; fixed with printf instead of an embedded
+  literal newline. All 4 of this session's new/changed workflow files
+  verified to parse cleanly before being treated as done.
+
+  BLOCKING VERIFICATION (FQ-59 Action 3), run both by the workflow itself
+  and independently by hand from this session: unauthenticated curl -> 401;
+  curl -u opsadmin:<password> -> 200, ~41KB body. Body content checked for
+  real widget text (SLA "attainment", "Pipeline", the honest T-58 "pending
+  real gate" eval-health placeholder) and the ABSENCE of "failed to load"
+  error cards — confirms all 4 charter pillars render live data behind the
+  gate, not just that the HTTP layer answers.
+
+  SECRETS: DASHBOARD_BASIC_AUTH_USERHASH and DASHBOARD_BASIC_AUTH_PASSWORD
+  set as GitHub Actions secrets via `gh secret set`, values piped directly
+  from the local scratchpad file and never echoed to any tool output, chat,
+  or committed file.
+
+  REMAINING (founder, one-time): attach a real custom domain in the Coolify
+  UI (ops-dashboard-staging.inatechshell.ca suggested, matching the existing
+  *-staging.inatechshell.ca convention) so the dashboard sits behind proper
+  TLS instead of the plain-HTTP sslip.io preview it's reachable on today.
+  apply-dashboard-basic-auth.yml is idempotent and safe to re-run once that
+  domain exists. Prod promotion (a separate, later step per FQ-60's own
+  recommendation) was not started in this task.
+```

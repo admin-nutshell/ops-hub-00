@@ -1,9 +1,15 @@
 # Deploy plan — Ops Dashboard staging Coolify app (T-68, FQ-60 + FQ-59, STAGING ONLY)
 
-**Status:** Provisioning workflow executed this session (see WORK.md T-68 for
-the run link and result). Basic Auth gate + blocking 401/200 verification are
-prepared but gated on one founder action (attach a domain) — see "What's left"
-below.
+**Status:** DONE, staging only (2026-07-06). App created, deployed, env vars
+set, a real 502 (Next.js standalone bind-address bug) found and fixed along
+the way, FQ-59's Basic Auth gate applied, and the blocking 401/200
+verification passed — all against the app's auto-assigned sslip.io preview
+address (Coolify rejects a custom `fqdn` for docker-image apps via the API,
+same as FQ-24/T-10, but auto-assigns a reachable default). See WORK.md T-68
+and DECISIONS.md 2026-07-06 T-68 for the full write-up including two real
+bugs found (bind address; a YAML block-scalar break that mimicked the FQ-48
+quirk) and one real credential-escaping finding. Only remaining step is a
+founder domain action (FQ-63) for a real TLS address — filed, non-blocking.
 
 **Scope guardrail:** staging only. This plan does NOT touch `ops-hub-prod`
 (UUID `sbke5gqru1n54rj7gssgca2y`) or provision a prod dashboard app. FQ-60's
@@ -92,8 +98,34 @@ anything in this plan is strictly additive-removal:
    (SLA/open-tickets, agent-cost, eval-health, platform-incidents) render
    real numbers, not just that the page loads.
 
-## What's left (see FOUNDER_QUEUE.md FQ-60 for the consolidated ask)
+## What actually happened (2026-07-06)
 
-Everything through step 1 is executable by this role without further input.
-Steps 2–4 need the one founder action described above; step 3 is fully
-prepared and will complete steps 3–4 autonomously once dispatched.
+- **Step 1:** done. `provision-ops-dashboard-staging.yml` created the app,
+  built and pushed the image, deployed it, and set all 3 env vars. First
+  deploy returned a live HTTP 502 — root-caused (Next.js standalone binds
+  to `process.env.HOSTNAME`, which Docker sets to the container ID, not
+  `0.0.0.0`) and fixed with one `web/Dockerfile` line
+  (`ENV HOSTNAME=0.0.0.0`). Re-deployed, confirmed HTTP 200 with real
+  widget data.
+- **Step 2 (domain):** Coolify auto-assigned a reachable default domain
+  (`http://r14c3p7jzwo4wxyprd4yxyev.187.124.76.235.sslip.io`) even without
+  an explicit custom `fqdn`, so this step did NOT block the rest of the
+  plan this session — it's now filed as **FQ-63** for a real TLS domain,
+  non-blocking.
+- **Step 3:** done. `apply-dashboard-basic-auth.yml` applied the gate and
+  ran the blocking verification against the sslip.io address: 401
+  unauthenticated, 200 authenticated. One real finding along the way: the
+  credential file's `$`-escaped ("`$$`") variant did not work through this
+  specific API path (Coolify `custom_labels` PATCH) — the unescaped
+  variant does; see DECISIONS.md 2026-07-06 T-68.
+- **Step 4:** done, both by the workflow and independently by hand —
+  response body contains real SLA/pipeline data and the honest T-58
+  "pending real gate" placeholder, no "failed to load" cards.
+
+## What's left (see FOUNDER_QUEUE.md FQ-63 for the consolidated ask)
+
+Only the domain swap (sslip.io preview → real TLS domain) remains, and it's
+non-blocking — the dashboard is already secure and fully functional today.
+Once the founder attaches the real domain, re-dispatching
+`apply-dashboard-basic-auth.yml` re-gates it (idempotent, no code changes
+needed). Prod promotion is a separate, not-yet-started follow-up.
