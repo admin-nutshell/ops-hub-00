@@ -35,12 +35,16 @@ name: Provision Ops Dashboard — PRODUCTION Coolify app (T-70, founder-authoriz
 # existence check here (idempotent re-run guard only) is safe, same
 # reasoning as the staging workflow.
 #
-# What this does, in order, single job, no pauses:
+# What this does, in order, single job, no pauses (UPDATED for Phase 2 --
+# see "PHASE 2 SECURITY HARDENING" below for why steps 5+ are now
+# conditional):
 #   1. Builds web/Dockerfile from the repo root (repo imports src/metrics/*
 #      directly), pushes to GHCR.
 #   2. Discovers the ops-hub-prod Coolify project/server/environment.
-#   3. Creates a new "dockerimage" Coolify app (idempotent -- patches image
-#      tag and reuses the existing app if one of this name already exists).
+#   3. Creates a new "dockerimage" Coolify app with instant_deploy=false
+#      (idempotent -- patches image tag and reuses the existing app if one
+#      of this name already exists). Nothing is reachable yet at this point,
+#      by construction -- no deploy has ever been triggered.
 #   4. Sets env vars: OPS_HUB_APP_LOGIN_URL (copied byte-for-byte from
 #      ops-hub-prod, never regenerated), POLLING_PROJECT_ID / POLLING_TENANT_ID
 #      (prod scope: tts-prod / DNC-prod), and prod health-check URL overrides
@@ -49,17 +53,20 @@ name: Provision Ops Dashboard — PRODUCTION Coolify app (T-70, founder-authoriz
 #      SHARED freescout-staging.inatechshell.ca instance, which per T-50 IS
 #      the prod mailbox -- there is no separate freescout-prod host, and
 #      inventing one would render a false "degraded" card).
-#   5. Starts a real deployment, waits for it to finish.
-#   6. Discovers the app's auto-assigned fqdn (Coolify assigns a reachable
-#      sslip.io preview even without an explicit custom fqdn for
-#      docker-image apps -- same behavior confirmed on staging).
-#   7. Immediately merges a `dashauth-prod` Traefik basicauth middleware into
-#      EVERY router Coolify generated for that fqdn (typically an http
-#      redirect router + the https content router), force-recreates the
-#      container so Traefik picks up the new labels.
+#   5. Checks whether a real TLS domain (PROD_DOMAIN) is already attached. If
+#      NOT, the job stops here (green, not an error) and prints the one
+#      founder action needed -- it never calls /start, so the app is not
+#      reachable on any address (no sslip.io fallback either).
+#   6. Only once a real https domain is confirmed: starts a real deployment,
+#      waits for it to finish.
+#   7. Re-confirms the fqdn is unchanged, then immediately merges a
+#      `dashauth-prod` Traefik basicauth middleware into EVERY router
+#      Coolify generated for that domain (typically an http redirect router
+#      + the https content router), force-recreates the container so
+#      Traefik picks up the new labels.
 #   8. BLOCKING verification: unauthenticated request must be 401;
 #      authenticated request (prod Basic Auth credential) must be 200 with a
-#      real rendered body.
+#      real rendered body -- both over https.
 #
 # Rollback: this app carries no write path and no cron of its own -- rollback
 # is DELETE /applications/{uuid} via the Coolify API (or the UI), or
@@ -79,7 +86,53 @@ name: Provision Ops Dashboard — PRODUCTION Coolify app (T-70, founder-authoriz
 # `dashauth-prod`, a name that can never collide with staging's `dashauth`
 # again. The cleanup regex in the gate step matches EITHER name so a
 # re-dispatch also heals a prod app still carrying the old colliding
-# definition from before this fix.
+# definition from before this fix. **Live-verified 2026-07-07** (T-70 Phase 1
+# restoration): deleting the colliding prod app immediately restored staging
+# to 401/200 -- the collision theory is confirmed, not just plausible.
+#
+# PHASE 2 SECURITY HARDENING (2026-07-07, founder-approved plan: "restore
+# staging now, redo prod the secure way as a clean follow-up" -- do NOT rush
+# prod live on the insecure setup). Two gaps the founder flagged before any
+# future prod go-live, both addressed below:
+#
+#   (a) HTTPS via a real domain, not plain-http sslip.io. Basic Auth
+#       credentials must never travel in cleartext. This workflow now
+#       REFUSES to deploy (never calls /start) until a real custom domain
+#       (PROD_DOMAIN, "ops-dashboard-prod.inatechshell.ca") is already
+#       attached to the app in Coolify with a working TLS cert -- see the
+#       new "Check domain is ready" step. This is a genuinely different
+#       property from the pre-Phase-2 version, which deployed onto whatever
+#       sslip.io preview Coolify auto-assigned.
+#
+#   (b) Gate BEFORE reachable, with an honest accounting of what "before" can
+#       mean on this platform. The app is created with instant_deploy=false
+#       (Coolify doc'd default) and this workflow never calls /start until
+#       the real-domain precondition above is met -- so before a real domain
+#       exists, the app is 100% unreachable (not even via sslip.io), not
+#       merely ungated. That closes the ORIGINAL exposure window entirely
+#       (there is no fallback public address at all pre-domain). The
+#       remaining, smaller window is the same structural one already
+#       documented above (Coolify only generates a router's Traefik labels
+#       AFTER a deploy, so the very first boot briefly has no basicauth
+#       middleware attached until this job's immediate post-deploy PATCH +
+#       force-recreate completes) -- typically single-digit seconds, fully
+#       machine-paced, no human pause, same mitigation as before but now over
+#       HTTPS instead of cleartext http. A true zero-window fix (pre-seeding
+#       Traefik labels before the very first /start, using Coolify's
+#       apparently-deterministic router naming) was investigated but NOT
+#       validated live (forbidden by this task's own guardrail against
+#       touching prod without the domain in place first) -- flagged as an
+#       open follow-up, see "NOT YET VALIDATED" note near the gate step.
+#       Do not claim a literal zero-window until that spike is run on
+#       staging and confirmed.
+#
+#   Consolidated founder action needed (single item, FQ-63-style): attach
+#   `ops-dashboard-prod.inatechshell.ca` to this app in the Coolify UI
+#   (create the app first via a dispatch of this workflow with no domain yet
+#   -- it will stop safely after creating/configuring the app and print the
+#   UUID) + add the matching DNS record. See FOUNDER_QUEUE.md for the exact
+#   ask. This workflow is idempotent -- re-dispatch after the domain is live
+#   and it proceeds straight to deploy+gate+verify with no code changes.
 
 on:
   workflow_dispatch: {}
@@ -109,6 +162,10 @@ env:
   # (T-54 collision -- both ops-hub-staging and ops-hub-prod backend apps
   # display as "ops-hub-app (localhost)").
   OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  # Phase 2 hardening: the real TLS domain that must already be attached
+  # (Coolify UI, founder action) before this workflow will ever call
+  # /start. Never deploy onto an auto-assigned sslip.io preview in prod.
+  PROD_DOMAIN: "ops-dashboard-prod.inatechshell.ca"
   PROD_PROJECT_ID: "00000000-0000-0000-0000-000000000003"
   PROD_TENANT_ID: "00000000-0000-0000-0000-000000000030"
   PROD_OPS_HUB_HEALTH_URL: "https://ops-hub-prod.inatechshell.ca/health"
@@ -306,9 +363,59 @@ jobs:
           set_var "FREESCOUT_HEALTH_URL" "$PROD_FREESCOUT_HEALTH_URL"
           echo "All 6 env vars set (login DSN copied from ops-hub-prod, polling scope = tts-prod/DNC-prod, health URLs = prod FQDNs; FreeScout health points at the shared freescout-staging host, which per T-50 IS the prod mailbox)."
 
-      # ── Deploy for real (pull image, start container) ────────────────────────
+      # ── Phase 2 hardening: refuse to deploy onto anything but a real,
+      #    TLS-covered domain. The app above was created with
+      #    instant_deploy=false and nothing has called /start yet, so at
+      #    this point the app is 100% unreachable -- not "ungated", not
+      #    reachable at all, on any address. That is the actual fix for
+      #    "gate before reachable": there is no fallback public URL to be
+      #    ungated on. ──────────────────────────────────────────────────
+      - name: Check domain is ready (real TLS domain attached, not sslip.io)
+        id: domain
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/app_domain.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          [ "$HTTP" = "200" ] || { echo "::error::GET /applications/$UUID HTTP $HTTP"; exit 1; }
+          FQDN=$(jq -r '.fqdn // empty' /tmp/app_domain.json | sed 's#,.*##; s#/$##')
+
+          if [ -z "$FQDN" ] || echo "$FQDN" | grep -q "sslip.io"; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "=========================================================="
+            echo "PAUSED -- no deploy performed. App created/configured only."
+            echo "=========================================================="
+            echo "App UUID: $UUID (env vars set, image tag patched -- safe, nothing reachable)"
+            echo ""
+            echo "ONE founder action needed before this can go further:"
+            echo "  1. Coolify UI -> ops-hub-prod project -> '$APP_NAME' -> Settings/General -> Domains"
+            echo "  2. Enter: $PROD_DOMAIN"
+            echo "  3. Save (do NOT click Deploy -- this workflow does that once re-dispatched)"
+            echo "  4. Add the matching DNS record for $PROD_DOMAIN (same pattern as ops-hub-prod.inatechshell.ca)"
+            echo "  5. Re-dispatch this workflow -- it will detect the real domain and proceed straight"
+            echo "     through deploy -> gate -> verify, no code changes needed."
+            echo ""
+            echo "Current fqdn on the app record: '${FQDN:-<none>}'"
+            exit 0
+          fi
+
+          if ! echo "$FQDN" | grep -q "^https://"; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Domain '$FQDN' is attached but not yet serving https -- Coolify may still be provisioning the Let's Encrypt cert. Re-run this workflow in a few minutes rather than deploying onto http."
+            exit 0
+          fi
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          echo "fqdn=$FQDN" >> "$GITHUB_OUTPUT"
+          echo "Real TLS domain confirmed: $FQDN -- proceeding to deploy."
+
+      # ── Deploy for real (pull image, start container) -- ONLY when a real
+      #    domain is confirmed above; every remaining step is gated on
+      #    steps.domain.outputs.ready == 'true'. ─────────────────────────
       - name: Start dashboard app deployment
         id: start
+        if: steps.domain.outputs.ready == 'true'
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           HTTP=$(curl -s --max-time 180 -o /tmp/start.json -w "%{http_code}" -X POST \
@@ -320,7 +427,7 @@ jobs:
           echo "deployment_uuid=$DEPLOYMENT_UUID" >> "$GITHUB_OUTPUT"
 
       - name: Wait for Coolify deployment to complete
-        if: steps.start.outputs.deployment_uuid != ''
+        if: steps.domain.outputs.ready == 'true' && steps.start.outputs.deployment_uuid != ''
         run: |
           DEPLOYMENT_UUID="${{ steps.start.outputs.deployment_uuid }}"
           UUID="${{ steps.app.outputs.uuid }}"
@@ -348,8 +455,22 @@ jobs:
           echo "WARNING: deployment status poll timed out after 5 min — check Coolify UI"
 
       # ── Gate BEFORE treating as reachable — same job, no pause ───────────────
-      - name: Discover assigned fqdn (auto-assigned sslip.io preview expected)
+      # fqdn was already confirmed real+https by the "Check domain is ready"
+      # step above, before /start was ever called -- re-use it rather than
+      # re-discovering (Coolify does not change an app's fqdn mid-deploy).
+      #
+      # NOT YET VALIDATED (open follow-up, do not attempt on prod without a
+      # staging spike first): it may be possible to PATCH custom_labels with
+      # a hand-built dashauth-prod router BEFORE ever calling /start, using
+      # Coolify's apparently-deterministic router-name pattern observed on
+      # this codebase's decoded labels (roughly `http-0-<uuid>` /
+      # `https-0-<uuid>`), so the very first container boot already carries
+      # the gate and even the current single-digit-second window closes.
+      # Left as future hardening, not implemented here, because it wasn't
+      # safe to verify live under this task's own guardrails.
+      - name: Re-confirm fqdn unchanged post-deploy
         id: fqdn
+        if: steps.domain.outputs.ready == 'true'
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           HTTP=$(curl -s --max-time 30 -o /tmp/app_final.json -w "%{http_code}" \
@@ -357,15 +478,17 @@ jobs:
             "$COOLIFY_BASE/applications/$UUID")
           [ "$HTTP" = "200" ] || { echo "::error::GET /applications/$UUID HTTP $HTTP"; cat /tmp/app_final.json; exit 1; }
           FQDN=$(jq -r '.fqdn // empty' /tmp/app_final.json | sed 's#,.*##; s#/$##')
-          if [ -z "$FQDN" ]; then
-            echo "::error::No fqdn assigned yet (expected an auto sslip.io preview, same as staging T-68). Cannot gate a route that does not exist. Re-run this workflow; if it recurs, a founder domain attach may be required first — see FOUNDER_QUEUE.md."
+          EXPECTED="${{ steps.domain.outputs.fqdn }}"
+          if [ "$FQDN" != "$EXPECTED" ]; then
+            echo "::error::fqdn changed between the pre-deploy check ($EXPECTED) and now ($FQDN) -- stopping rather than gating the wrong route."
             exit 1
           fi
           echo "fqdn=$FQDN" >> "$GITHUB_OUTPUT"
-          echo "Domain: $FQDN — proceeding immediately to gate it (no pause)."
+          echo "Domain confirmed unchanged: $FQDN — proceeding immediately to gate it (no pause)."
 
       - name: Get current custom_labels and merge basicauth into every router
         id: labels
+        if: steps.domain.outputs.ready == 'true'
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           HTTP=$(curl -s --max-time 30 -o /tmp/app.json -w "%{http_code}" \
@@ -427,6 +550,7 @@ jobs:
           echo "new_b64=$NEW_B64" >> "$GITHUB_OUTPUT"
 
       - name: PATCH custom_labels (adds Basic Auth middleware to every router)
+        if: steps.domain.outputs.ready == 'true'
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           PAYLOAD=$(jq -n --arg labels "${{ steps.labels.outputs.new_b64 }}" '{custom_labels:$labels}')
@@ -437,6 +561,7 @@ jobs:
           [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || { echo "::error::PATCH failed"; cat /tmp/patch.json; exit 1; }
 
       - name: Stop then start (force container recreation with new labels)
+        if: steps.domain.outputs.ready == 'true'
         run: |
           UUID="${{ steps.app.outputs.uuid }}"
           curl -s --max-time 30 -o /dev/null -X POST \
@@ -450,6 +575,7 @@ jobs:
 
       - name: BLOCKING verification -- unauthenticated request must be 401
         id: verify401
+        if: steps.domain.outputs.ready == 'true'
         run: |
           FQDN="${{ steps.fqdn.outputs.fqdn }}"
           HTTP=000
@@ -468,6 +594,7 @@ jobs:
 
       - name: BLOCKING verification -- authenticated request must be 200 and render real data
         id: verify200
+        if: steps.domain.outputs.ready == 'true'
         run: |
           FQDN="${{ steps.fqdn.outputs.fqdn }}"
           HTTP=$(curl -sS -o /tmp/authed.html -w '%{http_code}' --max-time 15 -u "opsadmin:$DASH_PASSWORD" "$FQDN/")
@@ -495,12 +622,20 @@ jobs:
           echo "App name: $APP_NAME"
           echo "App UUID: ${{ steps.app.outputs.uuid }}"
           echo "Image:    $IMAGE:${{ github.sha }}"
-          echo "fqdn:     ${{ steps.fqdn.outputs.fqdn }}"
-          echo "401 (unauthenticated): ${{ steps.verify401.outputs.code }}"
-          echo "200 (authenticated):   ${{ steps.verify200.outputs.code }} (${{ steps.verify200.outputs.bytes }} bytes, 'failed to load' count: ${{ steps.verify200.outputs.failcount }})"
-          echo ""
-          echo "Remaining (founder, Coolify UI -- API rejects fqdn for docker-image apps, HTTP 422,"
-          echo "same limitation as FQ-24/FQ-60): attach a real TLS domain, e.g."
-          echo "ops-dashboard-prod.inatechshell.ca, then re-dispatch this workflow to re-gate the"
-          echo "new router (idempotent, no code changes needed). Non-blocking -- the dashboard is"
-          echo "already gated and fully functional on the sslip.io preview address today."
+          if [ "${{ steps.domain.outputs.ready }}" != "true" ]; then
+            echo ""
+            echo "STATUS: PAUSED -- app created/configured, NEVER deployed, NOT reachable on any"
+            echo "address (no sslip.io fallback either). Waiting on the founder domain action"
+            echo "printed above. Re-dispatch this workflow once $PROD_DOMAIN is attached and"
+            echo "resolving -- it will proceed straight through deploy -> gate -> verify."
+          else
+            echo "fqdn:     ${{ steps.fqdn.outputs.fqdn }}"
+            echo "401 (unauthenticated): ${{ steps.verify401.outputs.code }}"
+            echo "200 (authenticated):   ${{ steps.verify200.outputs.code }} (${{ steps.verify200.outputs.bytes }} bytes, 'failed to load' count: ${{ steps.verify200.outputs.failcount }})"
+            echo ""
+            echo "STATUS: LIVE behind dashauth-prod on a real HTTPS domain. Basic Auth no longer"
+            echo "travels in cleartext (Phase 2 gap (a) closed). The app was never reachable before"
+            echo "this run's own deploy (Phase 2 gap (b): no pre-domain exposure window at all;"
+            echo "the small post-deploy-to-gated window documented in this file's header remains,"
+            echo "machine-paced, single-digit seconds, now over TLS)."
+          fi
