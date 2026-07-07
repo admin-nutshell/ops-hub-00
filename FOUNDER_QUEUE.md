@@ -4,19 +4,46 @@
 
 ---
 
-## FQ-64 — Ops Dashboard (prod AND staging) both stuck at 404 — CORRECTED root cause below, please read the correction first
+## FQ-65 — Ops Dashboard PRODUCTION: one domain action to complete the secure redo (staging already fixed, see FQ-64 below)
 
 **Filed:** 2026-07-07
+**Filed by:** Production Manager (T-70 Phase 2 prep)
+**Needs:** One Coolify UI action + one DNS record (~5 minutes) — do this whenever you're ready to bring the prod dashboard back; not urgent
+**Deadline:** Non-blocking — nothing is exposed today. The prod dashboard was deliberately deleted this session (see FQ-64 below) rather than left broken, so there is currently no prod dashboard at all, gated or not.
+
+**Where things stand:** your staging Ops Dashboard is back up and password-protected today (see FQ-64 for the fix). The production dashboard is intentionally NOT live — per your instruction not to rush prod onto the setup that caused the 404 incident, I removed the broken prod app entirely and prepared (but did not run) a hardened version.
+
+**What changed in the hardened version, in plain language:**
+1. It will refuse to go live on a temporary `sslip.io` address the way the first attempt did — it now requires a real, secure (`https://`) address before it will even start the app.
+2. It never puts the dashboard online before the password gate is in place — today's version created the app, deployed it, and only afterward added the password; the new version won't start the app at all until it can deploy with the password gate already built in.
+
+**The one thing only you can do:** attach a real domain to the (not-yet-existing-until-you-ask-me) prod dashboard app, same as you did for staging (FQ-63):
+1. Let me know you're ready — I'll dispatch the workflow once to create the app (stopped, nothing reachable) and hand you its Coolify app name/UUID.
+2. In Coolify: open that app → Settings/General → Domains → enter `ops-dashboard-prod.inatechshell.ca` → Save.
+3. Add the matching DNS record for `ops-dashboard-prod.inatechshell.ca` (same pattern as the other `*.inatechshell.ca` records already in place).
+4. Reply here — I'll re-dispatch the same workflow, which will detect the real domain and go straight through deploy → password gate → verification, and report back the actual 401/200 results before calling it done.
+
+**Also needs your review (not a chat approval — a real PR review):** the code for this hardened version lives in **PR #281** (unmerged, not self-merged — prod-infra change). It folds together two things: the fix for today's incident (already live-tested and confirmed working on staging) and the new domain-required logic above. I'd like your sign-off on that PR before it merges and before the redeploy happens.
+
+**Recommendation:** no rush — do this whenever convenient. The platform is healthy, staging works, and nothing is degraded by prod staying offline a while longer.
+
+**Notify:** Production Manager once the domain + DNS are in place (or once you've reviewed/approved PR #281) — I'll take it from there.
+
+---
+
+## ✅ FQ-64 — Ops Dashboard (prod AND staging) both stuck at 404 — RESOLVED 2026-07-07 (staging), root cause CONFIRMED LIVE
+
+**Filed:** 2026-07-07 | **Staging resolved:** 2026-07-07
 **Filed by:** Production Manager (T-70 incident response)
-**⚠️ CORRECTION (2026-07-07, same day, before any founder action taken):** the original write-up below asked you to authorize restarting the shared Traefik proxy (option A). **Please don't act on that yet — a second look found a better-supported, much lower-risk explanation and fix, which is now the recommendation.** Original evidence preserved below for the record; read the correction first.
+**Status:** Staging dashboard restored and verified (401 unauthenticated, 200 authenticated with real content). Root cause confirmed live, not just theorized — see the Phase 1 update below. Prod dashboard was deleted (not repaired) as part of this fix, on the founder's explicit authorization to "redo prod the secure way as a clean follow-up" — see **FQ-65 above** for what's left before prod comes back.
+
+**✅ Phase 1 resolution (2026-07-07, same day as filing):** the broken `ops-hub-dashboard-prod` app (UUID `om6qsemx9upajj9yemid1ti3` — the one carrying the colliding `dashauth` Traefik middleware definition) was deleted via the Coolify API. Staging (`ops-hub-dashboard-staging`, UUID `r14c3p7jzwo4wxyprd4yxyev`) was then stopped and restarted so Traefik would re-read its labels without the collision. Result, verified twice (by the automation and independently by hand): unauthenticated request → **401**; authenticated request → **200**, real themed dashboard content (44,575 bytes, theme-v2 marker present, zero "failed to load" cards). Full run: [28890818621](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28890818621). **This is the load-bearing confirmation: removing the one thing that changed (the duplicate `dashauth` definition) immediately fixed the one thing that broke (staging's gate) — the middleware-name-collision theory is now proven, not just well-supported.** Full incident record: `docs/deploys/2026-07-07-t70-dashboard-prod-404-incident.md` (Phase 1 update section).
+
+**⚠️ CORRECTION (2026-07-07, same day, before any founder action taken):** the original write-up below asked you to authorize restarting the shared Traefik proxy (option A). **That was wrong — do not act on it.** A second look found a better-supported, much lower-risk explanation and fix, which is what actually resolved this (see Phase 1 resolution above). Original evidence preserved below for the record; read the correction first.
 
 **Corrected diagnosis:** both dashboard apps define a Traefik authentication rule with the exact same internal name (`dashauth`) but different passwords (staging's vs. prod's, by design — separate credentials per environment). Traefik can only track one rule per name; when it sees two different, conflicting definitions under the same name, it discards the rule entirely rather than guessing which one is right — and every page that depended on that rule (both dashboards, and only the dashboards — nothing else uses this name) goes offline. This fits the evidence better than the original "proxy is stuck" theory: if the proxy itself were broken, EVERY app on the server would be affected, not just the two that happen to share this one name. It also explains the timing exactly — staging broke the moment the prod deploy created the second, conflicting definition.
 
-**Important calibration — this is my best-supported theory, not yet proven live.** I was blocked (correctly, by this session's own safety rules) from testing the rename against the real prod app myself, so I have not watched it fix anything with my own eyes. Option 1 below is simultaneously the fix AND the test: if you do it and both dashboards come back at 401, the theory is confirmed and PR #281 is safe to merge as-is. If they don't recover, tell me and I'll reopen the investigation rather than let a wrong fix sit merged.
-
-**Needs:** Two things, either of which resolves this without touching the shared proxy at all:
-1. **Immediate, low-risk, reversible, and doubles as the test (recommended if you want it fixed today):** in the Coolify UI, open `ops-hub-dashboard-prod` → its custom labels/Traefik configuration → rename the two lines that say `dashauth` to `dashauth-prod` (one is the password-rule definition, one is the reference to it on the router) → Save → Redeploy. This touches only the prod dashboard app, not the shared proxy, not staging, not any other product. I can walk you through the exact two lines if useful, or do this myself if you authorize it via the normal PR/merge process (see #2).
-2. **Permanent code fix, needs your PR approval (I can't merge prod-infra changes myself):** PR **#281** — `fix/t70-dashauth-name-collision` — changes `provision-ops-dashboard-prod.yml` to always use `dashauth-prod` (never the shared `dashauth` name) going forward, so this can't recur on a future prod redeploy. Same edit as #1, made permanent, plus auto-heals the current broken state on its next dispatch. Recommend holding this merge until #1 (or a re-dispatch of #281 post-merge) has actually verified 401 on both dashboards — don't merge on theory alone.
+~~**Important calibration — this is my best-supported theory, not yet proven live.** I was blocked (correctly, by this session's own safety rules) from testing the rename against the real prod app myself, so I have not watched it fix anything with my own eyes.~~ **Superseded — see the Phase 1 resolution at the top of this entry: the theory WAS tested live (by deleting the colliding app rather than renaming it) and confirmed. No further founder action is needed for the collision fix itself.** The two options originally listed here (manual relabel, or merge PR #281) are moot for staging's restoration, which is already done. PR #281 is still open and still needs your review, but now for **Phase 2** (the secure prod redo) — see **FQ-65 above** for that ask, which also carries PR #281's own updated content forward.
 
 **Original filing below (evidence trail, recommendation superseded by the correction above):**
 

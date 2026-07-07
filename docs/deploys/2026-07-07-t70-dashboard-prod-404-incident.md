@@ -174,7 +174,7 @@ does NOT flip to 401**, the collision theory is wrong and the
 investigation reopens — do not treat PR #281 as safe to merge on theory
 alone.
 
-## Current safe state
+## Current safe state (as originally filed — see Phase 1 update below)
 
 Both dashboard apps return 404 to unauthenticated requests — no content,
 no data exposure — for the entire session, start to finish. Neither app
@@ -182,3 +182,64 @@ was ever reachable-and-ungated at any point. `ops-hub-prod` (the backend)
 was not touched; no prod data was altered; `service_role` never held; the
 `coolify-proxy` restart was identified but not attempted without
 authorization.
+
+---
+
+## Phase 1 update (2026-07-07, same-day follow-up) — STAGING RESTORED, collision theory CONFIRMED LIVE
+
+**Founder authorization:** "restore the working staging dashboard NOW, and
+redo production the secure way as a clean follow-up (do NOT rush prod live
+on the current insecure setup)." Recorded per the founder's own words:
+"approved, proceed as recommended."
+
+**What was done (Production Manager, one dispatch, `restart-dashboard-staging.yml`
+extended on a throwaway branch `fix/t70-restore-staging-phase1`, dispatched via
+`--ref` against the existing on-main filename — never merged; branch deleted
+after use):**
+
+1. **DELETE `ops-hub-dashboard-prod`** (UUID `om6qsemx9upajj9yemid1ti3`) via
+   the Coolify API — the broken, just-created, non-working, non-exposed app
+   carrying the colliding `dashauth` middleware definition. `DELETE` → HTTP
+   200; a follow-up `GET` on the same UUID confirmed **404** (gone). This is
+   cleanup of dead infrastructure, not a change to `ops-hub-prod` (the
+   backend, UUID `sbke5gqru1n54rj7gssgca2y`, hardcoded-distinct in the
+   workflow and never referenced by the delete step) or any prod data.
+2. **Stop + start `ops-hub-dashboard-staging`** (UUID
+   `r14c3p7jzwo4wxyprd4yxyev`) so Traefik re-reads labels with the collision
+   source gone.
+3. **Blocking verification, both independently by the workflow and by a
+   second, separate `curl` from this session:**
+   - Unauthenticated → **401** (both checks agree)
+   - Authenticated (`opsadmin:<staging password>`) → **200**, 44,575 bytes,
+     theme-v2 marker (`max-w-[1320px]`) present, 0 "failed to load" cards
+   - Prod dashboard URL (`om6qsemx9upajj9yemid1ti3...`) → confirmed **404**
+     (app no longer exists — expected and desired; prod stays offline on
+     purpose until Phase 2 is authorized and executed)
+
+Full run: [28890818621](https://github.com/admin-nutshell/ops-hub-00/actions/runs/28890818621).
+
+**This is the first live test of the collision theory (FQ-64/PR #281), and
+it passed cleanly** — removing the one thing that changed (the second
+`dashauth` definition) immediately restored the one thing that broke
+(staging's gate). The theory is now confirmed, not just well-supported.
+
+**Rollback path that was defined before dispatch:** none needed on the
+delete (the target app had zero write path, zero data, zero traffic — the
+deploy plan's own rollback for it was always "re-run
+`provision-ops-dashboard-prod.yml`, idempotent, recreates the app"); staging
+stop/start's rollback was "leave it stopped" (unreachable is always safe on
+this app) — not triggered.
+
+**Current safe state (updated):** staging dashboard is live and gated
+again — 401/200 confirmed, real themed content, no data-layer errors. Prod
+dashboard app no longer exists (deleted, not merely offline) — nothing
+reachable there at all, not even a 404 on a name that still resolves to a
+real app. `ops-hub-prod` (the backend) was not touched at any point in this
+follow-up; no prod data was read or altered; `service_role` never held.
+
+**Phase 2 (secure prod redo) is prepared, not executed** — see PR #281
+(updated this session to fold in the collision fix, now live-verified, plus
+new domain-required + never-deploy-before-domain hardening) and
+`FOUNDER_QUEUE.md` for the single consolidated founder action needed
+(attach `ops-dashboard-prod.inatechshell.ca` + DNS). No prod dashboard
+deploy was performed or attempted in Phase 2 prep — code only.
