@@ -10,13 +10,13 @@ export async function PlatformIncidentsPanel() {
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border bg-surface">
-      <div className="flex items-center justify-between border-b border-border-soft px-5 py-4">
-        <h2 className="text-sm font-semibold">Platform incidents</h2>
+    <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-card">
+      <div className="flex items-center justify-between border-b border-border-soft px-[22px] py-[17px]">
+        <h2 className="text-[13px] font-[650]">Platform incidents</h2>
         <span className="font-mono text-xs text-text-faint">infra, not ticket QA</span>
       </div>
       {incidents.length === 0 ? (
-        <div className="px-5 py-4 text-xs text-text-muted">
+        <div className="px-[22px] py-5 text-[12.5px] leading-[1.6] text-text-muted">
           No platform incidents recorded in ops-hub&apos;s audit trail. The richer Cstate status
           feed (T-38) tracks real infra incidents today but isn&apos;t wired into this dashboard
           yet — this panel is real and empty, not a stub, until that feed is connected.
@@ -24,7 +24,7 @@ export async function PlatformIncidentsPanel() {
       ) : (
         <div>
           {incidents.map((i) => (
-            <div key={i.id} className="border-b border-border-soft px-5 py-3.5 last:border-none">
+            <div key={i.id} className="border-b border-border-soft px-[22px] py-3.5 last:border-none">
               <div className="mb-1 flex items-center justify-between">
                 <div className="text-[12.5px] font-semibold">
                   {(i.payload.title as string | undefined) ?? i.action}

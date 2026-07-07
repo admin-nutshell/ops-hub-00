@@ -1,23 +1,44 @@
 @import "tailwindcss";
 
-/* Design tokens lifted from docs/design/ops-dashboard-mockup-v1.html (visual
-   reference only) — dark ops-console aesthetic, system fonts. */
+/* Design tokens — Ops Hub Theme v2 "Slate/Indigo" (dark), adopted standard.
+   Source of truth: docs/design/ops-dashboard-theme-v2.md (Option A, approved
+   by founder over the "Daylight Neutral" light alternative). Every future
+   screen (ticket portal, admin panels) should pull from these tokens instead
+   of inventing new ones — this is the reusable go-forward design system, not
+   a one-off restyle. */
 @theme {
-  --color-bg: #10141b;
-  --color-surface: #171c25;
-  --color-surface-raised: #1d2430;
-  --color-border: #262e3d;
-  --color-border-soft: #1e2531;
-  --color-text: #e9ecf1;
-  --color-text-muted: #8791a3;
-  --color-text-faint: #5b6478;
-  --color-accent: #5aa2e6;
-  --color-good: #48b583;
-  --color-warn: #db9a3c;
-  --color-critical: #dd5c5c;
+  --color-bg: #0a0d13;
+  --color-surface: #12151e;
+  --color-surface-raised: #191d29;
+  --color-border: #232838;
+  --color-border-soft: #1a1e2a;
+  --color-text: #eef1f7;
+  --color-text-muted: #9aa3b8;
+  --color-text-faint: #626c83;
+  --color-accent: #7c8cf8;
+  --color-accent-text: #a4b0fa;
+  --color-good: #3ecf8e;
+  --color-warn: #eaa64a;
+  --color-critical: #f2596f;
+  /* Categorical accent for the "triaged" ticket state — not one of the core
+     semantic tones (good/warn/critical/accent), just a distinct hue so the
+     ticket-state chips and pipeline stage bar stay visually distinguishable
+     from each other. */
+  --color-triaged: #c99ef3;
+  --color-triaged-text: #d0aaf5;
+
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", ui-monospace, monospace;
+
+  /* Cards read as "raised" against the page background via a soft two-layer
+     shadow, not just border contrast (theme v2's elevation strategy). */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 32px -16px rgba(0, 0, 0, 0.55);
+
+  /* Softer card radius than Tailwind's default rounded-xl (12px) — every
+     existing `rounded-xl` card/panel in the app becomes 14px from this one
+     override, so it doesn't need to be repeated per-component. */
+  --radius-xl: 14px;
 }
 
 html,
@@ -27,6 +48,77 @@ body {
   font-family: var(--font-sans);
 }
 
+body {
+  /* Subtle ambient wash behind the console, matching the approved mockup.
+     Purely decorative (no content, no interaction); fixed so it doesn't
+     scroll with the page. */
+  background-image:
+    radial-gradient(ellipse 1100px 600px at 10% -15%, rgb(124 140 248 / 10%), transparent),
+    radial-gradient(ellipse 800px 500px at 105% 5%, rgb(62 207 142 / 6%), transparent);
+  background-attachment: fixed;
+}
+
 * {
   box-sizing: border-box;
+}
+
+/* Metric-card top-edge highlight: a 1px gradient in the card's semantic tone,
+   replacing a flat colored border (theme v2's signature card treatment).
+   Pair with a `tone-good` / `tone-warn` / `tone-critical` / `tone-neutral`
+   modifier class — the tone colors the top edge (and, per-component, the
+   value text) only, never the whole card background. */
+.card-edge {
+  position: relative;
+  overflow: hidden;
+}
+.card-edge::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, currentColor, transparent);
+  opacity: 0.35;
+}
+.card-edge.tone-good::before {
+  color: var(--color-good);
+}
+.card-edge.tone-warn::before {
+  color: var(--color-warn);
+}
+.card-edge.tone-critical::before {
+  color: var(--color-critical);
+}
+.card-edge.tone-neutral::before {
+  color: var(--color-accent);
+}
+
+/* Shimmering skeleton line — theme v2's loading treatment (used instead of a
+   flat opacity pulse so a loading widget reads as "actively loading", not
+   just dimmed). */
+.skeleton-line {
+  background: linear-gradient(
+    90deg,
+    var(--color-surface-raised),
+    #232941,
+    var(--color-surface-raised)
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line {
+    animation: none;
+  }
 }
