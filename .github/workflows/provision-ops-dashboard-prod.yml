@@ -1,0 +1,479 @@
+name: Provision Ops Dashboard — PRODUCTION Coolify app (T-70, founder-authorized go-live)
+
+# Founder gave EXPLICIT authorization this session ("Deploy the dashboard to
+# production.") after a confirmation checkpoint describing this as a
+# prod-data dashboard behind a password gate, read-only and reversible. See
+# DECISIONS.md 2026-07-07 T-70 for the exact wording and WORK.md T-70.
+#
+# Mirrors provision-ops-dashboard-staging.yml (T-68/FQ-60) + the FQ-59 Basic
+# Auth gate from apply-dashboard-basic-auth.yml, but DELIBERATELY COLLAPSED
+# INTO ONE WORKFLOW/DISPATCH. Staging ran these as two separate dispatches
+# with a human-paced gap in between (acceptable for traffic-free staging
+# data); prod carries real tenant/ticket data, and the task's hard guardrail
+# is "gate BEFORE it's reachable." Coolify only generates Traefik routing
+# labels (custom_labels) AFTER a deploy, so a zero-reachable-window gate
+# isn't achievable on this platform -- the mitigation is to make the exposed
+# window as short as machine-paced automation allows: build -> create -> set
+# env vars -> deploy -> immediately (same job, no pause) patch basicauth
+# labels in -> force-recreate -> verify 401 -- all in one continuous run, no
+# waiting on a human/founder step in between.
+#
+# PRODUCTION ONLY. Targets the ops-hub-prod Coolify project and reuses
+# ops-hub-prod's own OPS_HUB_APP_LOGIN_URL DSN (UUID sbke5gqru1n54rj7gssgca2y)
+# -- never a newly generated credential, never printed.
+#
+# Basic Auth credential is DISTINCT from the T-57/FQ-59 staging credential on
+# purpose (separate creds per environment, defense in depth) --
+# DASHBOARD_BASIC_AUTH_USERHASH_PROD / DASHBOARD_BASIC_AUTH_PASSWORD_PROD,
+# generated and set as repo secrets this session; plaintext+hash live only in
+# a local scratchpad file, never printed/committed.
+#
+# Anchored by UUID once created -- never by display name. ops-hub-staging and
+# ops-hub-prod BACKEND apps both show as "ops-hub-app (localhost)" in the
+# Coolify UI (T-54 precedent); this workflow's own APP_NAME
+# ("ops-hub-dashboard-prod") has no name collision, so a one-time name-based
+# existence check here (idempotent re-run guard only) is safe, same
+# reasoning as the staging workflow.
+#
+# What this does, in order, single job, no pauses:
+#   1. Builds web/Dockerfile from the repo root (repo imports src/metrics/*
+#      directly), pushes to GHCR.
+#   2. Discovers the ops-hub-prod Coolify project/server/environment.
+#   3. Creates a new "dockerimage" Coolify app (idempotent -- patches image
+#      tag and reuses the existing app if one of this name already exists).
+#   4. Sets env vars: OPS_HUB_APP_LOGIN_URL (copied byte-for-byte from
+#      ops-hub-prod, never regenerated), POLLING_PROJECT_ID / POLLING_TENANT_ID
+#      (prod scope: tts-prod / DNC-prod), and prod health-check URL overrides
+#      (OPS_HUB_HEALTH_URL / LITELLM_HEALTH_URL point at ops-hub-prod's own
+#      /health and /health/litellm; FREESCOUT_HEALTH_URL points at the
+#      SHARED freescout-staging.inatechshell.ca instance, which per T-50 IS
+#      the prod mailbox -- there is no separate freescout-prod host, and
+#      inventing one would render a false "degraded" card).
+#   5. Starts a real deployment, waits for it to finish.
+#   6. Discovers the app's auto-assigned fqdn (Coolify assigns a reachable
+#      sslip.io preview even without an explicit custom fqdn for
+#      docker-image apps -- same behavior confirmed on staging).
+#   7. Immediately merges a `dashauth` Traefik basicauth middleware into
+#      EVERY router Coolify generated for that fqdn (typically an http
+#      redirect router + the https content router), force-recreates the
+#      container so Traefik picks up the new labels.
+#   8. BLOCKING verification: unauthenticated request must be 401;
+#      authenticated request (prod Basic Auth credential) must be 200 with a
+#      real rendered body.
+#
+# Rollback: this app carries no write path and no cron of its own -- rollback
+# is DELETE /applications/{uuid} via the Coolify API (or the UI), or
+# re-running this workflow (idempotent: reuses the existing app, patches the
+# image tag, re-applies the gate). Mean rollback time target < 15 minutes.
+
+on:
+  workflow_dispatch: {}
+  # Fallback trigger: this repo has a documented, unresolved GitHub-side quirk
+  # where a freshly-added workflow's workflow_dispatch trigger sometimes can't
+  # be invoked via API/CLI right after merge (HTTP 422 "Workflow does not have
+  # 'workflow_dispatch' trigger") -- see FOUNDER_QUEUE.md FQ-48, and T-68 which
+  # hit the same thing for apply-dashboard-basic-auth.yml. repository_dispatch
+  # is a different API path, used here as the reliable on-demand trigger.
+  repository_dispatch:
+    types: [provision-dashboard-prod]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ops-hub-dashboard-prod-provision
+  cancel-in-progress: false
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  IMAGE: "ghcr.io/${{ github.repository }}-dashboard"
+  APP_NAME: "ops-hub-dashboard-prod"
+  # Stable Coolify app UUID for ops-hub-prod (the BACKEND app) -- the SOURCE
+  # of the login DSN we copy (never regenerate). Do NOT resolve by name
+  # (T-54 collision -- both ops-hub-staging and ops-hub-prod backend apps
+  # display as "ops-hub-app (localhost)").
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  PROD_PROJECT_ID: "00000000-0000-0000-0000-000000000003"
+  PROD_TENANT_ID: "00000000-0000-0000-0000-000000000030"
+  PROD_OPS_HUB_HEALTH_URL: "https://ops-hub-prod.inatechshell.ca/health"
+  PROD_LITELLM_HEALTH_URL: "https://ops-hub-prod.inatechshell.ca/health/litellm"
+  PROD_FREESCOUT_HEALTH_URL: "https://freescout-staging.inatechshell.ca/"
+
+jobs:
+  provision-and-gate:
+    name: Build + create Coolify app + deploy + gate + verify (single pass, no pause)
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      USERHASH: ${{ secrets.DASHBOARD_BASIC_AUTH_USERHASH_PROD }}
+      DASH_PASSWORD: ${{ secrets.DASHBOARD_BASIC_AUTH_PASSWORD_PROD }}
+    steps:
+      - name: Guard — required secrets present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+          [ -n "$USERHASH" ] || { echo "::error::DASHBOARD_BASIC_AUTH_USERHASH_PROD not set"; exit 1; }
+          [ -n "$DASH_PASSWORD" ] || { echo "::error::DASHBOARD_BASIC_AUTH_PASSWORD_PROD not set"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      # ── Build & push the dashboard image (repo-root context, web/Dockerfile, current main) ──
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build dashboard image (repo root context, per web/Dockerfile header)
+        run: |
+          docker build \
+            -f web/Dockerfile \
+            --tag "$IMAGE:latest" \
+            --tag "$IMAGE:${{ github.sha }}" \
+            .
+
+      - name: Push dashboard image to GHCR
+        run: |
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          echo "Pushed $IMAGE:latest and $IMAGE:${{ github.sha }}"
+
+      # ── Discover ops-hub-prod's Coolify project/server/environment ──────────
+      - name: Discover server UUID
+        id: server
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/servers.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/servers")
+          [ "$HTTP" = "200" ] || { echo "::error::/servers HTTP $HTTP"; cat /tmp/servers.json; exit 1; }
+          UUID=$(jq -r '.[0].uuid' /tmp/servers.json)
+          [ -n "$UUID" ] && [ "$UUID" != "null" ] || { echo "::error::no server found"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "Server UUID: $UUID"
+
+      - name: Discover project UUID + environment name (ops-hub-prod)
+        id: project
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/projects.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects")
+          [ "$HTTP" = "200" ] || { echo "::error::/projects HTTP $HTTP"; cat /tmp/projects.json; exit 1; }
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-prod") | .uuid' /tmp/projects.json)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            echo "::error::ops-hub-prod project not found. Available:"
+            jq -r '.[].name' /tmp/projects.json
+            exit 1
+          fi
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+          HTTP2=$(curl -s --max-time 30 -o /tmp/proj_detail.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/projects/$UUID")
+          if [ "$HTTP2" = "200" ]; then
+            ENV_NAME=$(jq -r '.environments[0].name // "production"' /tmp/proj_detail.json)
+          else
+            ENV_NAME="production"
+          fi
+          echo "env_name=$ENV_NAME" >> "$GITHUB_OUTPUT"
+          echo "Project UUID: $UUID | Environment: $ENV_NAME"
+
+      # ── Create (or reuse) the dashboard app ──────────────────────────────────
+      - name: Check for an existing app of this name (idempotent re-run guard)
+        id: existing
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          [ "$HTTP" = "200" ] || { echo "::error::/applications HTTP $HTTP"; exit 1; }
+          UUID=$(jq -r --arg n "$APP_NAME" '[.[] | select(.name == $n)] | .[0].uuid // empty' /tmp/apps.json)
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          if [ -n "$UUID" ]; then
+            echo "Found existing '$APP_NAME' ($UUID) — will patch image tag + reuse, not recreate."
+          else
+            echo "No existing '$APP_NAME' app — will create."
+          fi
+
+      - name: Create dashboard app (dockerimage type)
+        id: create
+        if: steps.existing.outputs.uuid == ''
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg proj "${{ steps.project.outputs.uuid }}" \
+            --arg srv  "${{ steps.server.outputs.uuid }}" \
+            --arg env  "${{ steps.project.outputs.env_name }}" \
+            --arg name "$APP_NAME" \
+            --arg img  "$IMAGE" \
+            --arg tag  "${{ github.sha }}" \
+            '{
+              project_uuid:               $proj,
+              server_uuid:                $srv,
+              environment_name:           $env,
+              name:                       $name,
+              docker_registry_image_name: $img,
+              docker_registry_image_tag:  $tag,
+              ports_exposes:              "3000",
+              instant_deploy:             false
+            }')
+          HTTP=$(curl -s --max-time 30 -o /tmp/create.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/dockerimage" -d "$PAYLOAD")
+          echo "Create HTTP $HTTP"
+          jq . /tmp/create.json 2>/dev/null || cat /tmp/create.json
+          [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || { echo "::error::create failed (HTTP $HTTP)"; exit 1; }
+          UUID=$(jq -r '.uuid // .application_uuid // empty' /tmp/create.json)
+          [ -n "$UUID" ] || { echo "::error::no UUID in create response"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "Created $APP_NAME: $UUID"
+
+      - name: Resolve final app UUID
+        id: app
+        run: |
+          UUID="${{ steps.existing.outputs.uuid }}"
+          [ -z "$UUID" ] && UUID="${{ steps.create.outputs.uuid }}"
+          [ -n "$UUID" ] || { echo "::error::no app UUID resolved"; exit 1; }
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+          echo "Dashboard PROD app UUID: $UUID"
+
+      - name: Patch image tag on existing app (re-run path only)
+        if: steps.existing.outputs.uuid != ''
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          PATCH_BODY=$(jq -n --arg img "$IMAGE" --arg tag "${{ github.sha }}" \
+            '{docker_registry_image_name:$img, docker_registry_image_tag:$tag}')
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$UUID" -d "$PATCH_BODY")
+          echo "PATCH image tag → HTTP $HTTP"
+          jq . /tmp/patch.json 2>/dev/null || cat /tmp/patch.json
+
+      # ── Env vars — reuse OPS_HUB_APP_LOGIN_URL, never regenerate ─────────────
+      - name: Fetch OPS_HUB_APP_LOGIN_URL from ops-hub-prod (masked)
+        id: login
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/prod_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-prod envs (HTTP $HTTP)"; exit 1; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/prod_envs.json | head -1)
+          [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL absent on ops-hub-prod"; exit 1; }
+          echo "::add-mask::$LOGIN"
+          echo "login=$LOGIN" >> "$GITHUB_OUTPUT"
+          echo "Fetched OPS_HUB_APP_LOGIN_URL (masked): $(printf '%s' "$LOGIN" | sed -E 's#(://[^:]+):[^@]*@#\1:***@#')"
+
+      - name: Set env vars on dashboard app (delete-then-set — Coolify Save appends rows, not upsert)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          LOGIN="${{ steps.login.outputs.login }}"
+
+          set_var() {
+            key="$1"; val="$2"
+            HTTP=$(curl -s --max-time 30 -o /tmp/envs_now.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs")
+            [ "$HTTP" = "200" ] || { echo "::error::cannot list envs for $UUID (HTTP $HTTP)"; exit 1; }
+            for eu in $(jq -r --arg k "$key" '.[] | select(.key==$k) | .uuid' /tmp/envs_now.json 2>/dev/null); do
+              curl -s --max-time 30 -o /dev/null -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$UUID/envs/$eu"
+            done
+            RC=$(curl -s --max-time 30 -o /tmp/set_resp.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$UUID/envs" \
+              -d "$(jq -n --arg k "$key" --arg v "$val" '{key:$k,value:$v}')")
+            echo "  $key → HTTP $RC"
+            [ "$RC" = "200" ] || [ "$RC" = "201" ] || { echo "::error::failed to set $key"; cat /tmp/set_resp.json; exit 1; }
+          }
+
+          set_var "OPS_HUB_APP_LOGIN_URL" "$LOGIN"
+          set_var "POLLING_PROJECT_ID" "$PROD_PROJECT_ID"
+          set_var "POLLING_TENANT_ID" "$PROD_TENANT_ID"
+          set_var "OPS_HUB_HEALTH_URL" "$PROD_OPS_HUB_HEALTH_URL"
+          set_var "LITELLM_HEALTH_URL" "$PROD_LITELLM_HEALTH_URL"
+          set_var "FREESCOUT_HEALTH_URL" "$PROD_FREESCOUT_HEALTH_URL"
+          echo "All 6 env vars set (login DSN copied from ops-hub-prod, polling scope = tts-prod/DNC-prod, health URLs = prod FQDNs; FreeScout health points at the shared freescout-staging host, which per T-50 IS the prod mailbox)."
+
+      # ── Deploy for real (pull image, start container) ────────────────────────
+      - name: Start dashboard app deployment
+        id: start
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 180 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID/start")
+          echo "Start HTTP $HTTP"
+          jq . /tmp/start.json 2>/dev/null || cat /tmp/start.json
+          DEPLOYMENT_UUID=$(jq -r '.deployment_uuid // empty' /tmp/start.json 2>/dev/null || true)
+          echo "deployment_uuid=$DEPLOYMENT_UUID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Coolify deployment to complete
+        if: steps.start.outputs.deployment_uuid != ''
+        run: |
+          DEPLOYMENT_UUID="${{ steps.start.outputs.deployment_uuid }}"
+          UUID="${{ steps.app.outputs.uuid }}"
+          for i in $(seq 1 30); do
+            STATUS_HTTP=$(curl -s --max-time 15 -o /tmp/dep.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/deployments/$DEPLOYMENT_UUID" 2>/dev/null || true)
+            if [ "$STATUS_HTTP" = "200" ]; then
+              STATUS=$(jq -r '.status // empty' /tmp/dep.json 2>/dev/null || true)
+              echo "Attempt $i: deployment status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Deployment finished."; exit 0 ;;
+                failed|error)
+                  echo "=== Deployment FAILED — container logs ==="
+                  curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" \
+                    "$COOLIFY_BASE/applications/$UUID/logs" 2>/dev/null | tail -c 4000 || true
+                  exit 1
+                  ;;
+              esac
+            else
+              echo "Attempt $i: deployment API HTTP $STATUS_HTTP — waiting 10s"
+            fi
+            sleep 10
+          done
+          echo "WARNING: deployment status poll timed out after 5 min — check Coolify UI"
+
+      # ── Gate BEFORE treating as reachable — same job, no pause ───────────────
+      - name: Discover assigned fqdn (auto-assigned sslip.io preview expected)
+        id: fqdn
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/app_final.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          [ "$HTTP" = "200" ] || { echo "::error::GET /applications/$UUID HTTP $HTTP"; cat /tmp/app_final.json; exit 1; }
+          FQDN=$(jq -r '.fqdn // empty' /tmp/app_final.json | sed 's#,.*##; s#/$##')
+          if [ -z "$FQDN" ]; then
+            echo "::error::No fqdn assigned yet (expected an auto sslip.io preview, same as staging T-68). Cannot gate a route that does not exist. Re-run this workflow; if it recurs, a founder domain attach may be required first — see FOUNDER_QUEUE.md."
+            exit 1
+          fi
+          echo "fqdn=$FQDN" >> "$GITHUB_OUTPUT"
+          echo "Domain: $FQDN — proceeding immediately to gate it (no pause)."
+
+      - name: Get current custom_labels and merge basicauth into every router
+        id: labels
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/app.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          [ "$HTTP" = "200" ] || { echo "::error::GET HTTP $HTTP"; exit 1; }
+
+          CURRENT_B64=$(jq -r '.custom_labels // ""' /tmp/app.json)
+          if [ -z "$CURRENT_B64" ]; then
+            echo "::error::custom_labels is empty -- Coolify has not generated routing labels yet even after a completed deploy. Re-run this workflow (idempotent) rather than leaving the app ungated."
+            exit 1
+          fi
+          DECODED=$(echo "$CURRENT_B64" | base64 -d)
+          echo "=== Current labels ==="
+          echo "$DECODED"
+
+          # Coolify emits one router per scheme (http-0-<uuid>, https-0-<uuid> --
+          # typically an http->https redirect router PLUS the content-serving
+          # https router). Gate ALL of them found, not just one.
+          ROUTERS=$(echo "$DECODED" | grep -oE 'traefik\.http\.routers\.[a-zA-Z0-9_-]+\.rule=' \
+            | sed -E 's/traefik\.http\.routers\.([a-zA-Z0-9_-]+)\.rule=/\1/' | sort -u)
+          [ -n "$ROUTERS" ] || { echo "::error::no routers found in custom_labels"; exit 1; }
+          echo "Routers found: $(echo "$ROUTERS" | tr '\n' ' ')"
+
+          # Strip any prior dashauth artifacts (idempotent re-run), rebuild
+          # each router's middlewares= line, MERGING in any pre-existing
+          # middlewares rather than clobbering them.
+          WORK=$(echo "$DECODED" | grep -v "middlewares\.dashauth\.basicauth\.users")
+          NEW_MW_LINES=""
+          for R in $ROUTERS; do
+            EXISTING_LINE=$(echo "$WORK" | grep -E "^traefik\.http\.routers\.${R}\.middlewares=" || true)
+            EXISTING_MW=$(echo "$EXISTING_LINE" | sed -E "s/^traefik\.http\.routers\.${R}\.middlewares=//" \
+              | sed -E 's/(^|,)dashauth(,|$)/\1/' | sed -E 's/^,//; s/,$//')
+            if [ -n "$EXISTING_MW" ]; then
+              MW_VALUE="${EXISTING_MW},dashauth"
+            else
+              MW_VALUE="dashauth"
+            fi
+            WORK=$(echo "$WORK" | grep -vE "^traefik\.http\.routers\.${R}\.middlewares=")
+            NEW_MW_LINES="${NEW_MW_LINES}$(printf 'traefik.http.routers.%s.middlewares=%s\n' "$R" "$MW_VALUE")"
+          done
+
+          NEW_LABELS=$(printf '%s\ntraefik.http.middlewares.dashauth.basicauth.users=%s\n%s' "$WORK" "$USERHASH" "$NEW_MW_LINES")
+          echo "=== New router/middleware wiring (basicauth.users value withheld) ==="
+          echo "$NEW_LABELS" | grep -v "basicauth.users"
+          NEW_B64=$(printf '%s' "$NEW_LABELS" | base64 -w 0)
+          echo "new_b64=$NEW_B64" >> "$GITHUB_OUTPUT"
+
+      - name: PATCH custom_labels (adds Basic Auth middleware to every router)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          PAYLOAD=$(jq -n --arg labels "${{ steps.labels.outputs.new_b64 }}" '{custom_labels:$labels}')
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID" -d "$PAYLOAD")
+          echo "PATCH custom_labels -> HTTP $HTTP"
+          [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ] || { echo "::error::PATCH failed"; cat /tmp/patch.json; exit 1; }
+
+      - name: Stop then start (force container recreation with new labels)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          curl -s --max-time 30 -o /dev/null -X POST \
+            -H "Authorization: Bearer $TOKEN" "$COOLIFY_BASE/applications/$UUID/stop" || true
+          sleep 10
+          HTTP=$(curl -s --max-time 60 -o /tmp/start2.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" "$COOLIFY_BASE/applications/$UUID/start")
+          echo "Start HTTP $HTTP"
+          echo "Waiting 45s for container + Traefik route to come up..."
+          sleep 45
+
+      - name: BLOCKING verification -- unauthenticated request must be 401
+        id: verify401
+        run: |
+          FQDN="${{ steps.fqdn.outputs.fqdn }}"
+          HTTP=000
+          for i in $(seq 1 10); do
+            HTTP=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$FQDN/") || true
+            echo "Attempt $i: $FQDN/ (no credentials) -> HTTP $HTTP"
+            [ "$HTTP" = "401" ] && break
+            sleep 15
+          done
+          echo "code=$HTTP" >> "$GITHUB_OUTPUT"
+          if [ "$HTTP" != "401" ]; then
+            echo "::error::Expected 401, got $HTTP. Label/hash is mis-applied or Traefik hasn't picked up the new labels yet -- the prod dashboard must NOT be treated as gated/live until this is 401. Do not share the URL."
+            exit 1
+          fi
+          echo "401 confirmed -- PROD dashboard is NOT publicly reachable without credentials."
+
+      - name: BLOCKING verification -- authenticated request must be 200 and render real data
+        id: verify200
+        run: |
+          FQDN="${{ steps.fqdn.outputs.fqdn }}"
+          HTTP=$(curl -sS -o /tmp/authed.html -w '%{http_code}' --max-time 15 -u "opsadmin:$DASH_PASSWORD" "$FQDN/")
+          echo "Authenticated $FQDN/ -> HTTP $HTTP"
+          echo "code=$HTTP" >> "$GITHUB_OUTPUT"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Expected 200 with credentials, got $HTTP."
+            exit 1
+          fi
+          BYTES=$(wc -c < /tmp/authed.html)
+          echo "bytes=$BYTES" >> "$GITHUB_OUTPUT"
+          echo "Response body: $BYTES bytes"
+          FAILCOUNT=$(grep -ic "failed to load" /tmp/authed.html || true)
+          echo "failcount=$FAILCOUNT" >> "$GITHUB_OUTPUT"
+          echo "--- First 40 lines (structure only, no secrets expected in dashboard HTML) ---"
+          head -40 /tmp/authed.html || true
+          echo ""
+          echo "200 confirmed. 'failed to load' occurrences in body: $FAILCOUNT (expect 0)."
+          echo "Manually re-check in a browser that all 4 pillars render real prod numbers."
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "=== Ops Dashboard PRODUCTION app ==="
+          echo "App name: $APP_NAME"
+          echo "App UUID: ${{ steps.app.outputs.uuid }}"
+          echo "Image:    $IMAGE:${{ github.sha }}"
+          echo "fqdn:     ${{ steps.fqdn.outputs.fqdn }}"
+          echo "401 (unauthenticated): ${{ steps.verify401.outputs.code }}"
+          echo "200 (authenticated):   ${{ steps.verify200.outputs.code }} (${{ steps.verify200.outputs.bytes }} bytes, 'failed to load' count: ${{ steps.verify200.outputs.failcount }})"
+          echo ""
+          echo "Remaining (founder, Coolify UI -- API rejects fqdn for docker-image apps, HTTP 422,"
+          echo "same limitation as FQ-24/FQ-60): attach a real TLS domain, e.g."
+          echo "ops-dashboard-prod.inatechshell.ca, then re-dispatch this workflow to re-gate the"
+          echo "new router (idempotent, no code changes needed). Non-blocking -- the dashboard is"
+          echo "already gated and fully functional on the sslip.io preview address today."
