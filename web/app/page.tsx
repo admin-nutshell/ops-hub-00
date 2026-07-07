@@ -20,12 +20,12 @@ import { CardSkeleton, PanelSkeleton } from "../components/Skeleton";
 // rest of the page — each streams and fails independently.
 export default function DashboardPage() {
   return (
-    <main className="mx-auto flex max-w-[1280px] flex-col gap-7 px-8 py-7">
-      <Suspense fallback={<div className="h-14 animate-pulse rounded bg-surface" />}>
+    <main className="mx-auto flex max-w-[1320px] flex-col gap-[30px] px-8 pt-8 pb-[72px]">
+      <Suspense fallback={<div className="h-14 animate-pulse rounded-xl bg-surface" />}>
         <TopBar />
       </Suspense>
 
-      <section className="grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-3.5">
+      <section className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-4">
         <Suspense fallback={<CardSkeleton />}>
           <SlaAttainmentCard />
         </Suspense>
@@ -48,7 +48,7 @@ export default function DashboardPage() {
           <TicketQueue />
         </Suspense>
 
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-[18px]">
           <Suspense fallback={<PanelSkeleton rows={5} />}>
             <PipelinePanel />
           </Suspense>
