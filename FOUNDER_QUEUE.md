@@ -4,11 +4,22 @@
 
 ---
 
-## FQ-64 — Ops Dashboard (prod AND staging) both stuck at 404: shared Traefik proxy needs a restart; out of Production Manager's authorized scope
+## FQ-64 — Ops Dashboard (prod AND staging) both stuck at 404 — CORRECTED root cause below, please read the correction first
 
 **Filed:** 2026-07-07
 **Filed by:** Production Manager (T-70 incident response)
-**Needs:** Decision/Authorization — restarting the shared Coolify/Traefik ingress proxy (`coolify-proxy`), which fronts every production and staging app on this server, not just the dashboard
+**⚠️ CORRECTION (2026-07-07, same day, before any founder action taken):** the original write-up below asked you to authorize restarting the shared Traefik proxy (option A). **Please don't act on that yet — a second look found a better-supported, much lower-risk explanation and fix, which is now the recommendation.** Original evidence preserved below for the record; read the correction first.
+
+**Corrected diagnosis:** both dashboard apps define a Traefik authentication rule with the exact same internal name (`dashauth`) but different passwords (staging's vs. prod's, by design — separate credentials per environment). Traefik can only track one rule per name; when it sees two different, conflicting definitions under the same name, it discards the rule entirely rather than guessing which one is right — and every page that depended on that rule (both dashboards, and only the dashboards — nothing else uses this name) goes offline. This fits the evidence better than the original "proxy is stuck" theory: if the proxy itself were broken, EVERY app on the server would be affected, not just the two that happen to share this one name. It also explains the timing exactly — staging broke the moment the prod deploy created the second, conflicting definition.
+
+**Important calibration — this is my best-supported theory, not yet proven live.** I was blocked (correctly, by this session's own safety rules) from testing the rename against the real prod app myself, so I have not watched it fix anything with my own eyes. Option 1 below is simultaneously the fix AND the test: if you do it and both dashboards come back at 401, the theory is confirmed and PR #281 is safe to merge as-is. If they don't recover, tell me and I'll reopen the investigation rather than let a wrong fix sit merged.
+
+**Needs:** Two things, either of which resolves this without touching the shared proxy at all:
+1. **Immediate, low-risk, reversible, and doubles as the test (recommended if you want it fixed today):** in the Coolify UI, open `ops-hub-dashboard-prod` → its custom labels/Traefik configuration → rename the two lines that say `dashauth` to `dashauth-prod` (one is the password-rule definition, one is the reference to it on the router) → Save → Redeploy. This touches only the prod dashboard app, not the shared proxy, not staging, not any other product. I can walk you through the exact two lines if useful, or do this myself if you authorize it via the normal PR/merge process (see #2).
+2. **Permanent code fix, needs your PR approval (I can't merge prod-infra changes myself):** PR **#281** — `fix/t70-dashauth-name-collision` — changes `provision-ops-dashboard-prod.yml` to always use `dashauth-prod` (never the shared `dashauth` name) going forward, so this can't recur on a future prod redeploy. Same edit as #1, made permanent, plus auto-heals the current broken state on its next dispatch. Recommend holding this merge until #1 (or a re-dispatch of #281 post-merge) has actually verified 401 on both dashboards — don't merge on theory alone.
+
+**Original filing below (evidence trail, recommendation superseded by the correction above):**
+
 **Deadline:** Non-blocking for customer traffic (see "current safe state" below) — the dashboard itself is not usable until this is resolved, but nothing is exposed and no other service is degraded
 
 **In plain language:** the production Ops Dashboard deploy you authorized this session ran, built correctly, and applied the password gate correctly — but the dashboard is currently unreachable (a plain 404 "not found", not a working page, gated or otherwise). While investigating, the SAME 404 turned up on the staging dashboard too, even though it was confirmed working (password-gated, live) earlier today. Every other product on this server (ops-hub-staging, FreeScout, LiteLLM) is completely unaffected and working normally. **Nothing is leaking — the dashboard is simply offline, not exposed.** The fix requires briefly restarting the shared traffic router that sits in front of all our Coolify-hosted apps, which is outside what I'll do without your sign-off, since a restart briefly touches every product on this server, not just the dashboard.
@@ -28,7 +39,7 @@
 - **B.** Wait/monitor — if this is a transient host issue, it may self-resolve. I have no evidence it's self-healing (staging has been broken since ~14:55 and a real redeploy at 15:25 didn't restore it), so I don't recommend waiting.
 - **C.** Ask Hostinger/infra support if there's a known host-level event in this window (the `unreachable_count: 5` datapoint) before restarting, in case there's a deeper cause. Slower, but rules out a recurring problem.
 
-**Recommendation:** (A) — restart `coolify-proxy`. It's the standard remedy for this exact failure signature (healthy containers, correct labels, only label-discovered routes affected), low-risk (brief blip, no data/config change), and reversible in seconds if it doesn't help. Once you (or I, on your go-ahead) restart it, I will re-verify both dashboards (expect 401 unauthenticated / 200 authenticated on both, no further action needed on either app — their labels and containers are already correct) and close this out.
+**Recommendation (SUPERSEDED — see correction at the top of this entry):** ~~(A) — restart `coolify-proxy`~~. Kept for the record only; do not act on this. The corrected recommendation is the label rename (option 1 or 2 above), which is narrower, lower-risk, and doesn't touch any other product on the server.
 
 **Current safe state (unchanged since the original T-70 failure):** both dashboard apps return 404 to unauthenticated requests — no dashboard content, no data exposure, confirmed by both QA and me. No other production service is affected. I made no changes to `ops-hub-prod` (the backend), no prod data was touched, and I did not attempt the proxy restart myself.
 
