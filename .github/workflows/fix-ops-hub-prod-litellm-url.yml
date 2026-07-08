@@ -1,0 +1,116 @@
+name: Fix ops-hub-prod LITELLM_URL — restore correct internal address
+
+# Fixes a live production outage (2026-07-08): ops-hub-prod's LITELLM_URL was
+# found pointed at litellm-STAGING's UUID prefix (h12xz8887fxvbvjts2hac8if)
+# instead of litellm-prod's own (hlik1d96uvkkjzpbxa3azhcv) -- confirmed via a
+# real failed Inngest ticket-triage run: "getaddrinfo EAI_AGAIN
+# h12xz8887fxvbvjts2hac8if-032924269444". Root cause of HOW it got set wrong
+# is not yet established (T-51 on 2026-07-03 confirmed the correct value was
+# in place then); this workflow restores the correct value so production
+# ticket triage works again, without guessing further at the "how."
+#
+# Deletes ALL existing LITELLM_URL entries first (Coolify's env var Save
+# appends rows rather than upserting -- last row wins on deploy, a known
+# footgun in this project) then sets exactly one correct value, matching the
+# pattern already used in fix-litellm-schema-isolation.yml for DATABASE_URL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_container_name:
+        description: "The current litellm-prod container name (from diagnose-litellm-prod-container.yml) -- typed here as a safety confirmation, not read automatically, so a stale value can't be silently reused"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Validate input looks like a litellm-prod container name
+        run: |
+          NAME="${{ inputs.confirm_container_name }}"
+          if ! printf '%s' "$NAME" | grep -Eq '^hlik1d96uvkkjzpbxa3azhcv-[0-9]+$'; then
+            echo "::error::confirm_container_name '$NAME' doesn't match the expected"
+            echo "litellm-prod pattern (hlik1d96uvkkjzpbxa3azhcv-<digits>). Refusing to"
+            echo "proceed -- re-run diagnose-litellm-prod-container.yml for the current value."
+            exit 1
+          fi
+          echo "NEW_URL=http://${NAME}:4000" >> "$GITHUB_ENV"
+          echo "Target LITELLM_URL: http://${NAME}:4000"
+
+      - name: Delete all existing LITELLM_URL entries on ops-hub-prod
+        run: |
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Existing LITELLM_URL entries: $COUNT"
+          for eu in $(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs/$eu")
+            echo "  DELETE LITELLM_URL $eu -> HTTP $DEL"
+          done
+
+      - name: Set correct LITELLM_URL
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/set.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$NEW_URL" '{key:$k,value:$v}')")
+          echo "POST LITELLM_URL -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set LITELLM_URL (HTTP $HTTP)"; cat /tmp/set.json | head -10; exit 1
+          fi
+          echo "LITELLM_URL set to: $NEW_URL"
+
+      - name: Restart ops-hub-prod
+        id: restart
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/rl.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/restart")
+          echo "POST /restart -> HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/rl.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for restart + verify health
+        run: |
+          DEP="${{ steps.restart.outputs.dep_uuid }}"
+          if [ -n "$DEP" ]; then
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) break ;;
+                failed|error) echo "ERROR: restart failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          else
+            sleep 30
+          fi
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "https://ops-hub-prod.inatechshell.ca/health" || echo "000")
+            echo "Attempt $i: /health -> HTTP $HTTP"
+            [ "$HTTP" = "200" ] && break
+            sleep 10
+          done
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "ops-hub-prod LITELLM_URL corrected to: $NEW_URL"
+          echo "NEXT: verify via a real Inngest ticket-triage run, or dispatch"
+          echo "restart-verify-litellm-prod.yml's smoke-test pattern manually"
+          echo "against ops-hub-prod's own trigger path."
