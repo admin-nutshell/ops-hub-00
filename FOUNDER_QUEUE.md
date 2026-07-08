@@ -4,10 +4,11 @@
 
 ---
 
-## FQ-67 — Apply T-72's migration via Supabase SQL Editor (service_role) — Security Lead approved, no changes needed
+## ✅ FQ-67 — Apply T-72's migration via Supabase SQL Editor (service_role) — Security Lead approved, no changes needed
 
-**Filed:** 2026-07-08
+**Filed:** 2026-07-08 | **Resolved:** 2026-07-08
 **Filed by:** PM (Sprint 7, on behalf of Tech Lead/Security Lead)
+**Status:** RESOLVED — founder ran the migration SQL via Supabase SQL Editor. Verified: `select relname from pg_class where relname = 'agent_model_routing';` returned one row. `agent_model_routing` is now live on the real database. T-72 fully closed (code merged + reviewed + applied). QA (T-78) can now verify the write paths against the real table.
 **Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as every prior migration in this repo, e.g. FQ-61/FQ-62/FQ-45)
 **Deadline:** Non-blocking for today's live service (nothing changes for FreeScout/LiteLLM/ticket triage) — but it's the next thing gating Sprint 7's dashboard write-surface build (T-73/T-74/T-75 all read or write through this schema).
 
