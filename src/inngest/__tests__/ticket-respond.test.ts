@@ -173,12 +173,17 @@ describe("respondOneTicket", () => {
       { rows: [] }, // COMMIT
     ]);
     const pool = makePool(client);
-    mockFetchOk("Sorry you ran into this — the team is investigating now.");
+    const fetchMock = mockFetchOk("Sorry you ran into this — the team is investigating now.");
     const deliver = vi.fn<FreeScoutDelivery>().mockResolvedValue(undefined);
 
     const result = await respondOneTicket(pool, deliver, "t1", "proj-1", "tenant-1");
 
     expect(result).toEqual({ state: "responded", conversation_id: "42" });
+
+    // The resolved routing model (T-73) reached the LiteLLM call — no routing row
+    // + no env → the alias literal. Guards against the resolver being un-wired.
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((JSON.parse(init.body as string) as { model: string }).model).toBe("triage-model");
 
     // Delivery received the conversation id + the drafted note.
     expect(deliver).toHaveBeenCalledTimes(1);

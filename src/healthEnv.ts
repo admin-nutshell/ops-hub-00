@@ -48,6 +48,26 @@ export const REQUIRED_ENV_VARS = [
 ] as const;
 
 /**
+ * Optional env vars — reported for visibility (drift detection) but their
+ * ABSENCE does NOT degrade /health/env. These are the T-73 per-function model
+ * routing defaults (`LITELLM_RESPOND_MODEL`, `LITELLM_KBLEARN_MODEL`).
+ *
+ * They are deliberately NOT in REQUIRED_ENV_VARS: `resolveModelRouting`
+ * (src/inngest/modelRouting.ts) falls through to the registered alias literal
+ * when they are unset, so the app boots and processes tickets correctly without
+ * them — unlike the mandatory set above, whose absence is a real outage. They
+ * stay unset until T-81 provisions them on ops-hub-staging then -prod; reporting
+ * them here lets that rollout be verified from the health endpoint without
+ * making the endpoint 503 during the window before they are set.
+ *
+ * NOTE for Production Manager (T-81): once these are provisioned everywhere and
+ * expected-present, promote them into REQUIRED_ENV_VARS so their later drift is
+ * caught as a hard failure (same reasoning as the T-47 incident this file
+ * exists for).
+ */
+export const OPTIONAL_ENV_VARS = ["LITELLM_RESPOND_MODEL", "LITELLM_KBLEARN_MODEL"] as const;
+
+/**
  * GET/HEAD /health/env — reports which of REQUIRED_ENV_VARS are present vs
  * missing on the running process. Returns 200 when all are present, 503 when
  * any are missing (mirrors handleLitellmHealth's ok/degraded convention so
@@ -64,15 +84,23 @@ export async function handleEnvHealth(
   _req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<void> {
-  const missing = REQUIRED_ENV_VARS.filter((key) => {
+  const isMissing = (key: string): boolean => {
     const value = process.env[key];
     return value === undefined || value === "";
-  });
+  };
+
+  const missing = REQUIRED_ENV_VARS.filter(isMissing);
+
+  // Optional vars are reported for visibility only — their absence never changes
+  // status/HTTP code (see OPTIONAL_ENV_VARS). Status is driven solely by the
+  // required set, preserving /health/env's existing 200/503 contract.
+  const optionalMissing = OPTIONAL_ENV_VARS.filter(isMissing);
 
   const body = {
     status: missing.length === 0 ? "ok" : "degraded",
     checked: REQUIRED_ENV_VARS.length,
     missing,
+    optionalMissing,
   };
 
   res.writeHead(missing.length === 0 ? 200 : 503, { "Content-Type": "application/json" });

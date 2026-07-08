@@ -3,6 +3,7 @@ import { inngest } from "./client";
 import { STAGING_PROJECT_ID, STAGING_TENANT_ID } from "./freescout-poller";
 import { langfuse } from "../langfuse";
 import { createLazyPool, escapeXml, type Urgency, URGENCIES } from "./utils";
+import { resolveModelRouting, type ResolvedRouting } from "./modelRouting";
 
 type SweepRow = { id: string; project_id: string; tenant_id: string };
 
@@ -146,9 +147,12 @@ export async function triageOneTicket(
   projectId: string,
   tenantId: string
 ): Promise<TriageResult> {
-  // 1. Fetch ticket (GUC must be transaction-local for pooler safety).
+  // 1. Fetch ticket + resolve model routing (GUC must be transaction-local for
+  // pooler safety). The routing read is folded into THIS same transaction/
+  // connection — no third connection (ADR-0006).
   const fetchClient = await pool.connect();
   let ticket: TicketRow | null = null;
+  let routing: ResolvedRouting | null = null;
   try {
     await fetchClient.query("BEGIN");
     await fetchClient.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
@@ -157,6 +161,7 @@ export async function triageOneTicket(
       "SELECT id, title, body, state FROM tickets WHERE id = $1 LIMIT 1",
       [ticketId]
     );
+    routing = await resolveModelRouting(fetchClient, projectId, "triage");
     await fetchClient.query("COMMIT");
     ticket = rows[0] ?? null;
   } catch (err) {
@@ -171,9 +176,11 @@ export async function triageOneTicket(
     return { skipped: true, reason: ticket ? ticket.state : "not_found" };
   }
 
-  // 2. Classify via LiteLLM; record a LangFuse generation.
-  const primaryModel = process.env.LITELLM_TRIAGE_MODEL ?? "triage-model";
-  const fallbackModel = process.env.LITELLM_FALLBACK_MODEL ?? "fallback-model";
+  // 2. Classify via LiteLLM; record a LangFuse generation. Model comes from the
+  // resolved routing (table override → env default → alias literal); Triage is
+  // the only function with a real fallback this sprint.
+  const primaryModel = routing?.primary ?? "triage-model";
+  const fallbackModel = routing?.fallback ?? "fallback-model";
 
   const trace = langfuse?.trace({
     name: "ticket-triage",
