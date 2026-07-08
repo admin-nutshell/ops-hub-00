@@ -163,7 +163,104 @@ This is a genuine security/business call, not a technical default. Flagged here 
 
 ## Security Lead Review
 
-*(pending — to be appended, as in ADR-0003/0004)*
+- **Reviewer:** Security Lead (AppSec)
+- **Date:** 2026-07-08
+- **Scope:** T-76 — PR #310 (`supabase/migrations/20260708000000_t72_agent_model_routing_sla_grant.sql`,
+  branch `t72-agent-model-routing-schema`, reviewed **unmerged** at the full-diff level) against this
+  ADR's Decision B threat model. This review gates the founder's `service_role` apply and, jointly
+  with T-78, the T-81 go-live.
+- **Verdict:** **APPROVED — the migration is safe to apply as written. No changes required to
+  PR #310.** Founder is clear to apply via Supabase SQL Editor as `service_role` and run the
+  migration's own post-apply verification block. The *go-live* half of the T-76 sign-off is
+  affirmed **conditional on** T-74 shipping the application-layer controls exactly as this ADR
+  specifies and T-78 verifying them (which is already T-81's dependency chain — no new gate added).
+
+### Findings (each re-verified independently, not taken from the PR description)
+
+1. **`amr_select` / `amr_insert` / `amr_update` — correct.** `amr_insert` carries
+   `with check (project_id = current_project_id())`; `amr_update` carries it in both `using` and
+   `with check`; `amr_select` scopes `using` the same predicate. `current_project_id()` is the
+   right scoping function: `agent_model_routing` is project-scoped, and this exactly matches how
+   the repo's existing project-scoped policies gate (`feature_flags_select`/`feature_flags_write`,
+   `kb_articles_select`/`kb_articles_write`, `projects_select` in `20260618120100`). Fail-closed
+   confirmed: with no GUC/JWT set, `current_project_id()` returns NULL and `project_id = NULL`
+   evaluates to NULL → row denied. Write policies name `ops_hub_app` only; `authenticated` gets
+   read-only via `amr_select` — same posture as `feature_flags`.
+2. **DELETE is doubly denied — checked at the grant level, not just "no policy."** There is no
+   `amr_delete` policy (RLS default-deny) **and** the migration explicitly
+   `revoke delete on agent_model_routing from ops_hub_app` after re-asserting
+   `grant select, insert, update` — so DELETE is dead at both the grant layer and the RLS layer,
+   robust against the `alter default privileges` auto-grant from `20260618120100` regardless of
+   which role creates the table. This is the "this is fine because" case: belt (revoke) plus wall
+   (default-deny).
+3. **SLA column grant — `sla_tier` is genuinely excluded (re-verified, not trusted).** The
+   migration's sequence is `revoke update on tenants from ops_hub_app;` then
+   `grant update (sla_config) on tenants to ops_hub_app;` — the column list is exactly
+   `sla_config`. `sla_tier` (added by `20260628000000_t39_sla_tier.sql`; the +$200 CAD/mo billing
+   lever, T-B3) is not in the grant, and neither are `name` / `tier` / `project_id` / `id`.
+   Order and idempotency are right: Postgres revokes column-level privileges when the same-type
+   table-level privilege is revoked, so a re-run converges to the identical final state.
+   `tenants_update_sla` scopes `using`/`with check` to `id = current_tenant_id()`, consistent with
+   `tenants_select`. Even a compromised app path cannot flip the billing lever through this grant.
+4. **`feature_flags` untouched — confirmed at the diff level.** PR #310's entire diff is two
+   files (the migration + one WORK.md status line); the migration's feature_flags section is
+   comments only. Concur with the ADR's call: the existing `feature_flags_write FOR ALL` policy
+   stays (agents legitimately use its breadth; it is project-scoped with a correct `with check`),
+   and the dashboard flag surface is constrained at the **API layer** — that constraint is now a
+   T-74 build obligation with a T-78 verification (see C2).
+5. **Audit atomicity — nothing here impedes T-74's same-transaction audit rows.** The table
+   carries `updated_at` (not null, default `now()`) and `updated_by`; the `set_updated_at` trigger
+   is BEFORE UPDATE, plain plpgsql, invoker-rights (no SECURITY DEFINER), and fires inside the
+   caller's transaction — nothing autonomous, nothing deferred, nothing that fires outside the
+   write+audit transaction boundary. `unique (project_id, function_key)` gives T-74 a clean upsert
+   key. `audit_log_insert` (`ops_hub_app`, `with check (true)`) accepts project-stamped /
+   NULL-tenant rows and T-66 already widened platform reads. Atomic `{before, after}` audit rows
+   remain fully implementable.
+6. **CSRF/Origin — correctly absent here.** Nothing in this migration creates a state-changing
+   path reachable without the app layer (no SECURITY DEFINER functions, no RPC surface, no
+   GET-writable anything). CSRF/Origin defense belongs to T-74's POST/PUT routes as this ADR
+   specifies; nothing being signed off here needs it at the DB layer.
+7. **T-B4 resolved — option (a), static curated allowlist. The dashboard gets NO LiteLLM
+   credential.** Confirming the ADR's recommendation; T-79 is building the allowlist in parallel.
+   The decisive point beyond "zero new secret": the dropdown must be **eval-curated anyway**
+   (T-B1 option (a)), so a live `/model/info` fetch would surface aliases that have *not* passed
+   the eval gate — live freshness is anti-value here, not merely unnecessary. Explicitly
+   **rejected**: (i) the LiteLLM **master key** — it can register/delete models and mint keys, so
+   handing it to the web-facing dashboard container to populate a dropdown converts any dashboard
+   compromise into a compromise of the entire LLM routing layer; disproportionate on its face;
+   (ii) option (b), a read-limited key — still a standing secret plus a dashboard→LiteLLM network
+   path, bought for a freshness property we actively do not want. Option (c) adds moving parts
+   for the same non-benefit. If a future sprint genuinely needs live alias discovery, revisit (b)
+   with a scoped key **and** an eval-status filter — not before.
+8. **`set_updated_at` trigger (the flagged beyond-spec addition) — ACCEPTED, keep it.** It matches
+   the repo's existing convention (`tickets_set_updated_at`, `feature_flags_set_updated_at` in the
+   initial schema), reuses the shared plain helper, and makes `updated_at` trustworthy independent
+   of app-code discipline — an integrity gain for a column the dashboard will display next to an
+   audit trail. Dropping it to stay strict-to-ADR would be strictly worse; treat this ADR's schema
+   block as amended to include the trigger.
+
+### Conditions / residuals (none block the apply)
+
+- **C1 (advisory, non-blocking):** on hosted Supabase, platform default privileges may leave
+  `authenticated`/`anon` holding write verbs on `agent_model_routing`. RLS default-deny already
+  blocks them (no write policy names `authenticated`), and this matches every existing table's
+  posture — but a future hardening migration could add
+  `revoke insert, update, delete on agent_model_routing from authenticated, anon` for
+  belt-and-braces, and the post-apply verification block could assert DELETE is absent from
+  `ops_hub_app`'s grants on the new table.
+- **C2 (carried to T-74 + T-78 — gates go-live, not the apply):** the API layer must deliver, as
+  already specced: CSRF/Origin defense on state-changing routes; feature-flag route limited to
+  `UPDATE (enabled, rollout_percentage)` on existing rows; SLA writes via `jsonb_set` on specific
+  keys with bounded positive-integer validation; server-pinned GUCs (never client-supplied ids);
+  and the same-transaction `audit_log` row. T-78 must verify cross-scope rejection with a forged
+  record key and `sla_tier` unwritability via the SLA path.
+- **Residual (accepted, standing):** `service_role` bypasses all of this — unchanged posture,
+  migrations-only per CLAUDE.md non-negotiable #3; no new exposure introduced.
+
+- **Handoff:** Founder — apply PR #310's migration via SQL Editor as `service_role`, then run its
+  post-apply verification queries (expect: 3 policies on `agent_model_routing`,
+  `tenants_update_sla` present, `tenants` UPDATE grant = exactly `sla_config`). Production
+  Manager — T-81 remains held on T-78's QA pass; this review clears the schema gate only.
 
 ## Evals Lead Review
 
