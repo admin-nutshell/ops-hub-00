@@ -55,7 +55,7 @@ ADR-0006's 8-item breakdown mapped to T-72–T-79, plus T-81 (go-live, Productio
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-80: Correct CLAUDE.md "Database — key facts" phantom tables | Tech Lead | — | ⚪ **Backlog.** ADR-0006 flagged that CLAUDE.md's 6-table list names `ticket_events` and `agent_actions`, which exist in **no migration**. Correct the list to the real tables — `projects, tenants, tickets, audit_log, feature_flags, kb_articles` — and note the T-58 additions (`agent_cost_events`, `agent_cost_daily`, `eval_gate_runs`) + Sprint 7's new `agent_model_routing`. Verify against `supabase/migrations/`. Docs-only; PR triggers no deploy (root docs are `paths-ignore`d per T-64). Low effort; keeps future agents from building against phantom tables. | Jul 10 |
+| T-80: Correct CLAUDE.md "Database — key facts" phantom tables | Tech Lead | — | ✅ **DONE (2026-07-08).** Verified against `supabase/migrations/`: `ticket_events` and `agent_actions` exist in **no migration** (phantom). Corrected CLAUDE.md's list to the real 6 core tables — `projects, tenants, tickets, audit_log, feature_flags, kb_articles` — and noted the T-58 additions (`agent_cost_events`, `eval_gate_runs` tables + `agent_cost_daily` view) + Sprint 7's in-progress `agent_model_routing` (T-72). Docs-only; PR triggers no deploy (root docs are `paths-ignore`d per T-64). | ✅ Done |
 
 ---
 
