@@ -208,14 +208,27 @@ jobs:
           echo "ERROR: health check timed out after 3 minutes"
           exit 1
 
-      # ── Inngest function sync — DISABLED, see T-54(B) ─────────────────────────
-      # This step used to PUT /api/inngest against staging's URL to force an
-      # immediate Inngest Cloud sync. Removed 2026-07-04: ops-hub-staging and
-      # ops-hub-prod currently share the same Inngest app id ("ops-hub" in
-      # src/inngest/client.ts), so this sync repoints Inngest's dispatch target
-      # to staging — confirmed to have silently stopped prod from processing
-      # tickets for ~7 hours on 2026-07-03/04 until manually caught and fixed
-      # by re-running prod-deploy.yml. Do not re-add this step until T-54(B)
-      # (distinct Inngest app id per environment) is fixed. Inngest Cloud still
-      # picks up staging's functions on its own poll cycle without this step;
-      # it only loses immediacy, not correctness.
+      # ── Inngest function sync (T-65: re-enabled 2026-07-07) ───────────────────
+      # Removed 2026-07-04 because ops-hub-staging and ops-hub-prod shared the
+      # same Inngest app id ("ops-hub"), so this sync repointed Inngest's cron
+      # dispatch to staging — confirmed to have silently stopped prod from
+      # processing tickets for ~7 hours on 2026-07-03/04 (T-54(B)).
+      # Permanent fix (PR #239) landed the same day: INNGEST_APP_ID is now set
+      # to "ops-hub-staging" on ops-hub-staging only (src/inngest/client.ts),
+      # while prod keeps the default "ops-hub" id — confirmed live as two
+      # distinct apps in the Inngest dashboard. This PUT targets staging's own
+      # URL/app-id, so it can no longer touch prod's registration. Re-added
+      # here for staging-only immediacy; prod-deploy.yml's own sync step is
+      # untouched.
+      - name: Sync Inngest functions
+        run: |
+          STAGING_URL="https://ops-hub-staging.inatechshell.ca"
+          echo "Syncing Inngest at $STAGING_URL/api/inngest ..."
+          HTTP=$(curl -s --max-time 30 -o /tmp/sync.json -w "%{http_code}" -X PUT \
+            -H "Content-Type: application/json" \
+            "$STAGING_URL/api/inngest")
+          echo "Sync HTTP $HTTP"
+          cat /tmp/sync.json
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "WARNING: Inngest sync returned HTTP $HTTP — functions may not be updated"
+          fi
