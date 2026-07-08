@@ -75,7 +75,8 @@ Critical path: T-57 (dashboard auth) → T-58 (dashboard data feeds) → T-59 (d
 
 ## Database — key facts
 
-- **6 ops-hub tables:** `tenants`, `projects`, `tickets`, `kb_articles`, `ticket_events`, `agent_actions`
+- **6 core ops-hub tables:** `projects`, `tenants`, `tickets`, `audit_log`, `feature_flags`, `kb_articles`
+- **Later additions (T-58):** `agent_cost_events`, `eval_gate_runs` tables + `agent_cost_daily` (a view); Sprint 7 (T-72) adds `agent_model_routing` (in progress — may not be applied yet)
 - **RLS model:** fail-closed; `ops_hub_app` role (non-superuser) for agent paths; `service_role` for migrations only
 - **FreeScout tables:** `conversations`, `threads` — owned by `freescout_user`; GRANT SELECT to `ops_hub_app` via `docker exec artisan tinker`
 - **Migrations:** 5 files in `supabase/migrations/` — applied via SQL Editor (not tracked by Supabase CLI)
