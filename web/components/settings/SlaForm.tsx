@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { postSettings, friendlyWriteError } from "../../lib/apiClient";
 import { WriteStatus, type WriteStatusState } from "./WriteStatus";
 
@@ -20,6 +21,7 @@ export function SlaForm({
   slaTier: "standard" | "premium";
   initialMinutes: number | null;
 }) {
+  const router = useRouter();
   const [minutes, setMinutes] = useState(String(initialMinutes ?? 240));
   const [status, setStatus] = useState<WriteStatusState>({ kind: "idle" });
 
@@ -39,8 +41,10 @@ export function SlaForm({
 
     if (result.ok) {
       setStatus({ kind: "success", message: `Saved — response target is now ${value} minutes.` });
+      router.refresh();
     } else {
-      setStatus({ kind: "error", message: friendlyWriteError(result.status, result.error) });
+      const friendly = friendlyWriteError(result.status, result.error);
+      setStatus({ kind: "error", message: friendly, detail: result.error });
     }
   }
 

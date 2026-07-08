@@ -52,9 +52,16 @@ export async function postSettings<T = unknown>(
 }
 
 /**
- * Map a status/message pair to a friendlier line for the well-known error
- * classes ADR-0006/T-74 defines, while still showing the server's own message
- * underneath — never hide the real error, just front it with plain language.
+ * Map a status/message pair to a friendlier headline for the well-known error
+ * classes ADR-0006/T-74 defines. Deliberately does NOT replace the server's
+ * own message — callers should pass BOTH this headline and the raw
+ * `result.error` to `WriteStatus` (as `message` / `detail`), which renders
+ * `detail` underneath whenever it differs. This matters because 503 alone is
+ * ambiguous: T-74 throws two distinct 503s on the same code path
+ * (SchemaNotReadyError — T-72's migration/grant isn't applied yet, vs.
+ * ScopeUnavailableError — POLLING_PROJECT_ID/TENANT_ID unset) that would
+ * otherwise both collapse to the same generic headline even though they mean
+ * different things and need different fixes.
  */
 export function friendlyWriteError(status: number, error: string): string {
   switch (status) {

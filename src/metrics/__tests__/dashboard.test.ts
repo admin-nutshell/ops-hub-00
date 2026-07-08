@@ -332,6 +332,9 @@ describe("getModelRoutingOverrides", () => {
 
     const overrides = await getModelRoutingOverrides(pool, PROJECT_ID);
 
+    const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[1]).toEqual(["SELECT set_config('app.current_project', $1, true)", [PROJECT_ID]]);
+
     expect(overrides).toEqual({
       triage: { primaryModel: "triage-model", fallbackModel: "fallback-model" },
       respond: { primaryModel: "triage-model", fallbackModel: null },
@@ -372,6 +375,10 @@ describe("getCurrentSlaConfig", () => {
     const pool = makePool(client);
 
     const result = await getCurrentSlaConfig(pool, PROJECT_ID, TENANT_ID);
+
+    const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[1]).toEqual(["SELECT set_config('app.current_tenant', $1, true)", [TENANT_ID]]);
+    expect(calls[2]).toEqual(["SELECT set_config('app.current_project', $1, true)", [PROJECT_ID]]);
 
     expect(result).toEqual({ slaTier: "standard", responseTargetMinutes: 120 });
   });
@@ -429,6 +436,9 @@ describe("getFeatureFlags", () => {
     const pool = makePool(client);
 
     const flags = await getFeatureFlags(pool, PROJECT_ID);
+
+    const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls[1]).toEqual(["SELECT set_config('app.current_project', $1, true)", [PROJECT_ID]]);
 
     expect(flags).toEqual([
       {

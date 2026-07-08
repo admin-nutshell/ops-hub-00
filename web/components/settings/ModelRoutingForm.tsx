@@ -1,6 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
+import { useRouter } from "next/navigation";
 import { isAllowedModel, type RoutingFunctionKey } from "../../../src/config/model-allowlist";
 import { postSettings, friendlyWriteError } from "../../lib/apiClient";
 import { WriteStatus, type WriteStatusState } from "./WriteStatus";
@@ -28,6 +29,7 @@ export function ModelRoutingForm({
   initialFallback: string | null;
 }) {
   const formId = useId();
+  const router = useRouter();
   const [primary, setPrimary] = useState(initialPrimary ?? "");
   const [fallback, setFallback] = useState(initialFallback ?? NO_FALLBACK);
   const [status, setStatus] = useState<WriteStatusState>({ kind: "idle" });
@@ -58,8 +60,15 @@ export function ModelRoutingForm({
 
     if (result.ok) {
       setStatus({ kind: "success", message: `Saved — ${FUNCTION_LABEL[functionKey]} now pinned to "${primary}".` });
+      // Re-run the page's Server Component reads so the "override set" /
+      // "no override" header (and every other section's initial values)
+      // reflect what was just written, instead of staying keyed to the props
+      // from the last page load. Local `status` above survives this — only
+      // Server Components remount.
+      router.refresh();
     } else {
-      setStatus({ kind: "error", message: friendlyWriteError(result.status, result.error) });
+      const friendly = friendlyWriteError(result.status, result.error);
+      setStatus({ kind: "error", message: friendly, detail: result.error });
     }
   }
 

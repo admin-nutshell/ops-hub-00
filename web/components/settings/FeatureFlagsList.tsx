@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { postSettings, friendlyWriteError } from "../../lib/apiClient";
 import { WriteStatus, type WriteStatusState } from "./WriteStatus";
 import type { FeatureFlagListItem } from "../../../src/metrics/dashboard";
@@ -9,6 +10,7 @@ const MIN_PCT = 0;
 const MAX_PCT = 100;
 
 function FeatureFlagRow({ flag }: { flag: FeatureFlagListItem }) {
+  const router = useRouter();
   const [enabled, setEnabled] = useState(flag.enabled);
   const [rollout, setRollout] = useState(String(flag.rolloutPercentage));
   const [status, setStatus] = useState<WriteStatusState>({ kind: "idle" });
@@ -30,8 +32,10 @@ function FeatureFlagRow({ flag }: { flag: FeatureFlagListItem }) {
 
     if (result.ok) {
       setStatus({ kind: "success", message: `Saved — ${flag.flagKey} is now ${enabled ? "enabled" : "disabled"} at ${pct}%.` });
+      router.refresh();
     } else {
-      setStatus({ kind: "error", message: friendlyWriteError(result.status, result.error) });
+      const friendly = friendlyWriteError(result.status, result.error);
+      setStatus({ kind: "error", message: friendly, detail: result.error });
     }
   }
 
