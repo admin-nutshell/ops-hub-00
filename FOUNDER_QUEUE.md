@@ -4,10 +4,11 @@
 
 ---
 
-## FQ-65 — Ops Dashboard PRODUCTION: one domain action to complete the secure redo (staging already fixed, see FQ-64 below)
+## ✅ FQ-65 — Ops Dashboard PRODUCTION: one domain action to complete the secure redo (staging already fixed, see FQ-64 below)
 
-**Filed:** 2026-07-07
+**Filed:** 2026-07-07 | **Resolved:** 2026-07-08
 **Filed by:** Production Manager (T-70 Phase 2 prep)
+**Status:** RESOLVED — founder attached the domain (`https://` scheme, DNS A record in Hostinger), reviewed/approved PR #281, and authorized deploy. Full account in WORK.md T-70: a real drift bug was caught live (the deploy workflow's own gate-name logic hadn't actually been updated to `dashauth-prod` despite PR #281's header claiming it was — root-caused via independent `curl`, fixed for real in PR #287), then re-verified 401 unauthenticated / 200 authenticated on both `http://` and `https://`. Founder logged into the real production dashboard and confirmed it live. Independently re-confirmed today (2026-07-08): `curl https://ops-dashboard-prod.inatechshell.ca/` → **401**. Heading was never updated with a resolved marker at the time — fixed retroactively, same pattern as FQ-61/FQ-59.
 **Needs:** One Coolify UI action + one DNS record (~5 minutes) — do this whenever you're ready to bring the prod dashboard back; not urgent
 **Deadline:** Non-blocking — nothing is exposed today. The prod dashboard was deliberately deleted this session (see FQ-64 below) rather than left broken, so there is currently no prod dashboard at all, gated or not.
 
