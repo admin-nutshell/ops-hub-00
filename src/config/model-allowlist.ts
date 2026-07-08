@@ -80,9 +80,7 @@ export type RoutingFunctionKey = "triage" | "respond" | "kb_learn";
  * differs (per ADR-0006): only Triage carries a fallback this sprint, so only
  * Triage may select `fallback-model`; Respond and KB Learn are primary-only.
  */
-export const MODEL_ROUTING_ALLOWLIST: Readonly<
-  Record<RoutingFunctionKey, readonly string[]>
-> = {
+export const MODEL_ROUTING_ALLOWLIST: Readonly<Record<RoutingFunctionKey, readonly string[]>> = {
   // Triage runs `triage-model` (primary) + `fallback-model` (fallback) today
   // and is the only function with prompt-eval coverage of BOTH slots
   // (evals/ticket-triage.yaml exercises the primary contract;
@@ -111,9 +109,6 @@ export const MODEL_ROUTING_ALLOWLIST: Readonly<
  * both call this before persisting/submitting a routing value, so a typo or an
  * unvetted alias can never take a production function offline.
  */
-export function isAllowedModel(
-  functionKey: RoutingFunctionKey,
-  alias: string,
-): boolean {
+export function isAllowedModel(functionKey: RoutingFunctionKey, alias: string): boolean {
   return MODEL_ROUTING_ALLOWLIST[functionKey]?.includes(alias) ?? false;
 }
