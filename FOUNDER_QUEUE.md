@@ -4,6 +4,27 @@
 
 ---
 
+## FQ-66 — Ops Dashboard write surface: per-user session auth, or accept shared-credential audit granularity?
+
+**Filed:** 2026-07-08
+**Filed by:** PM (Sprint 7 scoping, from ADR-0006 T-B2)
+**Needs:** Decision (security posture + build scope)
+**Deadline:** ~July 13, 2026 — **blocking** on the Sprint 7 write-surface build (T-74 / T-77): the write UI/API can't be cut until this is settled. Nothing live is affected today; a one-line reply ("A" or "B") is enough.
+
+**In plain language:** Sprint 6 shipped the read-only Ops Dashboard behind a single shared username/password (`opsadmin`). When we built that, we wrote down that *adding a write area is the moment to revisit login* — because once the dashboard can *change* things (which model each agent uses, SLA targets, feature flags), the change log (`audit_log`) should ideally record *who* made each change. With one shared login, the log can only say "the dashboard did it," not which person. Sprint 7 adds exactly that write area (ADR-0006). This is the one write-surface decision the design flags as genuinely yours (a security-posture + cost call), not a technical default the team should just pick.
+
+**Context:** The dashboard is single-operator today (you). Every settings write is logged to `audit_log` atomically in the same transaction as the change — that plumbing exists regardless of this decision; the only question is whether the *actor* field names a human or "the dashboard." The other open write-surface question ADR-0006 raised — how a dashboard model swap squares with our eval gate — is being handled **team-side** by the Evals Lead (restricting the model picker to a curated set of already-eval-passed models, which keeps the eval gate intact); no action needed from you there.
+
+**Options:**
+  A. **Upgrade the write surface to per-user session auth now** — individual actor attribution in the audit log, stronger SOC-2 evidence. Trade-off: real added build scope (session middleware + a login UI) that likely spills into Sprint 8; the write area waits on it.
+  B. **Accept the single shared-credential audit granularity for now** — the write area ships this sprint behind the existing gate; `audit_log.actor` records "dashboard." Trade-off: no per-human attribution while you're the sole operator; the documented upgrade path is deferred, not cancelled.
+
+**Recommendation:** **B for Sprint 7.** You are the sole dashboard operator today, it keeps the sprint on scope, and it honors free-tier-first — and the upgrade path (option A) stays open and documented. Move to A when a second dashboard user is added or a SOC-2 audit requires per-human attribution. If you'd rather have individual attribution from day one, pick A and we'll scope session auth as its own task, accepting that the write area slips toward Sprint 8.
+
+**Notify:** PM once you reply — T-77 records the decision in `DECISIONS.md`, and T-74's audit-actor semantics are finalized to match before go-live.
+
+---
+
 ## ✅ FQ-65 — Ops Dashboard PRODUCTION: one domain action to complete the secure redo (staging already fixed, see FQ-64 below)
 
 **Filed:** 2026-07-07 | **Resolved:** 2026-07-08

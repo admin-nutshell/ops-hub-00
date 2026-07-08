@@ -1999,3 +1999,9 @@ this preparation — code and documentation only. `web/Dockerfile` was not
 rebuilt or pushed against this branch's changes (the workflow's build step
 runs identically to before; only the deploy-gating logic downstream of app
 creation changed).
+
+### 2026-07-08 — Sprint 7 planned (PM)
+
+```
+2026-07-08 [PM] Sprint 7 planned: July 8–22, 2026 — goal: Ops Dashboard settings/write surface per ADR-0006 (per-function model routing + SLA editor + feature-flag toggles), RLS-write least-privilege + atomic audit_log; 10 tasks T-72–T-81 (Track A anchor T-72–T-79 + T-81 go-live; Track B T-80 CLAUDE.md phantom-table fix). No milestone (capability-building). Sequencing gates preserved from ADR-0006: Security Lead review (T-76) gates schema apply + go-live; backend read-path (T-73) gated by evals reconciliation (T-79); QA write-path verification (T-78) depends on schema+backend+API+UI. Two gating decisions surfaced: eval-gate reconciliation kept team-owned (T-79, Evals Lead — curated pre-evaled allowlist enforces the eval gate rather than relaxing it); write-surface auth identity escalated to founder as FQ-66 (per-user session auth vs. accept shared-credential audit granularity — security-posture + scope call, PM recommends B for a single-operator dashboard). WORK.md updated; FQ-66 filed.
+```
