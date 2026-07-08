@@ -2005,3 +2005,19 @@ creation changed).
 ```
 2026-07-08 [PM] Sprint 7 planned: July 8–22, 2026 — goal: Ops Dashboard settings/write surface per ADR-0006 (per-function model routing + SLA editor + feature-flag toggles), RLS-write least-privilege + atomic audit_log; 10 tasks T-72–T-81 (Track A anchor T-72–T-79 + T-81 go-live; Track B T-80 CLAUDE.md phantom-table fix). No milestone (capability-building). Sequencing gates preserved from ADR-0006: Security Lead review (T-76) gates schema apply + go-live; backend read-path (T-73) gated by evals reconciliation (T-79); QA write-path verification (T-78) depends on schema+backend+API+UI. Two gating decisions surfaced: eval-gate reconciliation kept team-owned (T-79, Evals Lead — curated pre-evaled allowlist enforces the eval gate rather than relaxing it); write-surface auth identity escalated to founder as FQ-66 (per-user session auth vs. accept shared-credential audit granularity — security-posture + scope call, PM recommends B for a single-operator dashboard). WORK.md updated; FQ-66 filed.
 ```
+
+### 2026-07-08 — FQ-66 resolved: write-surface audit identity (Founder)
+
+```
+2026-07-08 [Founder] FQ-66 resolved: accepted PM's Option B recommendation
+directly ("not a technical person, recommend and proceed") — the Sprint 7
+dashboard write surface ships behind the existing single shared Basic Auth
+credential; audit_log.actor records "dashboard", not an individual human.
+Rationale carried from the recommendation: founder is the sole dashboard
+operator today, this keeps Sprint 7 on scope, and it honors CLAUDE.md's
+free-tier-first constraint by not pulling forward session-auth build work
+that isn't needed yet. Upgrade path (Option A, per-user session auth) stays
+documented and open — revisit when a second dashboard user is added or a
+SOC-2 audit requires per-human attribution. T-77 closed on this basis;
+T-74 builds its audit-actor semantics to match.
+```
