@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { inngest } from "./client";
 import { langfuse } from "../langfuse";
 import { createLazyPool, escapeXml, type Urgency, URGENCIES } from "./utils";
+import { resolveModelRouting, type ResolvedRouting } from "./modelRouting";
 
 /**
  * T-23 — ticket-respond.
@@ -108,8 +109,11 @@ const TONE: Record<Urgency, string> = {
  * Draft an internal-note reply via LiteLLM.
  * Instructions live in the system message; untrusted ticket content lives in
  * the user message — the same injection-resistant split used by ticket-triage.
+ *
+ * `model` is the resolved LiteLLM alias (resolveModelRouting, T-73). Optional so
+ * existing direct callers/tests default to the "triage-model" alias literal.
  */
-export async function draftResponse(input: DraftInput): Promise<DraftResult> {
+export async function draftResponse(input: DraftInput, model?: string): Promise<DraftResult> {
   const litellmUrl = process.env.LITELLM_URL;
   const litellmKey = process.env.LITELLM_MASTER_KEY;
   if (!litellmUrl || !litellmKey) {
@@ -124,7 +128,7 @@ export async function draftResponse(input: DraftInput): Promise<DraftResult> {
       Authorization: `Bearer ${litellmKey}`,
     },
     body: JSON.stringify({
-      model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
+      model: model ?? "triage-model",
       temperature: 0.3,
       max_tokens: 500,
       messages: [
@@ -251,9 +255,12 @@ export async function respondOneTicket(
   projectId: string,
   tenantId: string
 ): Promise<RespondResult> {
-  // 1. Fetch ticket (GUC must be transaction-local for pooler safety).
+  // 1. Fetch ticket + resolve model routing (GUC must be transaction-local for
+  // pooler safety). The routing read is folded into THIS same transaction/
+  // connection — no extra connection (ADR-0006).
   const fetchClient = await pool.connect();
   let ticket: TicketRow | null = null;
+  let routing: ResolvedRouting | null = null;
   try {
     await fetchClient.query("BEGIN");
     await fetchClient.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
@@ -264,6 +271,7 @@ export async function respondOneTicket(
          FROM tickets WHERE id = $1 LIMIT 1`,
       [ticketId]
     );
+    routing = await resolveModelRouting(fetchClient, projectId, "respond");
     await fetchClient.query("COMMIT");
     ticket = rows[0] ?? null;
   } catch (err) {
@@ -292,25 +300,31 @@ export async function respondOneTicket(
     ? (ticket.urgency as Urgency)
     : "normal";
 
+  // Respond is primary-only this sprint (no fallback logic — ADR-0006).
+  const responseModel = routing?.primary ?? "triage-model";
+
   const trace = langfuse?.trace({
     name: "ticket-respond",
     metadata: { ticket_id: ticketId, project_id: projectId, tenant_id: tenantId },
   });
   const generation = trace?.generation({
     name: "draft-response",
-    model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
+    model: responseModel,
     input: [{ role: "user", content: ticket.title }],
   });
 
   let result: DraftResult;
   try {
-    result = await draftResponse({
-      title: ticket.title,
-      body: ticket.body,
-      urgency,
-      category: ticket.category ?? "support",
-      routing: ticket.routing ?? "support",
-    });
+    result = await draftResponse(
+      {
+        title: ticket.title,
+        body: ticket.body,
+        urgency,
+        category: ticket.category ?? "support",
+        routing: ticket.routing ?? "support",
+      },
+      responseModel
+    );
   } catch (err) {
     generation?.end({ output: String(err) });
     await langfuse?.flushAsync();

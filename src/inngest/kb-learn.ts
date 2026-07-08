@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { inngest } from "./client";
 import { langfuse } from "../langfuse";
 import { createLazyPool, escapeXml } from "./utils";
+import { resolveModelRouting, type ResolvedRouting } from "./modelRouting";
 
 type LearnEventData = {
   ticket_id: string;
@@ -35,7 +36,10 @@ export function _resetPool(mock?: Pool): void {
 // Call LiteLLM to extract a reusable KB article from a resolved ticket.
 // Instructions live in the system message; untrusted ticket content lives in
 // the user message — the same injection-resistant split used by triage/respond.
-export async function generateKbArticle(ticket: TicketRow): Promise<ArticleDraft> {
+//
+// `model` is the resolved LiteLLM alias (resolveModelRouting, T-73). Optional so
+// existing direct callers/tests default to the "triage-model" alias literal.
+export async function generateKbArticle(ticket: TicketRow, model?: string): Promise<ArticleDraft> {
   const litellmUrl = process.env.LITELLM_URL;
   const litellmKey = process.env.LITELLM_MASTER_KEY;
   if (!litellmUrl || !litellmKey) {
@@ -50,7 +54,7 @@ export async function generateKbArticle(ticket: TicketRow): Promise<ArticleDraft
       Authorization: `Bearer ${litellmKey}`,
     },
     body: JSON.stringify({
-      model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
+      model: model ?? "triage-model",
       temperature: 0.2,
       max_tokens: 400,
       messages: [
@@ -126,9 +130,11 @@ export async function learnFromResolvedTicket(
   projectId: string,
   tenantId: string
 ): Promise<KbLearnResult> {
-  // 1. Fetch resolved ticket.
+  // 1. Fetch resolved ticket + resolve model routing on the SAME transaction/
+  // connection — no extra connection (ADR-0006).
   const fetchClient = await pool.connect();
   let ticket: TicketRow | null = null;
+  let routing: ResolvedRouting | null = null;
   try {
     await fetchClient.query("BEGIN");
     await fetchClient.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
@@ -137,6 +143,7 @@ export async function learnFromResolvedTicket(
       "SELECT id, title, body, urgency, category, routing FROM tickets WHERE id = $1 LIMIT 1",
       [ticketId]
     );
+    routing = await resolveModelRouting(fetchClient, projectId, "kb_learn");
     await fetchClient.query("COMMIT");
     ticket = rows[0] ?? null;
   } catch (err) {
@@ -150,14 +157,16 @@ export async function learnFromResolvedTicket(
     return { skipped: true, reason: "not_found" };
   }
 
-  // 2. Generate article via LiteLLM; record LangFuse generation for cost tracking.
+  // 2. Generate article via LiteLLM; record LangFuse generation for cost
+  // tracking. KB Learn is primary-only this sprint (no fallback — ADR-0006).
+  const kbModel = routing?.primary ?? "triage-model";
   const trace = langfuse?.trace({
     name: "kb-learn",
     metadata: { ticket_id: ticketId, project_id: projectId, tenant_id: tenantId },
   });
   const generation = trace?.generation({
     name: "extract-kb-article",
-    model: process.env.LITELLM_TRIAGE_MODEL ?? "triage-model",
+    model: kbModel,
     input: [{ role: "user", content: ticket.title }],
   });
 
@@ -167,7 +176,7 @@ export async function learnFromResolvedTicket(
     _model?: string;
   };
   try {
-    article = (await generateKbArticle(ticket)) as typeof article;
+    article = (await generateKbArticle(ticket, kbModel)) as typeof article;
   } catch (err) {
     generation?.end({ output: String(err) });
     await langfuse?.flushAsync();

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import http from "http";
-import { handleEnvHealth, REQUIRED_ENV_VARS } from "./healthEnv";
+import { handleEnvHealth, REQUIRED_ENV_VARS, OPTIONAL_ENV_VARS } from "./healthEnv";
 
 function makeRes(): [http.ServerResponse, Promise<{ status: number; body: string }>] {
   let resolve!: (v: { status: number; body: string }) => void;
@@ -96,5 +96,37 @@ describe("handleEnvHealth", () => {
     void handleEnvHealth({ method: "HEAD" } as unknown as http.IncomingMessage, res);
     const { status } = await done;
     expect(status).toBe(200);
+  });
+
+  // T-73: the per-function model routing defaults are OPTIONAL — reported for
+  // drift visibility but their absence must NOT change status (the resolver
+  // falls through to the alias literal). This preserves /health/env's contract.
+  it("reports absent optional vars in optionalMissing WITHOUT degrading status", async () => {
+    // All required present (beforeEach); optional vars are NOT stubbed → absent.
+    const [res, done] = makeRes();
+    void handleEnvHealth({} as http.IncomingMessage, res);
+    const { status, body } = await done;
+    expect(status).toBe(200); // still OK despite optional vars missing
+    const parsed = JSON.parse(body) as {
+      status: string;
+      checked: number;
+      missing: string[];
+      optionalMissing: string[];
+    };
+    expect(parsed.status).toBe("ok");
+    // `checked` and `missing` remain scoped to the REQUIRED set (unchanged contract).
+    expect(parsed.checked).toBe(REQUIRED_ENV_VARS.length);
+    expect(parsed.missing).toEqual([]);
+    expect(parsed.optionalMissing.sort()).toEqual([...OPTIONAL_ENV_VARS].sort());
+  });
+
+  it("reports optionalMissing empty when the optional vars are present", async () => {
+    for (const key of OPTIONAL_ENV_VARS) vi.stubEnv(key, "triage-model");
+    const [res, done] = makeRes();
+    void handleEnvHealth({} as http.IncomingMessage, res);
+    const { status, body } = await done;
+    expect(status).toBe(200);
+    const parsed = JSON.parse(body) as { optionalMissing: string[] };
+    expect(parsed.optionalMissing).toEqual([]);
   });
 });
