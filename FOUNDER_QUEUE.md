@@ -152,10 +152,11 @@ migration in this repo.
 
 ---
 
-## FQ-61 — T-67: apply T-58 migration via Supabase SQL Editor (service_role) — blocks Sprint 6 dashboard MVP
+## ✅ FQ-61 — T-67: apply T-58 migration via Supabase SQL Editor (service_role) — blocks Sprint 6 dashboard MVP
 
-**Filed:** 2026-07-06
+**Filed:** 2026-07-06 | **Resolved:** 2026-07-06
 **Filed by:** Production Manager (T-67, escalating a live blocker QA proved in T-60)
+**Status:** RESOLVED — founder applied the migration. Re-verified live via `t60-dashboard-rls-verify.yml` (21/21 pass, up from 14/21). T-58/T-59/T-60/T-67 all closed. Heading was never updated with a resolved marker at the time — fixed retroactively 2026-07-08 while auditing queue accuracy, no new action needed.
 **Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, T-11 runbook, ADR-0005 risk #2: "SQL Editor access is restricted to the founder; agents never hold service_role")
 **Deadline:** Blocking — this is the Sprint 6 dashboard-MVP critical path (T-58 → T-59 → T-60). QA cannot close T-60 or clear T-59 until this lands.
 
@@ -270,10 +271,11 @@ session doesn't reapply the escaped form here. **Only remaining step:** once FQ-
 attached, re-run `apply-dashboard-basic-auth.yml` to re-gate the new address (already prepared,
 idempotent, no founder action needed beyond FQ-63 itself).
 
-## FQ-59 — T-57 Ops Dashboard auth: apply Traefik basic-auth label at T-59 deploy (credential ready in scratchpad)
+## ✅ FQ-59 — T-57 Ops Dashboard auth: apply Traefik basic-auth label at T-59 deploy (credential ready in scratchpad)
 
-**Filed:** 2026-07-04
+**Filed:** 2026-07-04 | **Resolved:** 2026-07-06
 **Filed by:** Tech Lead (T-57)
+**Status:** RESOLVED — Basic Auth label applied and 401-verified on staging (T-59/T-69), then production (T-70, 2026-07-08, founder-confirmed live login). Heading was never updated with a resolved marker at the time — fixed retroactively 2026-07-08 while auditing queue accuracy, no new action needed.
 **Needs:** Authorization + place one secret; Production Manager applies the Traefik label
 **Deadline:** Non-blocking now — but is a HARD GATE on T-59: the dashboard must not be pointed at a public FQDN until this is applied and verified.
 
