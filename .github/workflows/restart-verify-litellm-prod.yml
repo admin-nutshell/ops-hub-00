@@ -1,0 +1,95 @@
+name: Restart + verify litellm-prod model persistence (T-62)
+
+# PRODUCTION counterpart to restart-verify-litellm-staging.yml. Restarts
+# litellm-prod (NOT a full redeploy -- no DATABASE_URL change) and re-checks
+# GET /model/info to prove the currently-registered model aliases survive a
+# restart, then does a live completion smoke test. Makes no other changes.
+#
+# Used as part of T-62 (FQ-57 production DB isolation wall restoration) to
+# confirm the 3 model aliases + live triage still work after the
+# apply-wall restart, before the 24-hour monitoring window and eventual
+# freeze-schema dispatch.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_UUID: "hlik1d96uvkkjzpbxa3azhcv"
+  LITELLM_EXTERNAL_URL: "https://litellm-prod.inatechshell.ca"
+
+jobs:
+  restart-verify:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY_PROD }}
+
+    steps:
+      - name: Guard -- required secrets present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+          [ -n "$MASTER_KEY" ] || { echo "::error::LITELLM_MASTER_KEY_PROD not set"; exit 1; }
+
+      - name: Model registry BEFORE restart
+        run: |
+          HTTP=$(curl -s --max-time 20 -o /tmp/before.json -w "%{http_code}" \
+            -H "Authorization: Bearer $MASTER_KEY" "$LITELLM_EXTERNAL_URL/model/info")
+          echo "GET /model/info (before) -> HTTP $HTTP"
+          jq -r '.data[] | "  " + .model_name' /tmp/before.json 2>/dev/null || cat /tmp/before.json | head -c 300
+
+      - name: Restart litellm-prod
+        id: restart
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" "$COOLIFY_BASE/applications/$LITELLM_UUID/restart")
+          echo "POST /restart -> HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/restart.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      # Longer patience than the staging original -- DISABLE_SCHEMA_UPDATE may
+      # still be OFF at this point in the T-62 sequence (frozen only in a
+      # later, separate dispatch), and staging's same-day run showed that
+      # boot type genuinely takes longer than 2 minutes.
+      - name: Wait for restart + health
+        run: |
+          DEP="${{ steps.restart.outputs.dep_uuid }}"
+          if [ -n "$DEP" ]; then
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) break ;;
+                failed|error) echo "ERROR: restart failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          else
+            sleep 45
+          fi
+          for i in $(seq 1 20); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$LITELLM_EXTERNAL_URL/health/readiness" || echo "000")
+            echo "Attempt $i: /health/readiness -> HTTP $HTTP"
+            [ "$HTTP" = "200" ] && break
+            sleep 15
+          done
+
+      - name: Model registry AFTER restart
+        run: |
+          HTTP=$(curl -s --max-time 20 -o /tmp/after.json -w "%{http_code}" \
+            -H "Authorization: Bearer $MASTER_KEY" "$LITELLM_EXTERNAL_URL/model/info")
+          echo "GET /model/info (after) -> HTTP $HTTP"
+          jq -r '.data[] | "  " + .model_name' /tmp/after.json 2>/dev/null || cat /tmp/after.json | head -c 300
+
+      - name: Live triage-model completion smoke test
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/chat.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $MASTER_KEY" -H "Content-Type: application/json" \
+            "$LITELLM_EXTERNAL_URL/chat/completions" \
+            -d '{"model":"triage-model","messages":[{"role":"user","content":"reply with the single word OK"}],"max_tokens":5}')
+          echo "POST /chat/completions (triage-model) -> HTTP $HTTP"
+          jq -r '.choices[0].message.content // .error // .' /tmp/chat.json 2>/dev/null || cat /tmp/chat.json | head -c 300
