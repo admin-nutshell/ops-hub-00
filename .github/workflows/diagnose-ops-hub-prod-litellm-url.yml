@@ -1,0 +1,63 @@
+name: Diagnose ops-hub-prod LITELLM_URL (read-only)
+
+# Read-only check: what is ops-hub-prod's current LITELLM_URL env var, and
+# does it match litellm-prod's actual current internal Docker hostname?
+# Built to root-cause a live "getaddrinfo EAI_AGAIN" failure in the
+# ticket-triage Inngest function (2026-07-08) -- the failing hostname in the
+# error belonged to litellm-STAGING's UUID prefix, not prod's, suggesting
+# ops-hub-prod's LITELLM_URL may be pointed at the wrong instance or a
+# stale internal suffix (that suffix changes on every LiteLLM redeploy,
+# per CLAUDE.md's tech stack table).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  LITELLM_PROD_UUID: "hlik1d96uvkkjzpbxa3azhcv"
+  LITELLM_STAGING_UUID: "h12xz8887fxvbvjts2hac8if"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Read ops-hub-prod's LITELLM_URL
+        run: |
+          curl -s --max-time 30 -o /tmp/ops_envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          URL=$(jq -r '.[] | select(.key=="LITELLM_URL") | .value' /tmp/ops_envs.json)
+          COUNT=$(jq -r '[.[] | select(.key=="LITELLM_URL")] | length' /tmp/ops_envs.json)
+          echo "LITELLM_URL entries found: $COUNT"
+          echo "Current LITELLM_URL on ops-hub-prod: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        id: current
+
+      - name: Inspect litellm-prod's container name (source of the correct internal hostname)
+        run: |
+          curl -s --max-time 30 -o /tmp/litellm_prod.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_PROD_UUID"
+          echo "=== litellm-prod app details (name/uuid/status only) ==="
+          jq '{name, uuid, status}' /tmp/litellm_prod.json 2>/dev/null || cat /tmp/litellm_prod.json | head -c 500
+
+      - name: Compare against both UUID prefixes
+        run: |
+          URL="${{ steps.current.outputs.url }}"
+          echo "=== Diagnosis ==="
+          echo "Configured LITELLM_URL: $URL"
+          if printf '%s' "$URL" | grep -q "$LITELLM_STAGING_UUID"; then
+            echo "PROBLEM CONFIRMED: LITELLM_URL contains STAGING's UUID prefix ($LITELLM_STAGING_UUID)."
+            echo "ops-hub-prod is trying to reach litellm-STAGING's internal container, not prod's."
+          elif printf '%s' "$URL" | grep -q "$LITELLM_PROD_UUID"; then
+            echo "LITELLM_URL correctly references litellm-prod's UUID prefix ($LITELLM_PROD_UUID)."
+            echo "If still failing, the numeric suffix after the UUID may be stale (changes on redeploy)."
+          else
+            echo "LITELLM_URL matches NEITHER known UUID prefix -- unexpected value, inspect manually."
+          fi
