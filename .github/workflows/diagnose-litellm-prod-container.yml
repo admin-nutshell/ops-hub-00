@@ -1,0 +1,49 @@
+name: Diagnose litellm-prod container name (read-only, SSH)
+
+# Read-only: finds litellm-prod's CURRENT running container name via SSH +
+# docker ps (the internal Docker network hostname suffix rotates on every
+# redeploy, per CLAUDE.md's tech stack table). Built to root-cause a live
+# ticket-triage failure: ops-hub-prod's LITELLM_URL was found pointed at
+# litellm-STAGING's UUID prefix instead of prod's own (2026-07-08).
+# Makes no changes to any running service.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_user:
+        description: "SSH user on the VPS (must have docker access)"
+        required: false
+        default: "haytham"
+
+permissions:
+  contents: read
+
+env:
+  LITELLM_PROD_UUID: "hlik1d96uvkkjzpbxa3azhcv"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Detect litellm-prod container name
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          SSH_USER: ${{ inputs.ssh_user }}
+        run: |
+          CONTAINER_NAME=$(ssh -i ~/.ssh/id_ed25519 \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "${SSH_USER}@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_PROD_UUID} --format '{{.Names}}' | head -1")
+          if [ -z "$CONTAINER_NAME" ]; then
+            echo "ERROR: no running litellm-prod container found (filter: ${LITELLM_PROD_UUID})"
+            exit 1
+          fi
+          echo "Container: $CONTAINER_NAME"
+          echo "Correct LITELLM_URL for ops-hub-prod should be: http://${CONTAINER_NAME}:4000"
