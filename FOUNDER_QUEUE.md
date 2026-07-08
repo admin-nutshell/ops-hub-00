@@ -372,10 +372,11 @@ Result: **`FATAL: password authentication failed for user "litellm_db_user"`** (
 
 ---
 
-## FQ-57 — Restore LiteLLM DB isolation wall on staging + prod (new prod-only role needed)
+## 🟡 FQ-57 — Restore LiteLLM DB isolation wall on staging + prod (new prod-only role needed)
 
 **Filed:** 2026-07-04
 **Filed by:** Production Manager
+**Status:** Founder actions complete (2026-07-08) — role/schema created, secret set. Staging (T-61) fully done. Production (T-62): `apply-wall` done and verified, `freeze-schema` deliberately held for a 24-hour monitoring window per the plan — not fully closed yet. See WORK.md T-62 for the full account, including two real issues found and fixed live (model aliases lost on schema switch — production triage briefly degraded, now restored; a nonexistent `LITELLM_MASTER_KEY_PROD` secret two workflows incorrectly depended on, now fetched from Coolify instead).
 **Needs:** One-time superuser SQL (new prod-only restricted role) + authorization for a staged canary rollout
 **Deadline:** Non-blocking (latent risk, `DISABLE_SCHEMA_UPDATE=true` holds today) — but should not sit for long; the whole point of ADR-0004 was to make this impossible-by-construction, and right now it is possible again on both environments.
 
