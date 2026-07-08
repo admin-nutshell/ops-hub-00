@@ -36,6 +36,9 @@
     "../src/metrics/dashboard.ts",
     "../src/metrics/agentCost.ts",
     "../src/metrics/evalHealth.ts",
+    "../src/metrics/settingsWrite.ts",
+    "../src/http/dashboardWriteGuards.ts",
+    "../src/config/model-allowlist.ts",
     "../src/inngest/utils.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
