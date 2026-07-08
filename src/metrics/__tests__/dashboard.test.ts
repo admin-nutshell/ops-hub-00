@@ -7,6 +7,9 @@ import {
   getTicketQueue,
   getPlatformIncidents,
   getScopeLabel,
+  getModelRoutingOverrides,
+  getCurrentSlaConfig,
+  getFeatureFlags,
 } from "../dashboard";
 import { makeClient, makePool } from "../../inngest/__tests__/helpers";
 
@@ -287,5 +290,162 @@ describe("getPlatformIncidents", () => {
     const pool = makePool(client);
     const rows = await getPlatformIncidents(pool, PROJECT_ID);
     expect(rows).toEqual([]);
+  });
+});
+
+// =============================================================================
+// T-75 — settings reads
+// =============================================================================
+
+// A client whose query rejects once it sees `matchSql` in the statement text,
+// with every other statement succeeding — mirrors
+// settingsWrite.test.ts's makeRejectingClient, used here to simulate T-72's
+// migration not yet being applied (agent_model_routing undefined_table).
+function makeRejectingClient(matchSql: string, code: string) {
+  const query = vi.fn().mockImplementation((sql: string) => {
+    if (sql.includes(matchSql)) {
+      return Promise.reject(Object.assign(new Error(`pg error ${code}`), { code }));
+    }
+    return Promise.resolve({ rows: [] });
+  });
+  return { query, release: vi.fn() };
+}
+
+describe("getModelRoutingOverrides", () => {
+  it("returns each function's override row, keyed by function_key", async () => {
+    const client = makeClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // project GUC
+      {
+        rows: [
+          {
+            function_key: "triage",
+            primary_model: "triage-model",
+            fallback_model: "fallback-model",
+          },
+          { function_key: "respond", primary_model: "triage-model", fallback_model: null },
+        ],
+      },
+      { rows: [] }, // COMMIT
+    ]);
+    const pool = makePool(client);
+
+    const overrides = await getModelRoutingOverrides(pool, PROJECT_ID);
+
+    expect(overrides).toEqual({
+      triage: { primaryModel: "triage-model", fallbackModel: "fallback-model" },
+      respond: { primaryModel: "triage-model", fallbackModel: null },
+      kb_learn: null,
+    });
+  });
+
+  it("returns all-null (never throws) when agent_model_routing doesn't exist yet (T-72 pending)", async () => {
+    const { client } = { client: makeRejectingClient("FROM agent_model_routing", "42P01") };
+    const pool = makePool(client as unknown as Parameters<typeof makePool>[0]);
+
+    const overrides = await getModelRoutingOverrides(pool, PROJECT_ID);
+
+    expect(overrides).toEqual({ triage: null, respond: null, kb_learn: null });
+    // Degraded gracefully — still COMMITs the (now-empty) transaction rather
+    // than leaving it hanging or rolling back a page load into an error.
+    const calls = client.query.mock.calls.map((c) => c[0]);
+    expect(calls[calls.length - 1]).toBe("COMMIT");
+  });
+
+  it("propagates a real (non-42P01) error rather than swallowing it", async () => {
+    const client = makeRejectingClient("FROM agent_model_routing", "42501"); // insufficient_privilege
+    const pool = makePool(client as unknown as Parameters<typeof makePool>[0]);
+
+    await expect(getModelRoutingOverrides(pool, PROJECT_ID)).rejects.toThrow();
+  });
+});
+
+describe("getCurrentSlaConfig", () => {
+  it("reads sla_tier and the parsed response_target_minutes for a standard tenant", async () => {
+    const client = makeClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // tenant GUC
+      { rows: [] }, // project GUC
+      { rows: [{ sla_tier: "standard", response_target_minutes: "120" }] },
+      { rows: [] }, // COMMIT
+    ]);
+    const pool = makePool(client);
+
+    const result = await getCurrentSlaConfig(pool, PROJECT_ID, TENANT_ID);
+
+    expect(result).toEqual({ slaTier: "standard", responseTargetMinutes: 120 });
+  });
+
+  it("returns null minutes (not a fabricated 240) when the key was never set", async () => {
+    const client = makeClient([
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [{ sla_tier: "standard", response_target_minutes: null }] },
+      { rows: [] },
+    ]);
+    const pool = makePool(client);
+
+    const result = await getCurrentSlaConfig(pool, PROJECT_ID, TENANT_ID);
+
+    expect(result).toEqual({ slaTier: "standard", responseTargetMinutes: null });
+  });
+
+  it("surfaces premium tier so the UI can flag the editor as having no effect", async () => {
+    const client = makeClient([
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [{ sla_tier: "premium", response_target_minutes: null }] },
+      { rows: [] },
+    ]);
+    const pool = makePool(client);
+
+    const result = await getCurrentSlaConfig(pool, PROJECT_ID, TENANT_ID);
+
+    expect(result.slaTier).toBe("premium");
+  });
+});
+
+describe("getFeatureFlags", () => {
+  it("lists every flag row in project scope, across environments, mapped to camelCase", async () => {
+    const client = makeClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // project GUC
+      {
+        rows: [
+          {
+            id: "33333333-3333-3333-3333-333333333333",
+            flag_key: "enable_byok_tenant",
+            environment: "staging",
+            enabled: true,
+            rollout_percentage: 50,
+            description: "Gradual BYOK rollout",
+          },
+        ],
+      },
+      { rows: [] }, // COMMIT
+    ]);
+    const pool = makePool(client);
+
+    const flags = await getFeatureFlags(pool, PROJECT_ID);
+
+    expect(flags).toEqual([
+      {
+        id: "33333333-3333-3333-3333-333333333333",
+        flagKey: "enable_byok_tenant",
+        environment: "staging",
+        enabled: true,
+        rolloutPercentage: 50,
+        description: "Gradual BYOK rollout",
+      },
+    ]);
+  });
+
+  it("maps zero rows to [] — the honest, expected state until a flag is ever created", async () => {
+    const client = makeClient([{ rows: [] }, { rows: [] }, { rows: [] }, { rows: [] }]);
+    const pool = makePool(client);
+    const flags = await getFeatureFlags(pool, PROJECT_ID);
+    expect(flags).toEqual([]);
   });
 });

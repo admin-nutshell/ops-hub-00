@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { RoutingFunctionKey } from "../config/model-allowlist";
 
 // Query layer for the ops dashboard's remaining widgets (T-59): open tickets,
 // SLA attainment, deflection/auto-resolve rate, pipeline stage counts, ticket
@@ -459,6 +460,203 @@ export async function getPlatformIncidents(
       timestamp: r.timestamp,
       action: r.action,
       payload: (r.payload ?? {}) as Record<string, unknown>,
+    }));
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings reads (T-75) — current state for the dashboard's settings/write
+// area (ADR-0006). Deliberately READ-ONLY here; all writes go through
+// src/metrics/settingsWrite.ts (T-74). Kept in this file (not
+// settingsWrite.ts) because these are reads, matching this file's existing
+// role as the dashboard's query surface — settingsWrite.ts is writes only.
+// ---------------------------------------------------------------------------
+
+const UNDEFINED_TABLE = "42P01"; // Postgres SQLSTATE for undefined_table
+
+// ---------------------------------------------------------------------------
+// Model-routing overrides (agent_model_routing, project-scoped)
+// ---------------------------------------------------------------------------
+
+/**
+ * `null` means "no override row for this function — the agent falls through
+ * to its env/literal default." Deliberately NOT the *resolved effective*
+ * model: this dashboard process doesn't necessarily hold the same
+ * LITELLM_*_MODEL env vars the Inngest functions run with (separate
+ * container/deploy), and even if it did, pre-filling the editor with a
+ * resolved default and letting a plain "Save" submit it would silently pin a
+ * stored override equal to today's default — the function would then stop
+ * following any future env-default change. The editor shows "no override
+ * set" and requires an explicit selection to create one.
+ */
+export type ModelRoutingOverride = { primaryModel: string; fallbackModel: string | null } | null;
+export type ModelRoutingOverrides = Record<RoutingFunctionKey, ModelRoutingOverride>;
+
+type RoutingOverrideRow = {
+  function_key: RoutingFunctionKey;
+  primary_model: string;
+  fallback_model: string | null;
+};
+
+const ROUTING_FUNCTION_KEYS: readonly RoutingFunctionKey[] = ["triage", "respond", "kb_learn"];
+
+/**
+ * Read the current `agent_model_routing` override rows for a project.
+ *
+ * Pre-migration safe (T-72 may not be applied yet — FQ-67): a missing table
+ * (42P01) degrades to "no overrides for any function" rather than throwing —
+ * matches resolveModelRouting's (T-73) SAVEPOINT-degradation behavior on the
+ * agent hot path. A settings page that can't read overrides yet should show
+ * an honest empty state, not crash the whole page (the write attempt is what
+ * surfaces the real "not available yet" 503, per T-74's SchemaNotReadyError).
+ */
+export async function getModelRoutingOverrides(
+  pool: Pool,
+  projectId: string
+): Promise<ModelRoutingOverrides> {
+  const result: ModelRoutingOverrides = { triage: null, respond: null, kb_learn: null };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_project', $1, true)", [projectId]);
+    try {
+      const { rows } = await client.query<RoutingOverrideRow>(
+        `SELECT function_key, primary_model, fallback_model
+           FROM agent_model_routing
+          WHERE project_id = $1`,
+        [projectId]
+      );
+      for (const row of rows) {
+        if (ROUTING_FUNCTION_KEYS.includes(row.function_key)) {
+          result[row.function_key] = {
+            primaryModel: row.primary_model,
+            fallbackModel: row.fallback_model,
+          };
+        }
+      }
+    } catch (err) {
+      if ((err as { code?: string } | null)?.code !== UNDEFINED_TABLE) {
+        throw err;
+      }
+      // Table not created yet (T-72 not applied) — leave `result` all-null.
+    }
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Current SLA config (tenants.sla_config + sla_tier, tenant-scoped)
+// ---------------------------------------------------------------------------
+
+export type CurrentSlaConfig = {
+  slaTier: "standard" | "premium";
+  /** null when the key has never been set — sla-monitor.ts then defaults to 240. */
+  responseTargetMinutes: number | null;
+};
+
+type SlaConfigRow = { sla_tier: "standard" | "premium"; response_target_minutes: string | null };
+
+/**
+ * Read the tenant's current SLA posture for the settings editor. Includes
+ * `sla_tier` (read-only display — NOT editable via this surface, T-B3: it's
+ * the +$200 CAD/mo billing lever) specifically so the UI can tell the founder
+ * the `response_target_minutes` editor has NO EFFECT for a premium tenant —
+ * sla-monitor.ts ignores `sla_config` for premium tenants and uses fixed
+ * per-urgency targets instead. Showing the editor without that caveat would
+ * dishonestly imply a write that changes nothing.
+ */
+export async function getCurrentSlaConfig(
+  pool: Pool,
+  projectId: string,
+  tenantId: string
+): Promise<CurrentSlaConfig> {
+  return withTenantScope(pool, projectId, tenantId, async (client) => {
+    const { rows } = await client.query<SlaConfigRow>(
+      `SELECT sla_tier, (sla_config->>'response_target_minutes') AS response_target_minutes
+         FROM tenants
+        WHERE id = $1`,
+      [tenantId]
+    );
+    const row = rows[0];
+    return {
+      slaTier: row?.sla_tier ?? "standard",
+      responseTargetMinutes:
+        row?.response_target_minutes != null ? parseInt(row.response_target_minutes, 10) : null,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Feature flags list (feature_flags, project-scoped)
+// ---------------------------------------------------------------------------
+
+export type FeatureFlagListItem = {
+  id: string;
+  flagKey: string;
+  environment: "dev" | "staging" | "prod";
+  enabled: boolean;
+  rolloutPercentage: number;
+  description: string | null;
+};
+
+type FeatureFlagListRow = {
+  id: string;
+  flag_key: string;
+  environment: "dev" | "staging" | "prod";
+  enabled: boolean;
+  rollout_percentage: number;
+  description: string | null;
+};
+
+/**
+ * List every `feature_flags` row in this project's scope. `feature_flags`
+ * already existed pre-Sprint-7 (no T-72 dependency), so this always reads
+ * live — no pre-migration degradation needed here.
+ *
+ * Rows carry their own `environment` (dev/staging/prod) — a second axis
+ * *within* one project_id that RLS does not gate on (`feature_flags_select`
+ * scopes by `project_id` only) and that T-74's toggle route does not filter
+ * on either (it scopes by `id` + `project_id`, matching RLS exactly). This
+ * function deliberately does NOT filter by environment for the same reason:
+ * inventing an environment filter here would diverge from what the write
+ * route actually enforces. The UI shows `environment` as a per-row label so
+ * the founder can tell rows apart; it is informational, not a security
+ * boundary (project_id is the real boundary, per RLS).
+ */
+export async function getFeatureFlags(
+  pool: Pool,
+  projectId: string
+): Promise<FeatureFlagListItem[]> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_project', $1, true)", [projectId]);
+    const { rows } = await client.query<FeatureFlagListRow>(
+      `SELECT id::text, flag_key, environment, enabled, rollout_percentage, description
+         FROM feature_flags
+        WHERE project_id = $1
+        ORDER BY flag_key, environment`,
+      [projectId]
+    );
+    await client.query("COMMIT");
+    return rows.map((r) => ({
+      id: r.id,
+      flagKey: r.flag_key,
+      environment: r.environment,
+      enabled: r.enabled,
+      rolloutPercentage: r.rollout_percentage,
+      description: r.description,
     }));
   } catch (err) {
     await client.query("ROLLBACK");

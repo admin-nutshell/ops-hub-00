@@ -15,6 +15,9 @@ import {
   getTicketQueue,
   getPlatformIncidents,
   getScopeLabel,
+  getModelRoutingOverrides,
+  getCurrentSlaConfig,
+  getFeatureFlags,
 } from "../../src/metrics/dashboard";
 import { DASHBOARD_PROJECT_ID, DASHBOARD_TENANT_ID } from "./project";
 
@@ -61,3 +64,16 @@ export const loadEvalHealth = () => getEvalHealth(pool());
 
 export const loadScopeLabel = () =>
   getScopeLabel(pool(), DASHBOARD_PROJECT_ID, DASHBOARD_TENANT_ID);
+
+// T-75 — settings-area reads (ADR-0006). Writes do NOT go through this file;
+// they go through web/lib/writeQueries.ts (T-74), which resolves its own
+// server-pinned scope independently (see dashboardWriteGuards.ts — deliberately
+// NOT these same DASHBOARD_PROJECT_ID/DASHBOARD_TENANT_ID convenience
+// constants, which fall back to placeholder UUIDs; a write must fail closed
+// instead of guessing a scope).
+export const loadModelRoutingOverrides = () => getModelRoutingOverrides(pool(), DASHBOARD_PROJECT_ID);
+
+export const loadCurrentSlaConfig = () =>
+  getCurrentSlaConfig(pool(), DASHBOARD_PROJECT_ID, DASHBOARD_TENANT_ID);
+
+export const loadFeatureFlags = () => getFeatureFlags(pool(), DASHBOARD_PROJECT_ID);

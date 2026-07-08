@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { TopBar } from "../components/TopBar";
+import { NavTabs } from "../components/NavTabs";
 import {
   SlaAttainmentCard,
   OpenTicketsCard,
@@ -13,17 +14,19 @@ import { SystemHealthPanel } from "../components/SystemHealthPanel";
 import { PlatformIncidentsPanel } from "../components/PlatformIncidentsPanel";
 import { CardSkeleton, PanelSkeleton } from "../components/Skeleton";
 
-// Read-only MVP (T-59, Sprint 6). Deliberately ONE page: no Settings tab, no
-// nav, no forms/toggles — that entire surface is Sprint 7 (see WORK.md's
-// deferral note). Every widget below is its own async Server Component
-// wrapped in <Suspense> so slow/failing queries never block or blank the
-// rest of the page — each streams and fails independently.
+// Read-only MVP (T-59, Sprint 6). Every widget below is its own async Server
+// Component wrapped in <Suspense> so slow/failing queries never block or
+// blank the rest of the page — each streams and fails independently. Sprint 7
+// (T-75) adds a Settings screen alongside this one (see NavTabs) — this page
+// itself stays read-only; nothing here writes.
 export default function DashboardPage() {
   return (
     <main className="mx-auto flex max-w-[1320px] flex-col gap-[30px] px-8 pt-8 pb-[72px]">
       <Suspense fallback={<div className="h-14 animate-pulse rounded-xl bg-surface" />}>
         <TopBar />
       </Suspense>
+
+      <NavTabs active="dashboard" />
 
       <section className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-4">
         <Suspense fallback={<CardSkeleton />}>
