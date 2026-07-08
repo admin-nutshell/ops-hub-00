@@ -4,10 +4,11 @@
 
 ---
 
-## FQ-66 — Ops Dashboard write surface: per-user session auth, or accept shared-credential audit granularity?
+## ✅ FQ-66 — Ops Dashboard write surface: per-user session auth, or accept shared-credential audit granularity?
 
-**Filed:** 2026-07-08
+**Filed:** 2026-07-08 | **Resolved:** 2026-07-08
 **Filed by:** PM (Sprint 7 scoping, from ADR-0006 T-B2)
+**Status:** RESOLVED — founder accepted the PM recommendation (Option B) directly: "not a technical person, recommend and proceed." Decision recorded in `DECISIONS.md`. `audit_log.actor` will record "dashboard" for Sprint 7's write surface; the single-shared-credential Basic Auth gate stays as-is. Upgrade path to per-user session auth (Option A) remains documented and open — revisit when a second dashboard user is added or a SOC-2 audit requires per-human attribution. T-77 closed on this basis; T-74's audit-actor semantics build to match "dashboard" as the actor value.
 **Needs:** Decision (security posture + build scope)
 **Deadline:** ~July 13, 2026 — **blocking** on the Sprint 7 write-surface build (T-74 / T-77): the write UI/API can't be cut until this is settled. Nothing live is affected today; a one-line reply ("A" or "B") is enough.
 
