@@ -15,9 +15,12 @@ name: Configure LiteLLM — OpenAI gpt-4o-mini as sole triage-model provider
 #   7. Smoke test triage-model (assert HTTP 200)
 #   8. Summary
 #
-# Prerequisites (GitHub Actions secrets):
-#   LITELLM_MASTER_KEY      — staging LiteLLM admin key
-#   LITELLM_MASTER_KEY_PROD — prod LiteLLM admin key
+# Prerequisites:
+#   LITELLM_MASTER_KEY (GitHub secret) — staging LiteLLM admin key.
+#   Prod's admin key is fetched fresh from litellm-prod's own Coolify env vars
+#   each run (masked, never stored as a secret) -- LITELLM_MASTER_KEY_PROD was
+#   never actually created as a GitHub secret despite this file previously
+#   claiming otherwise (confirmed via `gh secret list`, 2026-07-08).
 #
 # OPENAI_API_KEY and ANTHROPIC_API_KEY must be set in the target Coolify env vars
 # and the container must have been redeployed (vars injected on redeploy, not restart).
@@ -42,6 +45,9 @@ env:
   TRIAGE_ALIAS: "triage-model"
   FALLBACK_ALIAS: "fallback-model"
   LEGACY_ALIAS: "meta/llama-3.3-70b-instruct"
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_STAGING_UUID: "h12xz8887fxvbvjts2hac8if"
+  LITELLM_PROD_UUID: "hlik1d96uvkkjzpbxa3azhcv"
 
 jobs:
   configure-openai-only:
@@ -49,12 +55,38 @@ jobs:
     runs-on: ubuntu-latest
     env:
       LITELLM_EXTERNAL_URL: ${{ inputs.environment == 'prod' && 'https://litellm-prod.inatechshell.ca' || 'https://litellm-staging.inatechshell.ca' }}
-      LITELLM_KEY: ${{ inputs.environment == 'prod' && secrets.LITELLM_MASTER_KEY_PROD || secrets.LITELLM_MASTER_KEY }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
 
     steps:
+      # LITELLM_MASTER_KEY_PROD does not exist as a GitHub secret (confirmed
+      # via `gh secret list`, 2026-07-08, despite this file's own header
+      # comment and WORK.md's T-48 entry both claiming it was created).
+      # Fetch each environment's master key fresh from that instance's own
+      # Coolify env vars instead -- masked immediately, never stored as a
+      # new secret, never printed. Staging's LITELLM_MASTER_KEY secret does
+      # exist and still works, so only prod needs the Coolify fetch, but
+      # both paths are handled uniformly here for consistency.
+      - name: Resolve LiteLLM master key (masked)
+        id: key
+        run: |
+          if [ "${{ inputs.environment }}" = "prod" ]; then
+            HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+              -H "Authorization: Bearer $COOLIFY_TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$LITELLM_PROD_UUID/envs")
+            [ "$HTTP" = "200" ] || { echo "::error::cannot read litellm-prod envs (HTTP $HTTP)"; exit 1; }
+            KEY=$(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .value' /tmp/envs.json | head -1)
+          else
+            KEY="${{ secrets.LITELLM_MASTER_KEY }}"
+          fi
+          [ -n "$KEY" ] && [ "$KEY" != "null" ] || { echo "::error::LiteLLM master key not found for ${{ inputs.environment }}"; exit 1; }
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
       # ── 1. Health check ───────────────────────────────────────────────────────
       - name: Verify litellm health
         id: health
+        env:
+          LITELLM_KEY: ${{ steps.key.outputs.key }}
         run: |
           echo "::add-mask::$LITELLM_KEY"
           echo "target: ${{ inputs.environment }} — $LITELLM_EXTERNAL_URL"
@@ -73,6 +105,8 @@ jobs:
 
       # ── 2. Purge all existing model registrations ─────────────────────────────
       - name: Purge all existing model registrations
+        env:
+          LITELLM_KEY: ${{ steps.key.outputs.key }}
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/model_info_pre.json -w "%{http_code}" \
             -H "Authorization: Bearer $LITELLM_KEY" \
@@ -104,6 +138,8 @@ jobs:
       # ── 3. Register triage-model → gpt-4o-mini ───────────────────────────────
       - name: Register triage-model → gpt-4o-mini
         id: reg-triage
+        env:
+          LITELLM_KEY: ${{ steps.key.outputs.key }}
         run: |
           PAYLOAD=$(jq -n --arg alias "$TRIAGE_ALIAS" '{
             model_name: $alias,
@@ -125,6 +161,8 @@ jobs:
       # ── 4. Register fallback-model → anthropic/claude-haiku-4-5-20251001 ─────
       - name: Register fallback-model → anthropic/claude-haiku-4-5-20251001
         id: reg-fallback
+        env:
+          LITELLM_KEY: ${{ steps.key.outputs.key }}
         run: |
           PAYLOAD=$(jq -n --arg alias "$FALLBACK_ALIAS" '{
             model_name: $alias,
@@ -146,6 +184,8 @@ jobs:
       # ── 5. Register legacy alias → gpt-4o-mini ───────────────────────────────
       - name: Register legacy alias → gpt-4o-mini
         id: reg-legacy
+        env:
+          LITELLM_KEY: ${{ steps.key.outputs.key }}
         run: |
           PAYLOAD=$(jq -n --arg alias "$LEGACY_ALIAS" '{
             model_name: $alias,
@@ -166,6 +206,8 @@ jobs:
 
       # ── 6. Verify /model/info shows 3 entries ────────────────────────────────
       - name: Verify model registrations (expect 3 aliases)
+        env:
+          LITELLM_KEY: ${{ steps.key.outputs.key }}
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/model_info_post.json -w "%{http_code}" \
             -H "Authorization: Bearer $LITELLM_KEY" \
@@ -191,6 +233,8 @@ jobs:
 
       # ── 7. Smoke test — triage-model ─────────────────────────────────────────
       - name: Smoke test — triage-model (assert HTTP 200)
+        env:
+          LITELLM_KEY: ${{ steps.key.outputs.key }}
         run: |
           TEST_PAYLOAD=$(jq -n --arg alias "$TRIAGE_ALIAS" '{
             model: $alias, max_tokens: 20, temperature: 0,
