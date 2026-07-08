@@ -2021,3 +2021,24 @@ documented and open — revisit when a second dashboard user is added or a
 SOC-2 audit requires per-human attribution. T-77 closed on this basis;
 T-74 builds its audit-actor semantics to match.
 ```
+
+### 2026-07-08 — T-79 evals reconciliation (T-B1): curated model-routing allowlist (Evals Lead)
+
+```
+2026-07-08 [Evals Lead] T-79 / ADR-0006 T-B1 resolved (team-owned, no FQ):
+adopt a curated per-function model-routing allowlist so the dashboard's model
+picker can only choose among aliases already running in production, never
+introduce an unvetted one — enforcing the standing eval gate by freezing the
+choice-set rather than running evals live per click. Published as typed artifact
+src/config/model-allowlist.ts (triage: [triage-model, fallback-model]; respond:
+[triage-model]; kb_learn: [triage-model]); meta/llama-3.3-70b-instruct excluded
+(registered but not any function's current production model). Honest guarantee
+recorded: this is a selection constraint, NOT a live eval pass — the CI gate is
+schema-only (T-58) and the prompt evals pin claude-sonnet-4-6 while aliases route
+elsewhere. Process fixed: adding a new selectable alias requires an eval pass
+against that alias's target model (>95%, recorded here) first. Coverage-gap
+follow-up logged: KB Learn has no prompt eval (evals/kb-learn.yaml) yet — its
+list stays pinned to triage-model until one exists. Trip-wire (option (c), accept
+raw runtime-swap risk → relax a CLAUDE.md constraint → escalate) NOT hit. Gates
+T-73; feeds T-75's dropdown. → ADR-0006 "Evals Lead Review"
+```
