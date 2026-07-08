@@ -1,0 +1,54 @@
+name: Diagnose feature_flags RLS (read-only)
+
+# T-78 root-cause: the live INSERT-fixture into feature_flags is rejected
+# with "new row violates row-level security policy for table feature_flags"
+# even though the migration file (20260618120100) defines
+# feature_flags_write FOR ALL to ops_hub_app WITH CHECK (project_id =
+# current_project_id()), which should pass. Read-only — dumps the actual
+# live policy definitions + grants so the drift (if any) is visible instead
+# of guessed at.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+
+jobs:
+  diagnose:
+    name: Dump live feature_flags RLS policies + grants
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Fetch login DSN from Coolify (masked)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$STAGING_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read staging envs (HTTP $HTTP)"; exit 1; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/envs.json | head -1)
+          [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL absent"; exit 1; }
+          echo "::add-mask::$LOGIN"
+          echo "OPS_HUB_APP_LOGIN_URL=$LOGIN" >> "$GITHUB_ENV"
+
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Dump policies + grants on feature_flags (and agent_model_routing for comparison)
+        run: |
+          psql "$OPS_HUB_APP_LOGIN_URL" -c "select current_user;"
+          echo "=== policies on feature_flags ==="
+          psql "$OPS_HUB_APP_LOGIN_URL" -c "select polname, permissive, roles, cmd, pg_get_expr(polqual, polrelid) as using_expr, pg_get_expr(polwithcheck, polrelid) as with_check_expr from pg_policy where polrelid = 'feature_flags'::regclass;"
+          echo "=== policies on agent_model_routing (known-working, for comparison) ==="
+          psql "$OPS_HUB_APP_LOGIN_URL" -c "select polname, permissive, roles, cmd, pg_get_expr(polqual, polrelid) as using_expr, pg_get_expr(polwithcheck, polrelid) as with_check_expr from pg_policy where polrelid = 'agent_model_routing'::regclass;"
+          echo "=== table-level grants on feature_flags for ops_hub_app ==="
+          psql "$OPS_HUB_APP_LOGIN_URL" -c "select privilege_type from information_schema.role_table_grants where table_name = 'feature_flags' and grantee = 'ops_hub_app';"
+          echo "=== row level security enabled? ==="
+          psql "$OPS_HUB_APP_LOGIN_URL" -c "select relname, relrowsecurity, relforcerowsecurity from pg_class where relname in ('feature_flags','agent_model_routing');"
+          echo "=== current_project_id() definition ==="
+          psql "$OPS_HUB_APP_LOGIN_URL" -c "select pg_get_functiondef('current_project_id()'::regprocedure);"
