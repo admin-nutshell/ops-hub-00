@@ -26,15 +26,34 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-      MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY_PROD }}
 
     steps:
       - name: Guard -- required secrets present
         run: |
           [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
-          [ -n "$MASTER_KEY" ] || { echo "::error::LITELLM_MASTER_KEY_PROD not set"; exit 1; }
+
+      # No LITELLM_MASTER_KEY_PROD GitHub secret exists (a prior WORK.md claim
+      # that it was created was inaccurate -- confirmed via `gh secret list`,
+      # 2026-07-08). Fetch it fresh from litellm-prod's own Coolify env vars
+      # instead, same established pattern as provision-ops-dashboard-prod.yml's
+      # "Fetch OPS_HUB_APP_LOGIN_URL" step -- masked immediately, never stored
+      # as a new secret, never printed.
+      - name: Fetch LITELLM_MASTER_KEY from litellm-prod (masked)
+        id: key
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read litellm-prod envs (HTTP $HTTP)"; exit 1; }
+          KEY=$(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .value' /tmp/litellm_envs.json | head -1)
+          [ -n "$KEY" ] && [ "$KEY" != "null" ] || { echo "::error::LITELLM_MASTER_KEY absent on litellm-prod"; exit 1; }
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "Fetched litellm-prod's own LITELLM_MASTER_KEY (masked)."
 
       - name: Model registry BEFORE restart
+        env:
+          MASTER_KEY: ${{ steps.key.outputs.key }}
         run: |
           HTTP=$(curl -s --max-time 20 -o /tmp/before.json -w "%{http_code}" \
             -H "Authorization: Bearer $MASTER_KEY" "$LITELLM_EXTERNAL_URL/model/info")
@@ -79,6 +98,8 @@ jobs:
           done
 
       - name: Model registry AFTER restart
+        env:
+          MASTER_KEY: ${{ steps.key.outputs.key }}
         run: |
           HTTP=$(curl -s --max-time 20 -o /tmp/after.json -w "%{http_code}" \
             -H "Authorization: Bearer $MASTER_KEY" "$LITELLM_EXTERNAL_URL/model/info")
@@ -86,6 +107,8 @@ jobs:
           jq -r '.data[] | "  " + .model_name' /tmp/after.json 2>/dev/null || cat /tmp/after.json | head -c 300
 
       - name: Live triage-model completion smoke test
+        env:
+          MASTER_KEY: ${{ steps.key.outputs.key }}
         run: |
           HTTP=$(curl -s --max-time 30 -o /tmp/chat.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $MASTER_KEY" -H "Content-Type: application/json" \
