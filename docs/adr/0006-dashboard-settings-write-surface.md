@@ -264,4 +264,28 @@ This is a genuine security/business call, not a technical default. Flagged here 
 
 ## Evals Lead Review
 
-*(pending — reconciliation of runtime model-swap vs. the eval gate, per T-B1)*
+- **Reviewer:** Evals Lead (Prompt Quality)
+- **Date:** 2026-07-08
+- **Scope:** T-B1 only — reconciliation of the dashboard-editable model router against the standing eval gate. (T-B4's credential surface is Security Lead's call in the section above; the resolution below happens to give T-B4 option (a) for free.)
+- **Verdict:** **RESOLVED, adopt ADR option (a) — a curated per-function allowlist. No FOUNDER_QUEUE escalation.** This is an agent-owned technical call (CONSTITUTION "could a senior engineer answer this by reading the repo?" → yes). The trip-wire (option (c), accepting raw runtime-swap risk, which would relax a standing CLAUDE.md constraint) was **not hit** — see KB Learn below.
+
+- **What is actually true today (the finding that shapes the wording):**
+  - Only **Triage** and **Respond** have dedicated prompt evals (`evals/ticket-triage.yaml`, `evals/ticket-respond.yaml`). **KB Learn has no eval file** — confirmed against the full `evals/` listing.
+  - Both pipeline evals pin the **prompt contract** against one reference model, `anthropic:claude-sonnet-4-6`. Production routes each prompt through a **LiteLLM alias**, which resolves elsewhere (`triage-model` currently → `gpt-4o-mini`; `meta/llama-3.3-70b-instruct` → NVIDIA NIM). And per T-58 the CI Eval Gate is **schema-validation-only**. **Net: no alias has a live per-target-model quality pass.** So the allowlist must NOT be described as "eval-tested aliases" — that would contradict this repo's own T-58/T-B1 finding.
+  - The three currently-registered aliases (`triage-model`, `fallback-model`, `meta/llama-3.3-70b-instruct`) are confirmed live and persistent per DECISIONS.md 2026-07-04 (FQ-53 closeout).
+
+- **The honest inclusion criterion (what "curated" means here):** an alias is in a function's list iff (1) it is a currently-registered LiteLLM alias **and** (2) it is the model that function **already runs in production today** (verified call sites: `ticket-triage.ts` = `triage-model` primary + `fallback-model` fallback; `ticket-respond.ts` and `kb-learn.ts` = `triage-model`). The allowlist **freezes the production-accepted choice-set so the dashboard can only choose among vetted models, never introduce a new one.** It is a *constraint on selection*, not a live eval pass — that is the true, defensible guarantee, and it is exactly what T-B1 asks for.
+
+- **Published allowlist (the concrete artifact T-73 and T-75 consume):** `src/config/model-allowlist.ts` — a small typed per-function const keyed to T-72's `function_key` CHECK literals:
+  - `triage: ["triage-model", "fallback-model"]` — the only function with both slots in production + prompt-eval coverage of both.
+  - `respond: ["triage-model"]` — primary-only this sprint; prompt-eval covered.
+  - `kb_learn: ["triage-model"]` — primary-only; see below.
+  - **`meta/llama-3.3-70b-instruct` is deliberately EXCLUDED** from every list: registered, but the legacy standalone NVIDIA alias and not the current production model of any function. Exposing it in the dropdown would be precisely the un-vetted runtime swap this resolution exists to prevent. (Registration ≠ selectability.)
+
+- **KB Learn (why the trip-wire did NOT fire):** KB Learn has no prompt eval, but pinning its list to its single current production model (`["triage-model"]`, a choice-set of one) **eliminates** runtime-swap risk rather than accepting it — it is the status quo made non-expandable, the opposite of option (c). No standing constraint is relaxed, so no escalation. **Coverage-gap follow-up logged (Evals Lead, non-blocking):** author `evals/kb-learn.yaml`; until it exists, KB Learn's list cannot grow past `triage-model`.
+
+- **Process (also in the artifact's header):** the list is append-controlled, not free-text. Adding a new selectable alias requires: (1) register it in LiteLLM; (2) run that function's promptfoo eval against **that alias's target model** (not just the pinned `claude-sonnet-4-6` reference), clear **>95%**, record in DECISIONS.md — a manual multi-provider `promptfoo eval` run via LiteLLM until the live gate (option (b)) ships in Sprint 8; (3) add the alias in the same PR that records the result. Removing an alias needs no eval.
+
+- **Scope boundary (pre-empting an over-read):** this allowlist constrains which aliases the dashboard may **select**; it does **not** constrain what each alias **resolves to** inside LiteLLM — remapping an alias to a different provider is a LiteLLM master-key admin action, out of this surface's scope (ties to T-B4).
+
+- **Sign-off / handoff:** **T-73 is unblocked.** Its `resolveModelRouting()` must validate any persisted/edited routing value against `src/config/model-allowlist.ts` (reject out-of-list values, fail-closed). **T-75's** dropdown sources its options from the same file and re-validates before submit. `web/` is a separate tsconfig — if it cannot import across the boundary it must mirror the file with a source-of-truth pointer, both updated together.
