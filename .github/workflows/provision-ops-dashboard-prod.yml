@@ -60,10 +60,12 @@ name: Provision Ops Dashboard — PRODUCTION Coolify app (T-70, founder-authoriz
 #   6. Only once a real https domain is confirmed: starts a real deployment,
 #      waits for it to finish.
 #   7. Re-confirms the fqdn is unchanged, then immediately merges a
-#      `dashauth-prod` Traefik basicauth middleware into EVERY router
-#      Coolify generated for that domain (typically an http redirect router
-#      + the https content router), force-recreates the container so
-#      Traefik picks up the new labels.
+#      `dashauth-prod` Traefik basicauth middleware (collision-safe name --
+#      see the 2026-07-08 fix comment inline below for why the name alone
+#      wasn't the whole story) into EVERY router Coolify generated for that
+#      domain (typically an http redirect router + the https content
+#      router), force-recreates the container so Traefik picks up the new
+#      labels.
 #   8. BLOCKING verification: unauthenticated request must be 401;
 #      authenticated request (prod Basic Auth credential) must be 200 with a
 #      real rendered body -- both over https.
@@ -522,25 +524,44 @@ jobs:
           # defining `dashauth@docker` with different (env-specific) basicauth
           # hashes makes it ambiguous, so Traefik drops it entirely -- and
           # every router referencing it 404s, on BOTH apps, not just this one.
-          # Fix: this workflow now uses a per-environment-unique name,
-          # `dashauth-prod`, so it can never collide with staging's `dashauth`
-          # again. The cleanup below matches EITHER name (`dashauth` or
-          # `dashauth-prod`) so a re-dispatch of this fixed workflow also
-          # heals a prod app still carrying the old colliding definition from
-          # before this fix, rather than leaving a dangling duplicate.
+          #
+          # POST-INCIDENT FOLLOW-UP (2026-07-08, T-70 second run): the fix
+          # above only updated this cleanup line's regex (to also match
+          # `dashauth-prod` on re-run) -- the block below it, which decides
+          # what NEW middleware name to actually assign, was never updated
+          # and still used the literal `dashauth`. Comments claimed the fix
+          # was complete; the code didn't match. Live impact: the PRODUCTION
+          # dashboard was reachable with HTTP 200, no credentials, for
+          # several minutes before this was caught and fixed for real below.
+          #
+          # Also fixes the same newline-concatenation bug found in
+          # apply-dashboard-basic-auth.yml: $(...) command substitution
+          # strips printf's trailing newline, so concatenating substitution
+          # output across a multi-router loop silently joins lines with no
+          # separator. Fix: append a literal $'\n' outside the substitution.
+          #
+          # Also guards against corrupted existing-middlewares input (e.g.
+          # from a prior bad run): a valid middlewares value is a bare
+          # comma-separated list of names and can never contain "=" or a
+          # second "traefik.http.routers." key -- discard rather than
+          # propagate if it does.
           WORK=$(echo "$DECODED" | grep -vE '^traefik\.http\.middlewares\.dashauth(-prod)?\.basicauth\.users=')
           NEW_MW_LINES=""
           for R in $ROUTERS; do
             EXISTING_LINE=$(echo "$WORK" | grep -E "^traefik\.http\.routers\.${R}\.middlewares=" || true)
             EXISTING_MW=$(echo "$EXISTING_LINE" | sed -E "s/^traefik\.http\.routers\.${R}\.middlewares=//" \
               | sed -E 's/(^|,)dashauth(-prod)?(,|$)/\1\3/' | sed -E 's/^,//; s/,$//')
+            if echo "$EXISTING_MW" | grep -qE '=|traefik\.http\.routers\.'; then
+              echo "::warning::Discarding corrupted existing middlewares value for router ${R}: ${EXISTING_MW}"
+              EXISTING_MW=""
+            fi
             if [ -n "$EXISTING_MW" ]; then
               MW_VALUE="${EXISTING_MW},dashauth-prod"
             else
               MW_VALUE="dashauth-prod"
             fi
             WORK=$(echo "$WORK" | grep -vE "^traefik\.http\.routers\.${R}\.middlewares=")
-            NEW_MW_LINES="${NEW_MW_LINES}$(printf 'traefik.http.routers.%s.middlewares=%s\n' "$R" "$MW_VALUE")"
+            NEW_MW_LINES="${NEW_MW_LINES}$(printf 'traefik.http.routers.%s.middlewares=%s' "$R" "$MW_VALUE")"$'\n'
           done
 
           NEW_LABELS=$(printf '%s\ntraefik.http.middlewares.dashauth-prod.basicauth.users=%s\n%s' "$WORK" "$USERHASH" "$NEW_MW_LINES")
