@@ -326,10 +326,12 @@ live behind the gate. Security Lead already has substantive involvement schedule
 
 ---
 
-## FQ-58 — T-61 Phase 1 blocked: litellm_db_user password no longer authenticates
+## ✅ FQ-58 — T-61 Phase 1 blocked: litellm_db_user password no longer authenticates
 
-**Filed:** 2026-07-04
+**Filed:** 2026-07-04 | **Closed:** 2026-07-08
 **Filed by:** Production Manager (T-61, Phase 1 canary pre-check)
+**Status:** RESOLVED — founder ran `ALTER ROLE litellm_db_user WITH PASSWORD ...` in Supabase SQL Editor, `LITELLM_DB_USER_URL` GitHub secret updated to match. Precheck re-ran clean, full T-61 Phase 1 canary completed successfully (see WORK.md T-61) — `litellm-staging` now genuinely connects as the restricted `litellm_db_user` role, ADR-0004 wall restored on staging. Root cause of the original auth failure was never conclusively identified (unlogged password drift, same class of issue flagged as a risk in the deploy plan) but is moot now that the credential is confirmed working and current.
+
 **Needs:** Information / Authorization
 **Deadline:** Non-blocking overall (no live change was made; `DISABLE_SCHEMA_UPDATE=true` still holds the latent risk documented in FQ-57) — but blocks T-61 Phase 1 from proceeding.
 
