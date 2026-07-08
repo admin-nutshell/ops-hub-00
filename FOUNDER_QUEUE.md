@@ -4,6 +4,37 @@
 
 ---
 
+## FQ-67 — Apply T-72's migration via Supabase SQL Editor (service_role) — Security Lead approved, no changes needed
+
+**Filed:** 2026-07-08
+**Filed by:** PM (Sprint 7, on behalf of Tech Lead/Security Lead)
+**Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as every prior migration in this repo, e.g. FQ-61/FQ-62/FQ-45)
+**Deadline:** Non-blocking for today's live service (nothing changes for FreeScout/LiteLLM/ticket triage) — but it's the next thing gating Sprint 7's dashboard write-surface build (T-73/T-74/T-75 all read or write through this schema).
+
+**In plain language:** Sprint 7 is adding a settings area to the Ops Dashboard — the ability to pick which AI model each function (Triage/Respond/KB-Learn) uses, edit SLA targets, and toggle feature flags. Before any of that can be built, it needs a small, reviewed database change. That review is done: the Security Lead checked it independently (not just trusted the description) and **approved it with zero changes required** — see PR #312 (`docs/adr/0006-dashboard-settings-write-surface.md` §Security Lead Review) for the full write-up. The migration file itself is already merged into `main`.
+
+**What the migration does (already reviewed, already merged as code — just not run against the live database yet):**
+1. Creates one new table, `agent_model_routing`, to hold which model each function uses.
+2. Locks down who can change it — only the app's own restricted database role, only for its own project, and specifically **blocks deleting rows** (they can only be edited).
+3. Tightens the existing `tenants` table's write permission from "can update anything" down to "can only update the SLA target field" — and deliberately **excludes** the premium-tier billing field, so a dashboard bug could never accidentally change what you're being billed.
+
+Nothing about today's live ticket-triage pipeline changes — this only adds a new, unused-until-built table and narrows a permission that wasn't being used for broad writes anyway.
+
+**What's needed (via Supabase Dashboard → SQL Editor, project `yocoljutbiizdbfraapx`, as the project owner/`service_role`):**
+1. Open the SQL Editor and run the full contents of `supabase/migrations/20260708000000_t72_agent_model_routing_sla_grant.sql` (137 lines, forward-only, safe to re-run if you ever need to). Expected output: a mix of `CREATE TABLE`, `CREATE POLICY`, `GRANT`/`REVOKE` confirmations — no errors, since this is a clean first apply.
+2. **Verify** with:
+   ```sql
+   SELECT relname FROM pg_class WHERE relname = 'agent_model_routing';
+   ```
+   — expect the one name back.
+3. Reply here or in `WORK.md` once done — Tech Lead then continues T-73/T-74/T-75 against the live table.
+
+**Recommendation:** Apply as written — this is routine migration application (same pattern as every prior migration in this repo, all reviewed and applied via SQL Editor) and it's already been through a real, documented security review with a clean approval, not a rubber stamp.
+
+**Notify:** PM/Tech Lead once done.
+
+---
+
 ## ✅ FQ-66 — Ops Dashboard write surface: per-user session auth, or accept shared-credential audit granularity?
 
 **Filed:** 2026-07-08 | **Resolved:** 2026-07-08
