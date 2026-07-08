@@ -468,12 +468,13 @@ T-45 builds a `workflow_dispatch` workflow that SSHs to the Coolify VPS, detects
 
 ---
 
-## FQ-47 — T-38 Cstate status page: 4 founder actions to go live
+## ✅ FQ-47 — T-38 Cstate status page: 4 founder actions to go live
 
-**Filed:** 2026-06-28
+**Filed:** 2026-06-28 | **Resolved:** 2026-07-08 (3 of 4; 4th deliberately deferred)
 **Filed by:** Production Manager (T-38)
 **Needs:** Authorization + 4 one-time setup actions
-**Deadline:** July 7, 2026 (T-38 target)
+**Deadline:** July 7, 2026 (T-38 target) — missed by one day, closed 2026-07-08
+**Status:** Actions 1–3 confirmed done (GitHub Pages on Actions source, DNS CNAME already correct, `GITHUB_STATUS_DISPATCH_TOKEN` confirmed set on the correct project — `ops-hub-staging`, not prod, verified explicitly given the known shared-app-name landmine). Action 4a (`STATUS_WEBHOOK_SECRET`) also already set. **Action 4b (UptimeRobot webhook → auto-populate incidents) deliberately NOT done** — UptimeRobot's webhook alert contacts require a Team/Enterprise plan upgrade on this account's current tier. Per CLAUDE.md's own free-tier-first standing constraint, recommended against upgrading for this — it's incident-automation convenience, not core functionality; a manually-updated status page is a common, acceptable pattern. Founder agreed. **Live-verified independently** (not just "should work"): `https://status.inatechshell.ca` → HTTP 200, real page title "ITS Platform Status," most recent `deploy-status.yml` run (2026-07-04) succeeded. T-38 can be declared done on this basis — incident automation can be revisited later if UptimeRobot usage ever justifies the paid tier.
 
 Code is merged and the Hugo site is built and deployed by CI. Four actions are needed before `status.inatechshell.ca` is reachable and UptimeRobot alerts are automated:
 
