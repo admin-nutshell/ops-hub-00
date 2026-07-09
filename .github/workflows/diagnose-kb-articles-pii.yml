@@ -1,0 +1,75 @@
+name: Diagnose kb_articles for leaked PII (read-only, no raw PII printed)
+
+# T-84 fallout: a live eval run (evals/kb-learn.yaml against triage-model, the
+# real production model) found KB Learn's current prompt genuinely leaks PII
+# verbatim (customer name/email/account/ticket-id/timestamp all present in a
+# test output) and is vulnerable to prompt injection. kb_articles is a durable,
+# cross-ticket table — if this has already happened on real production
+# tickets, that's an active PIPEDA/privacy exposure, not just a latent risk.
+#
+# This workflow checks WITHOUT ever printing raw PII to a CI log: counts rows
+# per known project scope, and flags (boolean only) whether title/body match
+# PII-shaped patterns (email regex, a name-like "Customer:" prose pattern,
+# phone-like digit runs). If flags fire, a human follows up by reading the
+# specific article id directly in Supabase — never through this log.
+#
+# READ-ONLY. Never service_role — ops_hub_app via OPS_HUB_APP_LOGIN_URL
+# (fetched fresh from Coolify, masked, never printed), same as every other
+# read-only diagnostic this project uses.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+
+jobs:
+  diagnose:
+    name: Check kb_articles for PII-shaped content (counts + flags only, no raw content)
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Fetch login DSN from Coolify (masked)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$STAGING_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read staging envs (HTTP $HTTP)"; exit 1; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/envs.json | head -1)
+          [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL absent"; exit 1; }
+          echo "::add-mask::$LOGIN"
+          echo "OPS_HUB_APP_LOGIN_URL=$LOGIN" >> "$GITHUB_ENV"
+
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Check kb_articles for both known project scopes (counts + PII-pattern flags only)
+        run: |
+          set +e
+          for PROJECT in "00000000-0000-0000-0000-000000000002:tts-staging" "00000000-0000-0000-0000-000000000003:tts-prod"; do
+            PID="${PROJECT%%:*}"
+            LABEL="${PROJECT##*:}"
+            echo "=== $LABEL ($PID) ==="
+            psql "$OPS_HUB_APP_LOGIN_URL" -P pager=off -c "
+              select set_config('app.current_project', '$PID', true);
+              select
+                count(*) as total_articles,
+                count(*) filter (where title ~* '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' or body ~* '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}') as flag_email_pattern,
+                count(*) filter (where title ~* 'customer:|account:|ticket #|ticket#' or body ~* 'customer:|account:|ticket #|ticket#') as flag_identifier_label,
+                count(*) filter (where title ~* '\d{4}-\d{2}-\d{2}' or body ~* '\d{4}-\d{2}-\d{2}') as flag_date_pattern,
+                count(*) filter (where title !~ '^\{' and body !~ '^\{' and (title ~* '^\*\*|^-\s' or body ~* '^\*\*|^-\s')) as flag_markdown_prose_not_json
+              from kb_articles
+              where project_id = '$PID';"
+          done
+          echo ""
+          echo "=== interpretation ==="
+          echo "flag_email_pattern > 0        -> at least one article likely contains a real email address"
+          echo "flag_identifier_label > 0     -> at least one article contains a 'Customer:'/'Account:'/'Ticket #' style label (the exact leak pattern this eval run reproduced)"
+          echo "flag_date_pattern > 0         -> at least one article contains a YYYY-MM-DD date (the forbidden timestamp pattern)"
+          echo "flag_markdown_prose_not_json > 0 -> at least one article isn't the required JSON {title,body} shape (separate contract bug, not PII)"
+          echo "If any count is > 0, a human should read that specific article directly in Supabase (by project_id scope) — do NOT paste its content back into a CI log or chat."
