@@ -70,9 +70,24 @@ jobs:
           LITELLM_BASE="https://litellm-staging.inatechshell.ca/v1"
           PROVIDER="openai:chat:triage-model?config={\"apiBaseUrl\":\"$LITELLM_BASE\"}"
           echo "Target + grader provider: openai:chat:triage-model via $LITELLM_BASE"
-          npx -y promptfoo@0.121 eval -c evals/kb-learn.yaml --no-cache \
+          # `--grader` is NOT a real flag for `promptfoo eval` (confirmed empirically —
+          # run 28992992414 hit redteam-mode "Target unavailable / Scan stopped" errors,
+          # which is `promptfoo redteam` vocabulary, not `eval` vocabulary; the credential
+          # itself was independently proven valid by the sanity-check step above). The
+          # documented mechanism for overriding the llm-rubric grading provider is
+          # defaultTest.options.provider, merged in via a second -c config file so the
+          # committed evals/kb-learn.yaml (the CI schema-validation reference) stays
+          # untouched.
+          cat > /tmp/grader-override.yaml <<YAML
+          defaultTest:
+            options:
+              provider:
+                id: openai:chat:triage-model
+                config:
+                  apiBaseUrl: "$LITELLM_BASE"
+          YAML
+          npx -y promptfoo@0.121 eval -c evals/kb-learn.yaml -c /tmp/grader-override.yaml --no-cache \
             --providers "$PROVIDER" \
-            --grader "$PROVIDER" \
             -o /tmp/kb-learn-results.json \
             2>&1 | tee /tmp/kb-learn-eval.log
 
