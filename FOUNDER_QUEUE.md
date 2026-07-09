@@ -4,12 +4,12 @@
 
 ---
 
-## 🔴 FQ-69 — ACTIVE INCIDENT: 70% of production tickets (14/20) stuck un-triaged — ROOT CAUSE CONFIRMED (ops-hub-prod's LiteLLM key is rejected); fix authored, needs authorization to dispatch
+## ✅ FQ-69 — RESOLVED: 70% of production tickets (14/20) were stuck un-triaged — root cause fixed, entire backlog drained on real data
 
-**Filed:** 2026-07-09 | **UPGRADED twice, then ROOT-CAUSED (Tech Lead, same day).**
-**Filed by:** QA Manager / PM session (found during T-85's pre-injection pre-flight). **Root-caused by:** Tech Lead.
-**Needs:** **AUTHORIZATION** — a founder/user OK to dispatch the fix workflow that overwrites ops-hub-prod's `LITELLM_MASTER_KEY` and restarts ops-hub-prod. (Diagnosis is done; this is now a go/no-go on a prod-secret mutation, so it needs the same authorization the `LITELLM_URL` fix did.)
-**Deadline:** Ongoing — real support tickets have been silently un-triaged for up to ~3.6 days. Every `sweepNewTickets` cycle keeps re-failing them.
+**Filed:** 2026-07-09 | **UPGRADED twice, ROOT-CAUSED (Tech Lead), then RESOLVED (user-authorized fix) — all same day.**
+**Filed by:** QA Manager / PM session (found during T-85's pre-injection pre-flight). **Root-caused by:** Tech Lead. **Fix dispatched with explicit user authorization.**
+**Status:** RESOLVED. `fix-ops-hub-prod-litellm-master-key.yml` dispatched ([run 29043946687](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29043946687), success) — self-abort pre-flight reconfirmed the key was still rejected (401) immediately before mutating (diagnosis still held), 2 duplicate `LITELLM_MASTER_KEY` rows deleted, correct value set, restart confirmed healthy, post-fix probe confirmed the aligned key now authenticates (200). **Waited ~13 minutes (2+ `sweepNewTickets` cycles) and re-ran the read-only diagnostic** ([run 29044809037](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29044809037)): all 11 previously-stuck sampled tickets now show `state='responded'`, `owner_agent='ticket-respond'`. **Full prod state distribution: 14 `responded` + 6 `resolved` = 20/20 — zero tickets remain in `state='new'`.** The entire backlog drained end-to-end (triage AND respond) on real production rows within 13 minutes of the fix — a stronger green signal than a synthetic E2E ticket would have given. **T-85's QA E2E injection is no longer necessary** to prove the pipeline healthy; the real-data drain already is that proof.
+**Deadline:** N/A — resolved.
 
 ---
 
