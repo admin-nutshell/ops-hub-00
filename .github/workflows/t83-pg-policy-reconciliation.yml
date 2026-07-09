@@ -1,0 +1,118 @@
+name: T-83 pg_policy vs migrations reconciliation (read-only)
+
+# T-83 (Sprint 8 opener). One-shot READ-ONLY reconciliation of every live RLS
+# policy against the full set of policies the 14 files in supabase/migrations/
+# define. Motivation: the same botched 2026-06-22 hand-apply of
+# 20260618120100_enable_rls_policies.sql has now silently dropped TWO write
+# policies (kb_articles_write — Sprint 5; feature_flags_write — Sprint 7/T-82),
+# each found only when a write broke. This dump-and-diff closes the whole class
+# of risk instead of waiting for instance #3 to surface in production.
+#
+# READ-ONLY: this workflow issues ONLY SELECTs against catalog views. It makes
+# ZERO changes to any table, policy, grant, or running service.
+#
+# CREDENTIAL: SUPABASE_STAGING_DB_URL (the `postgres` login role) — NOT
+# service_role. Per CLAUDE.md non-negotiable #3 / ADR-0005, agents never hold
+# service_role. The `postgres` role is sufficient (and superior to ops_hub_app)
+# for a catalog dump because it can see every policy on every table regardless
+# of per-table grants — exactly what a full reconciliation needs. Because
+# staging and prod are the SAME physical Supabase project distinguished by rows
+# (ADR-0005), policies (DB-level objects) are identical for both environments;
+# one dump is the complete truth for both.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: Dump every live RLS policy + RLS-enabled flags + relevant grants
+    runs-on: ubuntu-latest
+    env:
+      DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+    steps:
+      - name: Validate secret present
+        run: |
+          [ -n "$DB_URL" ] || { echo "::error::SUPABASE_STAGING_DB_URL is empty"; exit 1; }
+          echo "SUPABASE_STAGING_DB_URL present."
+
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Dump — every live RLS policy across all schemas-of-interest
+        run: |
+          echo "::add-mask::$DB_URL"
+          set +e
+          echo "=== connected as (expect: postgres — NOT service_role; read-only session) ==="
+          psql "$DB_URL" -tAc "select current_user;"
+          echo ""
+          echo "=== ALL live RLS policies (table, policy, cmd, roles, USING, WITH CHECK) ==="
+          # polcmd: r=SELECT a=INSERT w=UPDATE d=DELETE *=ALL.  polpermissive: t=PERMISSIVE.
+          psql "$DB_URL" -P pager=off -c "
+            select
+              n.nspname                                   as schema,
+              c.relname                                   as table,
+              p.polname                                   as policy,
+              p.polcmd                                    as cmd,
+              p.polpermissive                             as permissive,
+              p.polroles::regrole[]                       as roles,
+              pg_get_expr(p.polqual, p.polrelid)          as using_expr,
+              pg_get_expr(p.polwithcheck, p.polrelid)     as with_check_expr
+            from pg_policy p
+            join pg_class c     on c.oid = p.polrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public'
+            order by c.relname, p.polname;"
+          echo ""
+          echo "=== RLS-enabled flag per table (relrowsecurity must be TRUE for every table that carries policies) ==="
+          psql "$DB_URL" -P pager=off -c "
+            select c.relname as table, c.relrowsecurity as rls_enabled, c.relforcerowsecurity as rls_forced
+            from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public'
+              and c.relkind = 'r'
+              and c.relname in (
+                'projects','tenants','tickets','audit_log','feature_flags','kb_articles',
+                'agent_cost_events','eval_gate_runs','agent_model_routing')
+            order by c.relname;"
+          echo ""
+          echo "=== table-level grants on agent_model_routing (T-76 Advisory C1 evidence — expect write verbs on authenticated/anon to be ABSENT) ==="
+          psql "$DB_URL" -P pager=off -c "
+            select grantee, privilege_type
+            from information_schema.role_table_grants
+            where table_schema = 'public' and table_name = 'agent_model_routing'
+              and grantee in ('ops_hub_app','authenticated','anon')
+            order by grantee, privilege_type;"
+          echo ""
+          echo "=== column-level grants on agent_model_routing (auto-grant via ALTER DEFAULT PRIVILEGES can land at column granularity too) ==="
+          psql "$DB_URL" -P pager=off -c "
+            select grantee, column_name, privilege_type
+            from information_schema.column_privileges
+            where table_schema = 'public' and table_name = 'agent_model_routing'
+              and grantee in ('authenticated','anon')
+            order by grantee, column_name, privilege_type;"
+          echo ""
+          echo "=== tenants UPDATE grant (T-72 least-privilege: expect ops_hub_app has NO table-level UPDATE; column-scoped to sla_config only) ==="
+          psql "$DB_URL" -P pager=off -c "
+            select privilege_type from information_schema.role_table_grants
+            where table_schema='public' and table_name='tenants' and grantee='ops_hub_app';"
+          psql "$DB_URL" -P pager=off -c "
+            select column_name, privilege_type from information_schema.column_privileges
+            where table_schema='public' and table_name='tenants' and grantee='ops_hub_app' and privilege_type='UPDATE';"
+          echo ""
+          echo "=== current_project_id() / current_tenant_id() present (policies depend on them) ==="
+          psql "$DB_URL" -P pager=off -c "
+            select proname from pg_proc where proname in ('current_project_id','current_tenant_id') order by proname;"
+          exit 0
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================================"
+          echo " T-83 read-only pg_policy reconciliation dump complete."
+          echo " Cross-reference the policy table above against the 20 policies the"
+          echo " migrations define (see PR body / WORK.md T-83). Named verify-target:"
+          echo " audit_log_insert (cmd=a, roles={ops_hub_app}, with_check=true)."
+          echo "======================================================================"
