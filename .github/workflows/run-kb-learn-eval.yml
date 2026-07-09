@@ -41,6 +41,26 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Sanity-check LITELLM_MASTER_KEY against /health before spending eval calls on it
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 15 \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            "https://litellm-staging.inatechshell.ca/health/readiness")
+          echo "GET /health/readiness with LITELLM_MASTER_KEY -> HTTP $HTTP"
+          cat /tmp/health.json 2>/dev/null || true
+          echo ""
+          MODELS_HTTP=$(curl -s -o /tmp/models.json -w "%{http_code}" --max-time 15 \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            "https://litellm-staging.inatechshell.ca/v1/models")
+          echo "GET /v1/models with LITELLM_MASTER_KEY -> HTTP $MODELS_HTTP"
+          if [ "$MODELS_HTTP" = "200" ]; then
+            echo "Registered model ids:"
+            jq -r '.data[]?.id' /tmp/models.json 2>/dev/null || cat /tmp/models.json
+          else
+            echo "::warning::LITELLM_MASTER_KEY appears invalid/stale against litellm-staging (HTTP $MODELS_HTTP on /v1/models) — the eval step below will fail identically. This is a credential problem, not an eval-file problem."
+          fi
+
       - name: Run promptfoo eval against triage-model (target + grader both via LiteLLM)
         env:
           OPENAI_API_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
