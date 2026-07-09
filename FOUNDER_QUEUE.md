@@ -4,10 +4,11 @@
 
 ---
 
-## FQ-68 — Apply T-82's fix via Supabase SQL Editor (service_role) — re-creates a missing policy, Security Lead approved
+## ✅ FQ-68 — Apply T-82's fix via Supabase SQL Editor (service_role) — re-creates a missing policy, Security Lead approved
 
-**Filed:** 2026-07-09
+**Filed:** 2026-07-09 | **Resolved:** 2026-07-09
 **Filed by:** PM (Sprint 7, on behalf of Tech Lead/Security Lead)
+**Status:** RESOLVED — founder ran the fix via Supabase SQL Editor. Verified: `select polname from pg_policy where polrelid = 'feature_flags'::regclass;` returned both `feature_flags_select` and `feature_flags_write`. T-82 fully closed. QA re-running T-78's live harness to confirm 21/21.
 **Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-67/FQ-61/FQ-62/FQ-45)
 **Deadline:** Non-blocking for today's live service — but it's what QA needs to finish signing off Sprint 7's write surface.
 
