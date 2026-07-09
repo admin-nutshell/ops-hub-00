@@ -71,19 +71,27 @@ jobs:
           with open("evals/kb-learn.yaml") as f:
               cfg = yaml.safe_load(f)
 
-          litellm_provider = {
-              "id": "openai:chat:triage-model",
-              "config": {"apiBaseUrl": "https://litellm-staging.inatechshell.ca/v1"},
-          }
+          LITELLM_BASE = "https://litellm-staging.inatechshell.ca/v1"
 
-          # Replace the CI schema-validation reference provider (anthropic:claude-sonnet-4-6)
-          # with the real production target (triage-model via LiteLLM staging) for this
-          # live run only. The committed evals/kb-learn.yaml is untouched on disk.
-          cfg["providers"] = [litellm_provider]
+          # TARGET provider: swap id + inject apiBaseUrl, but PRESERVE the original
+          # provider's config (system prompt, temperature, max_tokens) verbatim — a
+          # prior attempt (run 28994670193) silently dropped the system prompt by
+          # replacing the whole providers list wholesale, which meant the model got
+          # zero instructions (max_tokens defaulted to 1024, temperature to 0, no
+          # system message at all) and produced a real-looking but meaningless 25%
+          # pass rate. This is the actual bug that run's low score was measuring.
+          original_provider = cfg["providers"][0]
+          target_config = dict(original_provider.get("config", {}))
+          target_config["apiBaseUrl"] = LITELLM_BASE
+          target_provider = {"id": "openai:chat:triage-model", "config": target_config}
+          cfg["providers"] = [target_provider]
 
-          # Same provider also grades the llm-rubric assertions — one LiteLLM key/base URL,
-          # no separate Anthropic/OpenAI credential needed.
-          cfg["defaultTest"] = {"options": {"provider": litellm_provider}}
+          # GRADER provider: deliberately NOT the kb-learn system prompt — the grader
+          # answers a different question (does this output satisfy rubric X), so it
+          # gets a clean provider pointed at the same LiteLLM instance/key, no
+          # target-specific system message attached.
+          grader_provider = {"id": "openai:chat:triage-model", "config": {"apiBaseUrl": LITELLM_BASE}}
+          cfg["defaultTest"] = {"options": {"provider": grader_provider}}
 
           with open("/tmp/kb-learn-live.yaml", "w") as f:
               yaml.safe_dump(cfg, f, sort_keys=False)
