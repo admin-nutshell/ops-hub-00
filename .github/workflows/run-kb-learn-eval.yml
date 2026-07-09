@@ -61,33 +61,44 @@ jobs:
             echo "::warning::LITELLM_MASTER_KEY appears invalid/stale against litellm-staging (HTTP $MODELS_HTTP on /v1/models) — the eval step below will fail identically. This is a credential problem, not an eval-file problem."
           fi
 
+      - name: Generate a single self-contained live-run config (no CLI-flag overrides, no multi-config merge)
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          python3 <<'PYEOF'
+          import yaml
+
+          with open("evals/kb-learn.yaml") as f:
+              cfg = yaml.safe_load(f)
+
+          litellm_provider = {
+              "id": "openai:chat:triage-model",
+              "config": {"apiBaseUrl": "https://litellm-staging.inatechshell.ca/v1"},
+          }
+
+          # Replace the CI schema-validation reference provider (anthropic:claude-sonnet-4-6)
+          # with the real production target (triage-model via LiteLLM staging) for this
+          # live run only. The committed evals/kb-learn.yaml is untouched on disk.
+          cfg["providers"] = [litellm_provider]
+
+          # Same provider also grades the llm-rubric assertions — one LiteLLM key/base URL,
+          # no separate Anthropic/OpenAI credential needed.
+          cfg["defaultTest"] = {"options": {"provider": litellm_provider}}
+
+          with open("/tmp/kb-learn-live.yaml", "w") as f:
+              yaml.safe_dump(cfg, f, sort_keys=False)
+
+          print("Generated /tmp/kb-learn-live.yaml — providers + defaultTest overridden:")
+          print(yaml.safe_dump({"providers": cfg["providers"], "defaultTest": cfg["defaultTest"]}, sort_keys=False))
+          PYEOF
+
       - name: Run promptfoo eval against triage-model (target + grader both via LiteLLM)
         env:
           OPENAI_API_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
         run: |
           set -euo pipefail
           echo "::add-mask::$OPENAI_API_KEY"
-          LITELLM_BASE="https://litellm-staging.inatechshell.ca/v1"
-          PROVIDER="openai:chat:triage-model?config={\"apiBaseUrl\":\"$LITELLM_BASE\"}"
-          echo "Target + grader provider: openai:chat:triage-model via $LITELLM_BASE"
-          # `--grader` is NOT a real flag for `promptfoo eval` (confirmed empirically —
-          # run 28992992414 hit redteam-mode "Target unavailable / Scan stopped" errors,
-          # which is `promptfoo redteam` vocabulary, not `eval` vocabulary; the credential
-          # itself was independently proven valid by the sanity-check step above). The
-          # documented mechanism for overriding the llm-rubric grading provider is
-          # defaultTest.options.provider, merged in via a second -c config file so the
-          # committed evals/kb-learn.yaml (the CI schema-validation reference) stays
-          # untouched.
-          cat > /tmp/grader-override.yaml <<YAML
-          defaultTest:
-            options:
-              provider:
-                id: openai:chat:triage-model
-                config:
-                  apiBaseUrl: "$LITELLM_BASE"
-          YAML
-          npx -y promptfoo@0.121 eval -c evals/kb-learn.yaml -c /tmp/grader-override.yaml --no-cache \
-            --providers "$PROVIDER" \
+          npx -y promptfoo@0.121 eval -c /tmp/kb-learn-live.yaml --no-cache --verbose \
             -o /tmp/kb-learn-results.json \
             2>&1 | tee /tmp/kb-learn-eval.log
 
