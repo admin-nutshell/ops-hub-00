@@ -2042,3 +2042,36 @@ list stays pinned to triage-model until one exists. Trip-wire (option (c), accep
 raw runtime-swap risk → relax a CLAUDE.md constraint → escalate) NOT hit. Gates
 T-73; feeds T-75's dropdown. → ADR-0006 "Evals Lead Review"
 ```
+
+### 2026-07-09 — Sprints 6 & 7 retros authored + Sprint 8 planned (PM)
+
+```
+2026-07-09 [PM] Sprint 6 and Sprint 7 retros authored (both were overdue —
+completion summaries said "retro: to be authored"): docs/retros/sprint-6.md
+(T-57–T-71; dashboard MVP + LiteLLM DB-wall + Sprint 5 CI debt; key incidents:
+T-70 Traefik dashauth middleware-name collision, T-71 100%-triage-failure env
+drift, the stale-WORK.md-status pattern) and docs/retros/sprint-7.md (T-72–T-82;
+settings/write surface; key incidents: T-78 missing feature_flags_write RLS policy
+silently broken since 2026-06-22 → fixed via T-82 re-verified 21/21, the twice-
+repeated PR-stacking orphan #316→#317 and #324→#325, the T-81 crashed-delegation
++ 46-commits-stale-but-401 deploy, the flaky push-to-open-PR checks trigger).
+Both retros' #1 process change is proactive drift reconciliation.
+
+2026-07-09 [PM] Sprint 8 planned: July 9–23, 2026 — "Drift Reconciliation +
+Eval Coverage" (hardening, not feature). Anchor T-83: one-shot read-only
+pg_policy-vs-migrations reconciliation (audit_log_insert an explicit verify-target;
+same 2026-06-22 apply already lost kb_articles_write + feature_flags_write — close
+the class, don't find #3 in prod). T-84: author evals/kb-learn.yaml (only agent
+function with zero eval coverage; unblocks a real KB Learn model choice). T-85:
+close T-62 (LiteLLM-prod freeze-schema + QA E2E — the genuine Sprint 6 carry).
+T-86: CLAUDE.md stale-facts — DONE in this scoping PR (5→14 migrations; caveat
+the schema-only eval-gate constraint; Active-sprint pointer 6→8); done-at-
+planning, T-number retained for traceability.
+T-87: author ADR-0007 — design-of-record for the real LLM-rubric eval gate;
+build DEFERRED to Sprint 9 (too large to pair with the above without repeating
+the Sprint 5 overcommit pattern — scoped + named, not punted). Carried forward,
+not dropped: T-76 Advisory C1 (fold into T-83's fix migration if one is produced),
+T-77 Option A session auth, FQ-63, FQ-47 4b, DNC/FQ-43. CLAUDE.md "Active sprint"
+pointer updated Sprint 6→8 (was two sprints stale). No milestone (capability-
+building); Milestone numbering note still stands (do not label M7).
+```
