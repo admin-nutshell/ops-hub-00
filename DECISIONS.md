@@ -2075,3 +2075,24 @@ T-77 Option A session auth, FQ-63, FQ-47 4b, DNC/FQ-43. CLAUDE.md "Active sprint
 pointer updated Sprint 6→8 (was two sprints stale). No milestone (capability-
 building); Milestone numbering note still stands (do not label M7).
 ```
+
+### 2026-07-09 — T-83 resolved: pg_policy-vs-migrations reconciliation, class of risk closed
+
+```
+2026-07-09 [Tech Lead] T-83 resolved: one-shot authoritative live pg_policy dump
+(run 28991770926, via ops_hub_app, never service_role) confirmed all 20 policies
+defined across the 14 supabase/migrations/ files are present live, byte-matched
+on cmd/roles/USING/WITH CHECK — zero gaps, zero unexpected extras. audit_log_insert
+(the named third-suspect after kb_articles_write and feature_flags_write both
+went missing from the same 2026-06-22 botched hand-apply) confirmed present and
+correctly scoped: cmd=a, roles={ops_hub_app}, with_check=true. relrowsecurity=true
+on all 9 tables. This closes the drift class the Sprint 7 retro flagged as
+process-change #1 — no fix migration required, no Security Lead review needed.
+Bonus: T-76 Advisory C1 (revoke agent_model_routing write verbs from
+authenticated/anon) confirmed a non-issue — zero such grants exist live; nothing
+to revoke. tenants least-privilege (T-72) reconfirmed: no table-level UPDATE for
+ops_hub_app, column-scoped to sla_config only. A real bug was found and fixed en
+route in the reconciliation workflow itself (PR #335) — a `set -e` trap silently
+skipped the proven DSN fallback on the first dispatch; fixed and re-verified
+before trusting the dump.
+```
