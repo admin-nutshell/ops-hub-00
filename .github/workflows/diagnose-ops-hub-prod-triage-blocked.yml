@@ -75,28 +75,34 @@ jobs:
           done
 
           echo ""
-          echo "=== 3. LITELLM_URL fix persistence ==="
+          echo "=== 3. LITELLM_URL fix persistence (print EVERY row, not just the first) ==="
           URLCOUNT=$(jq -r '[.[] | select(.key=="LITELLM_URL")] | length' /tmp/ops_envs.json)
-          URL=$(jq -r '.[] | select(.key=="LITELLM_URL") | .value' /tmp/ops_envs.json | head -1)
-          echo "  LITELLM_URL row count = $URLCOUNT (expect exactly 1)"
-          echo "  LITELLM_URL = ${URL:-<unset>}"
+          echo "  LITELLM_URL row count = $URLCOUNT (expect exactly 1; >1 = Coolify append footgun, last row wins on deploy)"
+          # URLs are internal Docker hostnames, not secrets — safe to print all rows so a
+          # stale second row can't hide behind head -1 (last-row-wins is the real risk).
+          jq -r '.[] | select(.key=="LITELLM_URL") | "  row: " + .value' /tmp/ops_envs.json
+          URL=$(jq -r '.[] | select(.key=="LITELLM_URL") | .value' /tmp/ops_envs.json | tail -1)
+          echo "  (last row, i.e. the one that wins on next deploy) = ${URL:-<unset>}"
           if printf '%s' "$URL" | grep -q "$LITELLM_PROD_UUID"; then
-            echo "  -> references litellm-PROD UUID prefix (correct)"
+            echo "  -> last row references litellm-PROD UUID prefix (correct)"
           elif printf '%s' "$URL" | grep -q "$LITELLM_STAGING_UUID"; then
-            echo "  -> references litellm-STAGING UUID prefix (WRONG — regressed)"
+            echo "  -> last row references litellm-STAGING UUID prefix (WRONG — regressed)"
           else
-            echo "  -> matches NEITHER known prefix (inspect)"
+            echo "  -> last row matches NEITHER known prefix (inspect)"
           fi
 
-          # Master key: mask raw value, export only its SHA-256 for comparison.
+          # Master key: mask raw value, export its SHA-256 for comparison AND the raw
+          # value (masked) so the auth-probe step can test it against LiteLLM directly.
           APPKEY=$(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .value' /tmp/ops_envs.json | head -1)
           if [ -z "$APPKEY" ] || [ "$APPKEY" = "null" ]; then
             echo "::warning::ops-hub-prod has NO LITELLM_MASTER_KEY set"
             echo "APP_KEY_HASH=absent" >> "$GITHUB_ENV"
+            echo "APP_KEY=" >> "$GITHUB_ENV"
           else
             echo "::add-mask::$APPKEY"
             APPHASH=$(printf '%s' "$APPKEY" | sha256sum | cut -c1-16)
             echo "APP_KEY_HASH=$APPHASH" >> "$GITHUB_ENV"
+            echo "APP_KEY=$APPKEY" >> "$GITHUB_ENV"
           fi
 
       - name: Read litellm-prod's own master key (hash only) + compare
@@ -121,10 +127,48 @@ jobs:
             echo "  -> MATCH: keys are identical. Master-key mismatch is RULED OUT;"
             echo "     look to content-shape/timeout or the DB write path instead."
           else
-            echo "  -> MISMATCH CONFIRMED: the app authenticates with a different key than"
-            echo "     litellm-prod expects. Every real classifyTicket() 401s (both models)"
-            echo "     -> throw -> ticket stuck in 'new'. This is the root cause."
+            echo "  -> HASHES DIFFER. A hash mismatch alone does NOT prove auth failure —"
+            echo "     the app key COULD be a valid LiteLLM virtual key. The auth probe"
+            echo "     step below is what actually confirms accept vs reject."
           fi
+
+      # DISPOSITIVE CHECK (advisor's escape-hatch close): a hash mismatch only
+      # proves the keys differ, not that LiteLLM rejects the app's key — a valid
+      # *virtual* key would differ from the master key yet still authenticate.
+      # This step exercises the EXACT failing path's credential: ops-hub-prod's
+      # own LITELLM_MASTER_KEY as the Bearer against litellm-prod. Auth is
+      # validated identically on the internal and external listeners (same
+      # instance, same key check), so the external URL is a faithful proxy for
+      # the internal hop the app uses. 401/403 => rejection CONFIRMED. 200 =>
+      # the app key is accepted and auth is NOT the cause (do not ship the key fix).
+      - name: AUTH PROBE — does litellm-prod accept ops-hub-prod's OWN key?
+        env:
+          LITELLM_EXTERNAL_URL: "https://litellm-prod.inatechshell.ca"
+        run: |
+          if [ -z "$APP_KEY" ]; then
+            echo "=== AUTH PROBE: skipped — ops-hub-prod has no LITELLM_MASTER_KEY (already a hard auth failure) ==="
+            exit 0
+          fi
+          HTTP=$(curl -s --max-time 30 -o /tmp/probe.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $APP_KEY" -H "Content-Type: application/json" \
+            "$LITELLM_EXTERNAL_URL/chat/completions" \
+            -d '{"model":"triage-model","messages":[{"role":"user","content":"reply with the single word OK"}],"max_tokens":5}')
+          echo "=== AUTH PROBE: ops-hub-prod's own key -> litellm-prod /chat/completions ==="
+          echo "  HTTP status = $HTTP"
+          # jq the error TYPE only, never echo a token; error bodies here are LiteLLM's, not secrets.
+          jq -r '.error.type // .error.code // (.error|tostring) // "<no error field>"' /tmp/probe.json 2>/dev/null | sed 's/^/  error: /' || true
+          case "$HTTP" in
+            401|403)
+              echo "  -> REJECTED. The app's configured key is NOT accepted by litellm-prod."
+              echo "     Root cause CONFIRMED: every classifyTicket() fails auth (both models)"
+              echo "     -> throw -> ticket stuck in 'new'. Ship the key-alignment fix." ;;
+            200)
+              echo "  -> ACCEPTED (200). The app's key AUTHENTICATES. Auth is NOT the cause —"
+              echo "     do NOT ship the key-alignment fix; investigate content-shape/timeout"
+              echo "     or the post-classify DB write path instead." ;;
+            *)
+              echo "  -> Inconclusive HTTP $HTTP (network/5xx). Re-run; do not conclude from this." ;;
+          esac
 
       - name: Fetch ops_hub_app login DSN (masked)
         run: |
