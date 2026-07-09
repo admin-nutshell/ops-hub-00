@@ -1,0 +1,70 @@
+name: T-84 — run kb-learn eval against production model (triage-model via LiteLLM)
+
+# T-84's exit criterion requires a real pass-rate proof against KB Learn's
+# actual production model (the triage-model alias, routed through LiteLLM
+# staging), not the anthropic:claude-sonnet-4-6 prompt-contract reference
+# evals/kb-learn.yaml's provider block uses for CI schema validation.
+#
+# No new credential: reuses the existing `LITELLM_MASTER_KEY` GitHub secret
+# (same one configure-litellm-openai-only.yml already uses for staging) as
+# the OpenAI-compatible API key against LiteLLM's own /v1 endpoint — both
+# the target provider (triage-model) AND the grader run through the SAME
+# LiteLLM staging instance/key, so no separate Anthropic/OpenAI key is
+# needed. Key is never printed; only the pass/fail summary is surfaced.
+#
+# READ-ONLY from an infra standpoint: no Coolify mutation, no schema change.
+# It DOES make real (metered) LLM calls against litellm-staging.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    name: Run evals/kb-learn.yaml against triage-model (live, real pass rate)
+    runs-on: ubuntu-latest
+    env:
+      LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+    steps:
+      - name: Guard — required secret present
+        run: |
+          [ -n "$LITELLM_MASTER_KEY" ] || { echo "::error::LITELLM_MASTER_KEY not set"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Run promptfoo eval against triage-model (target + grader both via LiteLLM)
+        env:
+          OPENAI_API_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$OPENAI_API_KEY"
+          LITELLM_BASE="https://litellm-staging.inatechshell.ca/v1"
+          PROVIDER="openai:chat:triage-model?config={\"apiBaseUrl\":\"$LITELLM_BASE\"}"
+          echo "Target + grader provider: openai:chat:triage-model via $LITELLM_BASE"
+          npx -y promptfoo@0.121 eval -c evals/kb-learn.yaml --no-cache \
+            --providers "$PROVIDER" \
+            --grader "$PROVIDER" \
+            -o /tmp/kb-learn-results.json \
+            2>&1 | tee /tmp/kb-learn-eval.log
+
+      - name: Summarize pass rate (JSON stats if available, else parsed from stdout)
+        if: always()
+        run: |
+          echo "=== JSON stats (if promptfoo's output schema has them) ==="
+          if [ -f /tmp/kb-learn-results.json ]; then
+            jq '.results.stats // .results.table.stats // "no .stats key at this path — see log summary below"' /tmp/kb-learn-results.json 2>/dev/null || echo "(could not jq-parse results JSON — see log summary below)"
+          else
+            echo "(no results JSON produced)"
+          fi
+          echo ""
+          echo "=== Tail of eval log (pass/fail summary line(s)) ==="
+          tail -40 /tmp/kb-learn-eval.log || true

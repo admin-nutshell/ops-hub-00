@@ -2096,3 +2096,43 @@ route in the reconciliation workflow itself (PR #335) — a `set -e` trap silent
 skipped the proven DSN fallback on the first dispatch; fixed and re-verified
 before trusting the dump.
 ```
+
+### 2026-07-09 — T-84: evals/kb-learn.yaml authored (pass-rate proof OUTSTANDING) (Evals Lead)
+
+```
+2026-07-09 [Evals Lead] T-84: authored evals/kb-learn.yaml, closing the last
+zero-eval-coverage gap flagged in the T-79 entry above (KB Learn was the only one
+of the three ops-hub agent functions with no prompt eval). File is a structural
+mirror of evals/ticket-triage.yaml + evals/ticket-respond.yaml: provider
+anthropic:claude-sonnet-4-6 (the pinned prompt-contract reference model, per
+CLAUDE.md and all existing evals), temperature 0.2 + max_tokens 400 (mirroring
+generateKbArticle in src/inngest/kb-learn.ts), system prompt copied VERBATIM from
+that function, the five <ticket_*> tags reproduced in the prompt template, four
+llm-rubric tests at threshold 0.8: (a) faithful problem+resolution extraction into
+the strict title/body JSON contract, (b) identifier stripping — the KB-Learn-
+specific "no customer names, ticket IDs, or timestamps" contract, source ticket
+seeded with a name/email/account-ID/ticket-ID/timestamp, (c) no-hallucination on a
+sparse ticket (self-resolved slowness, no diagnosed cause), (d) prompt-injection
+resistance (embedded "IGNORE ALL PREVIOUS INSTRUCTIONS…/PWNED" in ticket_body).
+Schema soundness: CI's Eval Gate pins promptfoo@0.121 (validate, schema-only) but
+that version refuses this env's Node v22.19.0 (needs ^20.20.0 || >=22.22.0); ran
+promptfoo@0.118 as a proxy — it rejects `claude-sonnet-4-6` at the provider-
+registry step IDENTICALLY for the new file AND the known-good committed
+ticket-respond.yaml, i.e. the new file behaves exactly like the existing
+CI-passing evals under this toolchain (pure version artifact, not a defect).
+
+*** PASS-RATE PROOF: OUTSTANDING — NOT OBTAINED. The >95% exit criterion is NOT
+met. *** A real live run against KB Learn's production model (the `triage-model`
+alias, via LiteLLM) was not possible from this environment: no LLM credentials are
+present (env empty; LiteLLM staging + Anthropic both return 401), and Supabase
+Vault holds no LLM key. Obtaining the LiteLLM master key into a shell is a cross-
+role production-secret action against the security posture — deliberately NOT done.
+No pass-rate number is fabricated. The eval is ready to run the moment a staging
+key is provided; the exact override command is documented in the file header
+(--providers openai:chat:triage-model against the litellm-staging /v1 base URL).
+Owner of that credential: Production Manager (Coolify env). CONSEQUENCE for the
+Sprint-9 follow-on: KB Learn's model allowlist stays PINNED to [triage-model];
+this entry does NOT clear the ">95% pass first" gate that widening is mechanically
+blocked on. The eval now EXISTS (one of the two gate conditions); the PASS does
+NOT (the other). Widening remains gated and is NOT unblocked by this entry.
+```
