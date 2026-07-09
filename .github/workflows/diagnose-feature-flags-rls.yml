@@ -41,14 +41,16 @@ jobs:
 
       - name: Dump policies + grants on feature_flags (and agent_model_routing for comparison)
         run: |
+          set +e
           psql "$OPS_HUB_APP_LOGIN_URL" -c "select current_user;"
           echo "=== policies on feature_flags ==="
-          psql "$OPS_HUB_APP_LOGIN_URL" -c "select polname, permissive, roles, cmd, pg_get_expr(polqual, polrelid) as using_expr, pg_get_expr(polwithcheck, polrelid) as with_check_expr from pg_policy where polrelid = 'feature_flags'::regclass;"
+          psql "$OPS_HUB_APP_LOGIN_URL" -c "select polname, polpermissive, polroles::regrole[], polcmd, pg_get_expr(polqual, polrelid) as using_expr, pg_get_expr(polwithcheck, polrelid) as with_check_expr from pg_policy where polrelid = 'feature_flags'::regclass;"
           echo "=== policies on agent_model_routing (known-working, for comparison) ==="
-          psql "$OPS_HUB_APP_LOGIN_URL" -c "select polname, permissive, roles, cmd, pg_get_expr(polqual, polrelid) as using_expr, pg_get_expr(polwithcheck, polrelid) as with_check_expr from pg_policy where polrelid = 'agent_model_routing'::regclass;"
+          psql "$OPS_HUB_APP_LOGIN_URL" -c "select polname, polpermissive, polroles::regrole[], polcmd, pg_get_expr(polqual, polrelid) as using_expr, pg_get_expr(polwithcheck, polrelid) as with_check_expr from pg_policy where polrelid = 'agent_model_routing'::regclass;"
           echo "=== table-level grants on feature_flags for ops_hub_app ==="
           psql "$OPS_HUB_APP_LOGIN_URL" -c "select privilege_type from information_schema.role_table_grants where table_name = 'feature_flags' and grantee = 'ops_hub_app';"
           echo "=== row level security enabled? ==="
           psql "$OPS_HUB_APP_LOGIN_URL" -c "select relname, relrowsecurity, relforcerowsecurity from pg_class where relname in ('feature_flags','agent_model_routing');"
           echo "=== current_project_id() definition ==="
           psql "$OPS_HUB_APP_LOGIN_URL" -c "select pg_get_functiondef('current_project_id()'::regprocedure);"
+          exit 0
