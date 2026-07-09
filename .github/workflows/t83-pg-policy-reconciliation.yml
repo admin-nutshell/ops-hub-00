@@ -91,7 +91,10 @@ jobs:
           }
 
           # Candidate 1: task-mandated postgres DSN (may be an unusable value — see header).
-          try_dsn "$SUPABASE_URL" "SUPABASE_STAGING_DB_URL"
+          # `|| true` is load-bearing: try_dsn returns 1 on failure, and this script runs
+          # under `set -e` — without the guard, a failed first candidate aborts the whole
+          # step before candidate 2 (the proven fallback) ever runs.
+          try_dsn "$SUPABASE_URL" "SUPABASE_STAGING_DB_URL" || true
 
           # Candidate 2: proven ops_hub_app login URL, fetched from Coolify staging app.
           if [ -z "$CHOSEN" ] && [ -n "$TOKEN" ]; then
@@ -102,7 +105,7 @@ jobs:
             if [ "$HTTP" = "200" ]; then
               LOGIN=$(jq -r '[.[] | select(.key=="OPS_HUB_APP_LOGIN_URL")] | last | .value' /tmp/envs.json)
               if [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ]; then
-                try_dsn "$LOGIN" "OPS_HUB_APP_LOGIN_URL"
+                try_dsn "$LOGIN" "OPS_HUB_APP_LOGIN_URL" || true
               else
                 echo "OPS_HUB_APP_LOGIN_URL absent on staging app."
               fi
