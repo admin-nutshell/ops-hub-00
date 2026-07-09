@@ -1,0 +1,177 @@
+name: Fix ops-hub-prod LITELLM_MASTER_KEY — align app key to litellm-prod (AUTHORIZATION REQUIRED)
+
+# ⚠️ PRODUCTION MUTATION — DO NOT DISPATCH WITHOUT EXPLICIT FOUNDER/USER
+# AUTHORIZATION. Production Manager owns deployability review; Security Lead
+# should sign off on the secret-copy step (same masked pattern as
+# restart-verify-litellm-prod.yml / fix-ops-hub-prod-litellm-url.yml).
+#
+# ROOT CAUSE (FQ-69, confirmed 2026-07-09 via diagnose-ops-hub-prod-triage-blocked.yml
+# run 29043170190): ops-hub-prod's LITELLM_MASTER_KEY is NOT accepted by
+# litellm-prod. An auth probe using ops-hub-prod's OWN key against
+# litellm-prod /chat/completions returned HTTP 401 "token_not_found_in_db"
+# (the key is neither the master key nor a registered virtual key). So every
+# classifyTicket() call fails auth on both the primary AND fallback model ->
+# triageOneTicket() throws before "UPDATE tickets SET state='triaged'" ->
+# tickets pile up in state='new' forever (14/20 prod tickets, up to 3.6 days).
+#
+# FIX: set ops-hub-prod's LITELLM_MASTER_KEY equal to litellm-prod's actual
+# LITELLM_MASTER_KEY (the source of truth), then restart ops-hub-prod. Deletes
+# all existing LITELLM_MASTER_KEY rows first (Coolify's Save appends rather
+# than upserts — the same duplicate-row footgun that bit LITELLM_URL).
+#
+# SELF-ABORTING PRE-FLIGHT: before mutating anything, this re-probes
+# ops-hub-prod's CURRENT key. If it already returns 200, the diagnosis no
+# longer holds (state changed since the diagnostic) and the workflow REFUSES
+# to touch prod — so this is safe to run even if someone fixed it by hand first.
+#
+# READ paths use the Coolify API (COOLIFY_API_TOKEN). Raw key values are
+# ::add-mask::-ed and never printed. Never service_role, never a DB write.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type ALIGN-MASTER-KEY to confirm you intend to overwrite ops-hub-prod's LITELLM_MASTER_KEY with litellm-prod's value and restart ops-hub-prod"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  LITELLM_PROD_UUID: "hlik1d96uvkkjzpbxa3azhcv"
+  LITELLM_EXTERNAL_URL: "https://litellm-prod.inatechshell.ca"
+  OPS_HUB_HEALTH_URL: "https://ops-hub-prod.inatechshell.ca/health"
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Validate confirmation + secret present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+          if [ "${{ inputs.confirm }}" != "ALIGN-MASTER-KEY" ]; then
+            echo "::error::confirm input must be exactly ALIGN-MASTER-KEY. Refusing to proceed."
+            exit 1
+          fi
+
+      - name: Read litellm-prod's LITELLM_MASTER_KEY (source of truth, masked)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ll.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read litellm-prod envs (HTTP $HTTP)"; exit 1; }
+          LLKEY=$(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .value' /tmp/ll.json | head -1)
+          [ -n "$LLKEY" ] && [ "$LLKEY" != "null" ] || { echo "::error::litellm-prod has NO LITELLM_MASTER_KEY"; exit 1; }
+          echo "::add-mask::$LLKEY"
+          echo "LLKEY=$LLKEY" >> "$GITHUB_ENV"
+
+      - name: Read ops-hub-prod's CURRENT LITELLM_MASTER_KEY (masked)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ops.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-prod envs (HTTP $HTTP)"; exit 1; }
+          APPKEY=$(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .value' /tmp/ops.json | head -1)
+          if [ -n "$APPKEY" ] && [ "$APPKEY" != "null" ]; then echo "::add-mask::$APPKEY"; fi
+          echo "APPKEY=$APPKEY" >> "$GITHUB_ENV"
+
+      - name: SELF-ABORT pre-flight — is the current key ALREADY accepted?
+        run: |
+          if [ -z "$APPKEY" ] || [ "$APPKEY" = "null" ]; then
+            echo "ops-hub-prod has no key set — proceeding to set it."
+            exit 0
+          fi
+          HTTP=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $APPKEY" -H "Content-Type: application/json" \
+            "$LITELLM_EXTERNAL_URL/chat/completions" \
+            -d '{"model":"triage-model","messages":[{"role":"user","content":"reply with the single word OK"}],"max_tokens":5}')
+          echo "Current-key auth probe -> HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            echo "::error::ops-hub-prod's CURRENT key is ALREADY accepted (HTTP 200). The"
+            echo "FQ-69 diagnosis no longer holds — auth is not currently failing. REFUSING to"
+            echo "mutate prod. Re-run diagnose-ops-hub-prod-triage-blocked.yml to re-establish state."
+            exit 1
+          fi
+          echo "Current key rejected (HTTP $HTTP) — confirms the fix is still needed. Proceeding."
+
+      - name: Delete all existing LITELLM_MASTER_KEY rows on ops-hub-prod
+        run: |
+          curl -s --max-time 30 -o /tmp/ops.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key=="LITELLM_MASTER_KEY")] | length' /tmp/ops.json 2>/dev/null || echo 0)
+          echo "Existing LITELLM_MASTER_KEY rows: $COUNT"
+          for eu in $(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .uuid' /tmp/ops.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs/$eu")
+            echo "  DELETE LITELLM_MASTER_KEY $eu -> HTTP $DEL"
+          done
+
+      - name: Set correct LITELLM_MASTER_KEY (= litellm-prod's value)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/set.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_MASTER_KEY" --arg v "$LLKEY" '{key:$k,value:$v}')")
+          echo "POST LITELLM_MASTER_KEY -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "::error::failed to set LITELLM_MASTER_KEY (HTTP $HTTP)"; head -c 200 /tmp/set.json; exit 1
+          fi
+
+      - name: Restart ops-hub-prod
+        id: restart
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/rl.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/restart")
+          echo "POST /restart -> HTTP $HTTP"
+          echo "dep_uuid=$(jq -r '.deployment_uuid // empty' /tmp/rl.json 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for restart + /health
+        run: |
+          DEP="${{ steps.restart.outputs.dep_uuid }}"
+          if [ -n "$DEP" ]; then
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in finished) break ;; failed|error) echo "::error::restart failed"; exit 1 ;; esac
+              sleep 10
+            done
+          else
+            sleep 30
+          fi
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$OPS_HUB_HEALTH_URL" || echo "000")
+            echo "Attempt $i: /health -> HTTP $HTTP"
+            [ "$HTTP" = "200" ] && break
+            sleep 10
+          done
+
+      - name: POST-FIX verify — the aligned key now authenticates
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LLKEY" -H "Content-Type: application/json" \
+            "$LITELLM_EXTERNAL_URL/chat/completions" \
+            -d '{"model":"triage-model","messages":[{"role":"user","content":"reply with the single word OK"}],"max_tokens":5}')
+          echo "Aligned-key auth probe -> HTTP $HTTP (expect 200)"
+          [ "$HTTP" = "200" ] || { echo "::error::aligned key still not accepted (HTTP $HTTP) — investigate"; exit 1; }
+
+      - name: Next steps
+        if: always()
+        run: |
+          echo "DONE (if all steps green). ops-hub-prod now authenticates to litellm-prod."
+          echo "NEXT — do NOT run T-85's E2E injection yet. First confirm the backlog drains:"
+          echo "  1. Wait ~10 min (>=2 sweepNewTickets */5 cron cycles)."
+          echo "  2. Re-dispatch diagnose-stuck-triage-tickets.yml — expect state='new' count"
+          echo "     falling from 14 toward 0 as tickets advance to triaged/responded."
+          echo "  3. Once the backlog clears, the pipeline is proven end-to-end on REAL rows —"
+          echo "     that IS the T-85 green signal. Only then inject a fresh E2E ticket if still wanted."
+          echo "  Also (separate, low priority): ops-hub-prod still has 2 identical LITELLM_URL"
+          echo "  rows — re-run fix-ops-hub-prod-litellm-url.yml to dedup to exactly 1."
