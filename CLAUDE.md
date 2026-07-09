@@ -59,17 +59,19 @@ If you encounter a security concern, stop work and post to `FOUNDER_QUEUE.md` im
 
 ## Active sprint
 
-**Sprint 6 — Ops Dashboard MVP + Reliability Debt Closure**
-Window: July 6–20, 2026
-Goal: Ship the founder-facing Ops Dashboard as a read-only MVP (4 charter daily pillars + queue + system health), behind a real auth boundary → in parallel, restore the LiteLLM DB isolation wall regression (FQ-57) and close Sprint 5's CI/process debt. No milestone targeted this sprint — see WORK.md's "Milestone numbering note."
+**Sprint 8 — Drift Reconciliation + Eval Coverage**
+Window: July 9–23, 2026
+Goal: Close the class of live-vs-record drift both prior sprints surfaced the hard way — one-shot reconciliation of every live `pg_policy` against what our migrations should have created (T-83, sprint anchor); write the missing KB Learn prompt eval (T-84); author the design-of-record ADR for the "real" LLM-rubric eval gate, build deferred to Sprint 9 (T-87); close the T-62 LiteLLM freeze-schema carry (T-85). Hardening sprint, not a feature sprint. No milestone targeted — see WORK.md's "Milestone numbering note."
 
+*(Sprint 7 — Ops Dashboard Settings / Write Surface — COMPLETE 2026-07-09. No milestone (capability-building). Retro: `docs/retros/sprint-7.md`.)*
+*(Sprint 6 — Ops Dashboard MVP + Reliability Debt Closure — COMPLETE 2026-07-08. No milestone (capability-building). Retro: `docs/retros/sprint-6.md`.)*
 *(Sprint 5 — Reliability Hardening + TTS Production Go-Live — COMPLETE 2026-07-03/04. M6 "TTS Live in Production" declared. Retro: `docs/retros/sprint-5.md`.)*
 
 **Live status:** `WORK.md`
 **Recent decisions:** `DECISIONS.md`
 **Founder queue:** `FOUNDER_QUEUE.md`
 
-Critical path: T-57 (dashboard auth) → T-58 (dashboard data feeds) → T-59 (dashboard read-only build) → T-60 (RLS verification)
+Critical path (mostly parallel — distinct owners): T-83 (`pg_policy` read-only diff → Security-Lead-reviewed fix migration → founder apply) is the sprint anchor; T-84 / T-85 / T-86 / T-87 run independently.
 
 ---
 
@@ -79,7 +81,7 @@ Critical path: T-57 (dashboard auth) → T-58 (dashboard data feeds) → T-59 (d
 - **Later additions (T-58):** `agent_cost_events`, `eval_gate_runs` tables + `agent_cost_daily` (a view); Sprint 7 (T-72) adds `agent_model_routing` (in progress — may not be applied yet)
 - **RLS model:** fail-closed; `ops_hub_app` role (non-superuser) for agent paths; `service_role` for migrations only
 - **FreeScout tables:** `conversations`, `threads` — owned by `freescout_user`; GRANT SELECT to `ops_hub_app` via `docker exec artisan tinker`
-- **Migrations:** 5 files in `supabase/migrations/` — applied via SQL Editor (not tracked by Supabase CLI)
+- **Migrations:** 14 files in `supabase/migrations/` (grows per migration — count via `ls supabase/migrations/*.sql`) — applied via SQL Editor (not tracked by Supabase CLI)
 - **Vault secrets:** `langfuse_secret_key`, `ops_hub_app_password`
 
 ---
@@ -128,5 +130,5 @@ Format required (no exceptions):
 - **App-agnostic:** nothing hardcoded to TTS; every design must work for Project #2 with config only
 - **Provider-neutral:** Claude is default; OpenAI / others swap via LiteLLM — never call Anthropic SDK directly in business logic
 - **Free-tier-first:** only pay when a feature is crucial AND demonstrably saves time or quality
-- **Eval-gated:** no prompt or capability change ships without passing the Promptfoo eval suite (> 95% pass rate)
+- **Eval-gated:** no prompt or capability change ships without passing the Promptfoo eval suite (> 95% pass rate). *Note: the CI "Eval Gate" is currently schema-validation-only (since T-17/T-58); the real LLM-rubric quality gate is pending ADR-0007 / T-87 (Sprint 8 design, Sprint 9 build). Until it lands, this constraint is enforced by process (curated pre-evaled allowlist, T-79) + the schema check, not by a live rubric run.*
 - **No sslip.io as LITELLM_BASE_URL:** internal Docker URL is the standing config; sslip.io is a fallback diagnostic tool only
