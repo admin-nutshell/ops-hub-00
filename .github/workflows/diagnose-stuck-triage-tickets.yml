@@ -1,0 +1,86 @@
+name: Diagnose stuck ticket-triage retries (read-only, no ticket content printed)
+
+# T-85 fallout: verifying prod LiteLLM DB-isolation freeze-schema + the
+# ops-hub-prod LITELLM_URL fix (both this session), a LangFuse trace check
+# found the same ~10-15 ticket_ids recurring for hours with $0.00-cost
+# ticket-triage traces -- consistent with src/inngest/ticket-triage.ts's
+# both-models-failed throw path (never advances state past 'new', so
+# Inngest retries forever). This workflow checks WITHOUT printing ticket
+# title/body: state, age, and retry-relevant timestamps only, for a fixed
+# list of ticket_ids observed stuck in the LangFuse sample.
+#
+# READ-ONLY. Never service_role -- ops_hub_app via OPS_HUB_APP_LOGIN_URL
+# (fetched fresh from Coolify, masked, never printed), same pattern as
+# diagnose-kb-articles-pii.yml / diagnose-feature-flags-rls.yml.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  PROD_PROJECT_ID: "00000000-0000-0000-0000-000000000003"
+
+jobs:
+  diagnose:
+    name: Check stuck ticket-triage ticket state + age (no content printed)
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Fetch login DSN from Coolify (masked)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read prod envs (HTTP $HTTP)"; exit 1; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/envs.json | head -1)
+          [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL absent"; exit 1; }
+          echo "::add-mask::$LOGIN"
+          echo "OPS_HUB_APP_LOGIN_URL=$LOGIN" >> "$GITHUB_ENV"
+
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Check known stuck ticket_ids (state + age only, no title/body)
+        run: |
+          psql "$OPS_HUB_APP_LOGIN_URL" -P pager=off -c "
+            select set_config('app.current_project', '$PROD_PROJECT_ID', true);
+            select
+              id,
+              state,
+              owner_agent,
+              now() - created_at as age,
+              now() - updated_at as since_last_update
+            from tickets
+            where id in (
+              '3c9427cc-6303-4d67-9636-2d465410e7d3',
+              'bedf3d68-9c08-46bf-b7ce-680219069503',
+              '0bb90013-9261-4bba-baab-8352d144be70',
+              'd3bfb9c6-d944-47c5-9af4-93499d1dff1a',
+              'e86b7abd-a80c-4e50-86a1-fdda37de0bbe',
+              '3f8c6a46-9ce0-4a5c-9591-f83d726678eb',
+              '1d5a62f9-999f-494e-a9d2-c3443470b763',
+              '628282ba-7767-4a6a-932e-52222b475178',
+              '8ec24451-eb51-4d3f-a832-9de84eaaadb1',
+              '9ea9969e-dc78-4cc3-b624-1d8dd5e0fd14',
+              '095c899f-0908-4f5c-a59c-c7392ae4b131'
+            )
+            order by created_at;"
+
+          echo ""
+          echo '=== overall state distribution, prod project ==='
+          psql "$OPS_HUB_APP_LOGIN_URL" -P pager=off -c "
+            select set_config('app.current_project', '$PROD_PROJECT_ID', true);
+            select state, count(*) from tickets group by state order by count(*) desc;"
+
+      - name: Interpretation
+        if: always()
+        run: |
+          echo "If the 11 ticket_ids above are all state='new' with created_at well in the past"
+          echo "and since_last_update NOT advancing to 'triaged' -- confirms a stuck retry loop,"
+          echo "not a fresh incident. If they don't exist / already 'triaged' -- the earlier"
+          echo "LangFuse sample was misread and this needs a different explanation."
