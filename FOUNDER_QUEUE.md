@@ -4,12 +4,37 @@
 
 ---
 
-## 🔴 FQ-69 — ACTIVE INCIDENT: 70% of all production tickets (14/20) permanently stuck un-triaged — LITELLM_URL side-issue FIXED, but a separate, larger, multi-day defect remains open
+## 🔴 FQ-69 — ACTIVE INCIDENT: 70% of production tickets (14/20) stuck un-triaged — ROOT CAUSE CONFIRMED (ops-hub-prod's LiteLLM key is rejected); fix authored, needs authorization to dispatch
 
-**Filed:** 2026-07-09 | **UPGRADED twice same day** — (1) initial filing described a not-yet-triggered regression; live LangFuse data showed it was already active; (2) after the LITELLM_URL fix was authorized and applied, direct DB verification found the fix did NOT resolve the underlying problem — a larger, pre-existing, still-open issue.
-**Filed by:** QA Manager / PM session (found during T-85's pre-injection pre-flight, before running the live ticket E2E)
-**Needs:** Technical investigation (Tech Lead) — NOT a founder decision at this stage. Filed here per the "customer-impacting incident" escalation criterion so it isn't lost, but no founder action is being requested right now.
-**Deadline:** Ongoing — real support tickets have been silently un-triaged for up to 3.5 days.
+**Filed:** 2026-07-09 | **UPGRADED twice, then ROOT-CAUSED (Tech Lead, same day).**
+**Filed by:** QA Manager / PM session (found during T-85's pre-injection pre-flight). **Root-caused by:** Tech Lead.
+**Needs:** **AUTHORIZATION** — a founder/user OK to dispatch the fix workflow that overwrites ops-hub-prod's `LITELLM_MASTER_KEY` and restarts ops-hub-prod. (Diagnosis is done; this is now a go/no-go on a prod-secret mutation, so it needs the same authorization the `LITELLM_URL` fix did.)
+**Deadline:** Ongoing — real support tickets have been silently un-triaged for up to ~3.6 days. Every `sweepNewTickets` cycle keeps re-failing them.
+
+---
+
+**✅ ROOT CAUSE CONFIRMED (Tech Lead, 2026-07-09) — ops-hub-prod's `LITELLM_MASTER_KEY` is not accepted by litellm-prod.**
+
+One consolidated read-only diagnostic (`diagnose-ops-hub-prod-triage-blocked.yml`, PRs #349/#350) settled every open question in two dispatches ([run 29042495432](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29042495432), auth-probe [run 29043170190](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29043170190)):
+
+- **Scoping ruled OUT:** ops-hub-prod has `POLLING_PROJECT_ID=…0003`, `POLLING_TENANT_ID=…0030`, `POLLING_ENABLED=true` → the poller and the `*/5` `sweepNewTickets` cron both scope to exactly where the stuck tickets live. The live paths DO reach and re-attempt them. So the stall is a per-call failure, not orphaned/unreached data.
+- **Master-key rejection = the cause, proven by a live 401 (not merely a hash diff):** the app's key (sha256[0:16] `6d8b57842c40a030`) ≠ litellm-prod's (`90b285b2d96353e1`), **and** a probe using ops-hub-prod's OWN key against litellm-prod `/chat/completions` returned **HTTP 401 `token_not_found_in_db`**. That is LiteLLM's error for a token that is neither the master key nor a registered virtual key — so the "maybe it's a valid virtual key that just differs" possibility is eliminated. Consequence: every `classifyTicket` 401s on BOTH the primary and the fallback model → `triageOneTicket` throws before the `UPDATE … SET state='triaged'` → the ticket never leaves `new`. This matches the DB signature exactly (`owner_agent` NULL + `since_last_update`==`age` on all 14). The prior external smoke test only ever passed because it used litellm-prod's OWN key, never the app's — the exact gap this incident lived in. This mismatch predates today (explains the 3.6-day-old rows); the already-fixed `LITELLM_URL` staleness was a separate, more recent fault stacked on top.
+- **`LITELLM_URL` is currently fine:** 2 rows, but both hold the identical correct value (`hlik1d96uvkkjzpbxa3azhcv-132650269773`). The duplicate is a cosmetic footgun to dedup later (re-run `fix-ops-hub-prod-litellm-url.yml`), not a cause.
+
+**Proposed fix (AUTHORED, NOT dispatched — awaiting authorization):** `fix-ops-hub-prod-litellm-master-key.yml`. It reads litellm-prod's `LITELLM_MASTER_KEY` (masked), **self-aborts if ops-hub-prod's current key already authenticates** (so it's safe even if state changed), deletes all `LITELLM_MASTER_KEY` rows on ops-hub-prod (closes the duplicate-row footgun), sets the correct value, restarts, and verifies the aligned key now returns 200. Requires typed `confirm=ALIGN-MASTER-KEY`. **Aligning the key also drains the 14-ticket backlog on its own** — the next few `sweepNewTickets` cycles re-classify them successfully; no manual reprocessing needed.
+
+**Options:**
+- **(A) Authorize the key-alignment fix** (recommended) — dispatch `fix-ops-hub-prod-litellm-master-key.yml` with `confirm=ALIGN-MASTER-KEY`; Production Manager runs it after a deployability glance, Security Lead eyeballs the masked secret-copy step. Fixes the pipeline and drains the backlog.
+- (B) Founder sets ops-hub-prod's `LITELLM_MASTER_KEY` = litellm-prod's `LITELLM_MASTER_KEY` manually via Coolify UI (delete the stale/duplicate rows, set one correct value, restart), if you prefer not to run the Action.
+- (C) Do nothing — not viable; real tickets keep silently failing.
+
+**Recommendation:** (A). One follow-up worth a founder note: root cause of *how* the keys diverged isn't established (litellm-prod's master key was likely rotated on a redeploy without updating ops-hub-prod). Worth a hardening item — a monitor that periodically probes the app's real internal path (not the external URL with litellm's own key), since `/health/litellm` structurally can't catch this.
+
+**T-85 E2E gate (Deliverable 4):** still **NOT safe** to inject a test ticket. After the fix, the true green signal is the existing 14 stuck tickets draining to `triaged`/`responded` — re-run `diagnose-stuck-triage-tickets.yml` and watch `state='new'` fall to 0. Only inject a fresh E2E ticket once the real backlog clears; that drain IS the end-to-end proof.
+
+**Seeded-vs-real question — RESOLVED: the stuck tickets are REAL, not seeded.** All 20 tickets carry non-null, distinct FreeScout conversation ids (0 null across `new`+`resolved`). The "4 tickets share a timestamp to the microsecond" observation is the SAME cluster as the diagnostic's "6 rows at `03:36:30.530646`" (the earlier run only sampled 4 of the 6 because it queried 11 specific ids), and is fully explained by the poller inserting a whole poll batch in ONE transaction — Postgres freezes `now()`/`created_at` per transaction, so a 6-ticket poll cycle stamps all 6 identically. `clock_timestamp()` could not collide like this; a single-transaction batch insert is the only explanation, and it's the poller's normal behavior on real tickets. The "seeded/test data" hypothesis below is disproven.
+
+---
 
 **RESOLVED sub-issue — the LITELLM_URL regression described in the original filing below:** authorized by the user, dispatched `fix-ops-hub-prod-litellm-url.yml confirm_container_name=hlik1d96uvkkjzpbxa3azhcv-132650269773` ([run 29039193854](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29039193854), success — 2 stale duplicate `LITELLM_URL` rows deleted, correct value set, restart confirmed healthy). Live `triage-model` completion smoke test already passed pre-fix; `/health`/`/health/env` both clean post-fix. **This part is closed.**
 
