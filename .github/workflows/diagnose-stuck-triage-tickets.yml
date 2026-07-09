@@ -23,6 +23,7 @@ env:
   COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
   OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
   PROD_PROJECT_ID: "00000000-0000-0000-0000-000000000003"
+  PROD_TENANT_ID: "00000000-0000-0000-0000-000000000030"
 
 jobs:
   diagnose:
@@ -49,6 +50,7 @@ jobs:
         run: |
           psql "$OPS_HUB_APP_LOGIN_URL" -P pager=off -c "
             select set_config('app.current_project', '$PROD_PROJECT_ID', true);
+            select set_config('app.current_tenant', '$PROD_TENANT_ID', true);
             select
               id,
               state,
@@ -75,6 +77,7 @@ jobs:
           echo '=== overall state distribution, prod project ==='
           psql "$OPS_HUB_APP_LOGIN_URL" -P pager=off -c "
             select set_config('app.current_project', '$PROD_PROJECT_ID', true);
+            select set_config('app.current_tenant', '$PROD_TENANT_ID', true);
             select state, count(*) from tickets group by state order by count(*) desc;"
 
       - name: Interpretation
