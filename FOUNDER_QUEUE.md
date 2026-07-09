@@ -4,6 +4,51 @@
 
 ---
 
+## 🔴 FQ-69 — ACTIVE INCIDENT: 70% of all production tickets (14/20) permanently stuck un-triaged — LITELLM_URL side-issue FIXED, but a separate, larger, multi-day defect remains open
+
+**Filed:** 2026-07-09 | **UPGRADED twice same day** — (1) initial filing described a not-yet-triggered regression; live LangFuse data showed it was already active; (2) after the LITELLM_URL fix was authorized and applied, direct DB verification found the fix did NOT resolve the underlying problem — a larger, pre-existing, still-open issue.
+**Filed by:** QA Manager / PM session (found during T-85's pre-injection pre-flight, before running the live ticket E2E)
+**Needs:** Technical investigation (Tech Lead) — NOT a founder decision at this stage. Filed here per the "customer-impacting incident" escalation criterion so it isn't lost, but no founder action is being requested right now.
+**Deadline:** Ongoing — real support tickets have been silently un-triaged for up to 3.5 days.
+
+**RESOLVED sub-issue — the LITELLM_URL regression described in the original filing below:** authorized by the user, dispatched `fix-ops-hub-prod-litellm-url.yml confirm_container_name=hlik1d96uvkkjzpbxa3azhcv-132650269773` ([run 29039193854](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29039193854), success — 2 stale duplicate `LITELLM_URL` rows deleted, correct value set, restart confirmed healthy). Live `triage-model` completion smoke test already passed pre-fix; `/health`/`/health/env` both clean post-fix. **This part is closed.**
+
+**NOT resolved — the bigger finding, discovered verifying the fix actually helped:** a direct, RLS-scoped read-only query against the real `tickets` table (via `ops_hub_app`, `diagnose-stuck-triage-tickets.yml`, prod project+tenant scope, [run 29040684620](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29040684620)) — no ticket title/body printed, state/age/owner only — found:
+- **14 of 20 total prod tickets (70%) are in `state='new'`**, `owner_agent` is `NULL` on all of them (never successfully picked up), and `since_last_update` is **exactly equal to `age`** on every one — meaning **zero successful state transitions have ever occurred** on these rows since they were created. The other 6 tickets are `resolved`; **none** are in `triaged`/`responded` — the pipeline appears to have never successfully completed for anything currently live.
+- Ages of the 11 tickets sampled directly range from **02:51:53** (under 3 hours) to **3 days 14:46:02** — i.e. this predates today's T-85 session entirely and is not caused by it. Checked *after* the LITELLM_URL fix (18:27, ~24 min post-fix, well past several 5-minute `sweepNewTickets` cron cycles) — the newest ticket (~3h old) is still stuck, so the URL fix alone did not clear the backlog. Something else is also wrong, or was already wrong independent of the URL issue.
+- **Four of the eleven sampled tickets share an identical age down to the microsecond** (`14:50:35.663125`) — real customer emails arriving independently would not do this. Strongly suggests at least some of these rows are seeded/test data (e.g. from an earlier E2E/eval session) rather than genuine FreeScout-sourced customer tickets — worth confirming before treating all 14 as real customer impact.
+
+**Recommendation:** do NOT run T-85's QA E2E ticket injection against production until this is understood — an E2E ticket could land in the same stuck state for a reason unrelated to what's being tested. This needs a Tech Lead investigation into why `classifyTicket`/`triageOneTicket` never advances these specific tickets (or why they exist with identical timestamps at all) — separate from and predating the LITELLM_URL regression. Not filing this as a founder decision; flagging per the customer-impact escalation criterion and because a genuinely stuck backlog of real-looking prod tickets going back 3.5 days deserves visibility.
+
+**Original filing below (superseded in part — the LITELLM_URL fix it requested is done; the deeper issue found afterward is the open item now):**
+
+**UPDATE — this is live, not hypothetical:** a read-only query against real LangFuse Cloud data (`verify-agent-cost-feed.yml`, [run 29022632064](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29022632064)) found **14,800 `ticket-triage` traces in the last 24 hours**, all scoped to prod (`project_id=00…0003`, `tenant_id=00…0030`), in tight bursts roughly every 3 minutes, against a small repeating set of ~8–9 ticket IDs. Cross-checked against the code: a trace is only created on a genuine triage *attempt* against a ticket still in `state='new'` (already-triaged tickets short-circuit before any trace is created). The only thing that repeatedly re-dispatches the same small ticket set every few minutes is the `sweepNewTickets` cron (every 5 min) plus Inngest's automatic retries — the signature you'd expect if every `classifyTicket` call is throwing (stale internal URL → `getaddrinfo EAI_AGAIN`, same failure as T-71) before the ticket can advance out of `'new'`. **This was not confirmed by reading a raw error string or live ticket rows** (deliberately did not use the superuser DB credential available in CI to read real ticket content for this — out of scope, adjacent to the CLAUDE.md service-role-at-runtime constraint) — but the pattern plus the independently-confirmed stale-URL mismatch below make this high-confidence, not a guess.
+
+**Context — what I know, what I checked (all read-only, nothing mutated):**
+T-85's `freeze-schema` dispatch and the follow-up restart-verify both restarted litellm-prod. Per CLAUDE.md, litellm-prod's internal Docker container suffix changes on every restart/redeploy of that container — this is the exact same mechanism that caused the T-71 outage on 2026-07-08 (ops-hub-prod's `LITELLM_URL` pointed at a container that no longer existed → `getaddrinfo EAI_AGAIN` → 100% triage failure). Nothing in the T-62/T-85 workflow chain re-syncs `LITELLM_URL` after a litellm-prod restart — same gap, recurred.
+
+Re-ran both read-only diagnostics fresh just now:
+- `diagnose-litellm-prod-container.yml` (run [29021890649](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29021890649), success) → litellm-prod's current real container: **`hlik1d96uvkkjzpbxa3azhcv-132650269773`**.
+- `diagnose-ops-hub-prod-litellm-url.yml` (run [29021898836](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29021898836)) → ops-hub-prod's configured `LITELLM_URL`: **`http://hlik1d96uvkkjzpbxa3azhcv-025723857913:4000`** — the OLD, pre-restart container. (That run shows red-X in Actions — harmless: the URL's `://` broke the `GITHUB_OUTPUT` write, a formatting bug, not a data problem. The value printed cleanly in the log before that error.) Also found **2 `LITELLM_URL` entries** currently on ops-hub-prod — the known Coolify duplicate-row footgun (last row wins, but a second stale row sitting there is exactly how this class of bug tends to compound).
+
+**Not yet an active incident** — `/health` and `/health/env` both report 200/all-present on ops-hub-prod (env-var *presence* is fine; it's the *value* that's wrong), and the 24h monitoring window apparently didn't see triggering live traffic. But this will fail the next real ticket the same way T-71 did.
+
+**What's needed:** Production Manager already built the exact guarded workflow for this failure mode — `fix-ops-hub-prod-litellm-url.yml` (requires `confirm_container_name` typed explicitly as a safety confirmation, matches it against the `hlik1d96uvkkjzpbxa3azhcv-<digits>` pattern, deletes all existing `LITELLM_URL` rows first — closing the duplicate-row gap too — sets the one correct value, restarts, polls `/health`). Needs:
+1. Authorization for Production Manager (or the founder directly) to dispatch it with `confirm_container_name=hlik1d96uvkkjzpbxa3azhcv-132650269773` — re-confirm the container name fresh immediately before running, since it can move again on any subsequent litellm-prod restart.
+2. Confirm post-run: `/health` → 200, exactly ONE `LITELLM_URL` row (not two).
+3. Reply here once done — QA resumes T-85's live ticket E2E on a known-good pipeline.
+
+**Options:**
+- **(A) Authorize now** — dispatch `fix-ops-hub-prod-litellm-url.yml` with the container name above. Fixes the live regression and unblocks T-85 immediately.
+- (B) Wait and let QA's E2E ticket injection surface the failure live first, then fix reactively (same as how T-71 was originally found) — not recommended, since the diagnosis is already complete and this just burns a real support-mailbox ticket on a predictable failure.
+- (C) Founder runs the fix manually via Coolify UI instead of the GitHub Action, if preferred.
+
+**Recommendation:** (A) — the workflow is pre-built, guarded, and scoped to exactly this failure; re-confirming the container name at dispatch time (rather than trusting this filed value) is the one thing to insist on, since it's the whole point of that input being a manual safety confirmation rather than an automatic read.
+
+**Notify:** QA Manager once done — will immediately resume the T-85 E2E (real ticket → FreeScout → triage → respond → Supabase `state=responded` → LangFuse trace → FreeScout UI reply).
+
+---
+
 ## ✅ FQ-68 — Apply T-82's fix via Supabase SQL Editor (service_role) — re-creates a missing policy, Security Lead approved
 
 **Filed:** 2026-07-09 | **Resolved:** 2026-07-09
