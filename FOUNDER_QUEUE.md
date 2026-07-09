@@ -4,6 +4,37 @@
 
 ---
 
+## FQ-68 — Apply T-82's fix via Supabase SQL Editor (service_role) — re-creates a missing policy, Security Lead approved
+
+**Filed:** 2026-07-09
+**Filed by:** PM (Sprint 7, on behalf of Tech Lead/Security Lead)
+**Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-67/FQ-61/FQ-62/FQ-45)
+**Deadline:** Non-blocking for today's live service — but it's what QA needs to finish signing off Sprint 7's write surface.
+
+**In plain language:** while testing the new dashboard settings feature, QA found that the feature-flags part of it can't actually save anything — not because of a bug in the new code, but because a permission that was *supposed* to be set up back in June never actually took effect on the real database. It's a safe kind of broken (nothing leaked, it just silently refused to save), but it needs a one-line fix to actually work. This has happened once before (the same thing with a different table, fixed back on 2026-07-04) — same root cause, already known.
+
+**What's needed (via Supabase Dashboard → SQL Editor, project `yocoljutbiizdbfraapx`, as the project owner/`service_role`):**
+1. Run:
+   ```sql
+   drop policy if exists feature_flags_write on feature_flags;
+   create policy feature_flags_write on feature_flags
+     for all to ops_hub_app
+     using (project_id = current_project_id())
+     with check (project_id = current_project_id());
+   ```
+2. **Verify** with:
+   ```sql
+   select polname from pg_policy where polrelid = 'feature_flags'::regclass;
+   ```
+   — expect two rows back: `feature_flags_select` and `feature_flags_write`.
+3. Reply here once done — QA re-runs the live verification harness to confirm all 21 checks pass.
+
+**Recommendation:** Apply as written — Security Lead independently verified this is byte-identical to a policy that already exists in the codebase, just re-applying it since it never actually landed live. Same pattern as every prior migration here.
+
+**Notify:** PM/QA once done.
+
+---
+
 ## ✅ FQ-67 — Apply T-72's migration via Supabase SQL Editor (service_role) — Security Lead approved, no changes needed
 
 **Filed:** 2026-07-08 | **Resolved:** 2026-07-08
