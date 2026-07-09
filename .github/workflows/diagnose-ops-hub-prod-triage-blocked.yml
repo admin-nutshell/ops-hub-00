@@ -1,0 +1,208 @@
+name: Diagnose ops-hub-prod triage-blocked root cause (read-only, no ticket content)
+
+# T-85 / FQ-69 follow-up. The LITELLM_URL fix (this session) did NOT clear the
+# backlog of 14/20 prod tickets stuck in state='new'. This ONE read-only
+# diagnostic pulls every fact that discriminates the remaining hypotheses in a
+# single run, WITHOUT mutating anything and WITHOUT printing any ticket
+# title/body or any raw secret value:
+#
+#  1. SCOPING — ops-hub-prod's POLLING_PROJECT_ID / POLLING_TENANT_ID /
+#     POLLING_ENABLED. If these are ...0003 / ...0030 then the poller + the
+#     */5 sweepNewTickets cron BOTH scope to the same project/tenant the stuck
+#     tickets live in -> the live paths DO reach them -> the stall is an
+#     LLM-call failure, not an orphaned-scope problem. If they are anything
+#     else, the ...0003 tickets are orphaned seed/E2E rows no live path touches.
+#
+#  2. MASTER-KEY MISMATCH (leading hypothesis) — the external smoke test in
+#     restart-verify-litellm-prod.yml used litellm-prod's OWN master key against
+#     the EXTERNAL url; it never exercised the app's configured key. If
+#     ops-hub-prod's LITELLM_MASTER_KEY != litellm-prod's LITELLM_MASTER_KEY,
+#     every real classifyTicket() 401s (both models) -> throw -> stuck forever,
+#     while the smoke test still passes. We compare SHA-256 hashes ONLY; raw
+#     key values are masked and never printed.
+#
+#  3. URL FIX PERSISTENCE — confirm LITELLM_URL is present, points at
+#     litellm-prod's UUID prefix, and is exactly ONE row (Coolify's append-not-
+#     upsert footgun could have re-duplicated it).
+#
+#  4. SEEDED-vs-REAL — for the 11 known stuck ids: state/owner/age +
+#     freescout_conversation_id IS NULL flag + created_at (metadata only, no
+#     title/body). Poller-inserted real tickets carry a real FreeScout bigint
+#     and arrive in separate transactions (distinct created_at). Test/seed rows
+#     inserted in one transaction share created_at to the microsecond (Postgres
+#     freezes now() per-transaction) and typically have a NULL/synthetic conv id.
+#
+# READ-ONLY. GET on Coolify envs + SELECT via ops_hub_app (OPS_HUB_APP_LOGIN_URL,
+# fetched fresh, masked, never printed). NEVER service_role. Same pattern as
+# diagnose-ops-hub-prod-litellm-url.yml + diagnose-stuck-triage-tickets.yml.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  LITELLM_PROD_UUID: "hlik1d96uvkkjzpbxa3azhcv"
+  LITELLM_STAGING_UUID: "h12xz8887fxvbvjts2hac8if"
+  PROD_PROJECT_ID: "00000000-0000-0000-0000-000000000003"
+  PROD_TENANT_ID: "00000000-0000-0000-0000-000000000030"
+
+jobs:
+  diagnose:
+    name: Discriminate triage-blocked hypotheses (read-only)
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Guard — required secret present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+
+      - name: Read ops-hub-prod env (scoping + URL + key hash)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ops_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-prod envs (HTTP $HTTP)"; exit 1; }
+
+          echo "=== 1. SCOPING (does a live path reach the ...0003/...0030 tickets?) ==="
+          for K in POLLING_PROJECT_ID POLLING_TENANT_ID POLLING_ENABLED LITELLM_TRIAGE_MODEL LITELLM_FALLBACK_MODEL; do
+            V=$(jq -r --arg k "$K" '.[] | select(.key==$k) | .value' /tmp/ops_envs.json | head -1)
+            echo "  $K = ${V:-<unset>}"
+          done
+
+          echo ""
+          echo "=== 3. LITELLM_URL fix persistence ==="
+          URLCOUNT=$(jq -r '[.[] | select(.key=="LITELLM_URL")] | length' /tmp/ops_envs.json)
+          URL=$(jq -r '.[] | select(.key=="LITELLM_URL") | .value' /tmp/ops_envs.json | head -1)
+          echo "  LITELLM_URL row count = $URLCOUNT (expect exactly 1)"
+          echo "  LITELLM_URL = ${URL:-<unset>}"
+          if printf '%s' "$URL" | grep -q "$LITELLM_PROD_UUID"; then
+            echo "  -> references litellm-PROD UUID prefix (correct)"
+          elif printf '%s' "$URL" | grep -q "$LITELLM_STAGING_UUID"; then
+            echo "  -> references litellm-STAGING UUID prefix (WRONG — regressed)"
+          else
+            echo "  -> matches NEITHER known prefix (inspect)"
+          fi
+
+          # Master key: mask raw value, export only its SHA-256 for comparison.
+          APPKEY=$(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .value' /tmp/ops_envs.json | head -1)
+          if [ -z "$APPKEY" ] || [ "$APPKEY" = "null" ]; then
+            echo "::warning::ops-hub-prod has NO LITELLM_MASTER_KEY set"
+            echo "APP_KEY_HASH=absent" >> "$GITHUB_ENV"
+          else
+            echo "::add-mask::$APPKEY"
+            APPHASH=$(printf '%s' "$APPKEY" | sha256sum | cut -c1-16)
+            echo "APP_KEY_HASH=$APPHASH" >> "$GITHUB_ENV"
+          fi
+
+      - name: Read litellm-prod's own master key (hash only) + compare
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read litellm-prod envs (HTTP $HTTP)"; exit 1; }
+          LLKEY=$(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .value' /tmp/litellm_envs.json | head -1)
+          if [ -z "$LLKEY" ] || [ "$LLKEY" = "null" ]; then
+            echo "::error::litellm-prod has NO LITELLM_MASTER_KEY set"; exit 1
+          fi
+          echo "::add-mask::$LLKEY"
+          LLHASH=$(printf '%s' "$LLKEY" | sha256sum | cut -c1-16)
+
+          echo "=== 2. MASTER-KEY MATCH (leading hypothesis) ==="
+          echo "  ops-hub-prod  LITELLM_MASTER_KEY sha256[0:16] = $APP_KEY_HASH"
+          echo "  litellm-prod  LITELLM_MASTER_KEY sha256[0:16] = $LLHASH"
+          if [ "$APP_KEY_HASH" = "absent" ]; then
+            echo "  -> MISMATCH: ops-hub-prod has no key at all — every app call fails auth."
+          elif [ "$APP_KEY_HASH" = "$LLHASH" ]; then
+            echo "  -> MATCH: keys are identical. Master-key mismatch is RULED OUT;"
+            echo "     look to content-shape/timeout or the DB write path instead."
+          else
+            echo "  -> MISMATCH CONFIRMED: the app authenticates with a different key than"
+            echo "     litellm-prod expects. Every real classifyTicket() 401s (both models)"
+            echo "     -> throw -> ticket stuck in 'new'. This is the root cause."
+          fi
+
+      - name: Fetch ops_hub_app login DSN (masked)
+        run: |
+          curl -s --max-time 30 -o /tmp/ops_envs2.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/ops_envs2.json | head -1)
+          [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL absent"; exit 1; }
+          echo "::add-mask::$LOGIN"
+          echo "OPS_HUB_APP_LOGIN_URL=$LOGIN" >> "$GITHUB_ENV"
+
+      - name: Install psql
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
+
+      - name: Seeded-vs-real + stuck-ticket metadata (no title/body)
+        run: |
+          echo "=== 4a. Known-stuck ids: state / owner / conv-id-null / created_at / age ==="
+          psql "$OPS_HUB_APP_LOGIN_URL" -P pager=off -c "
+            select set_config('app.current_project', '$PROD_PROJECT_ID', true);
+            select set_config('app.current_tenant', '$PROD_TENANT_ID', true);
+            select
+              id,
+              state,
+              owner_agent,
+              (freescout_conversation_id is null) as conv_id_is_null,
+              created_at,
+              now() - created_at as age
+            from tickets
+            where id in (
+              '3c9427cc-6303-4d67-9636-2d465410e7d3',
+              'bedf3d68-9c08-46bf-b7ce-680219069503',
+              '0bb90013-9261-4bba-baab-8352d144be70',
+              'd3bfb9c6-d944-47c5-9af4-93499d1dff1a',
+              'e86b7abd-a80c-4e50-86a1-fdda37de0bbe',
+              '3f8c6a46-9ce0-4a5c-9591-f83d726678eb',
+              '1d5a62f9-999f-494e-a9d2-c3443470b763',
+              '628282ba-7767-4a6a-932e-52222b475178',
+              '8ec24451-eb51-4d3f-a832-9de84eaaadb1',
+              '9ea9969e-dc78-4cc3-b624-1d8dd5e0fd14',
+              '095c899f-0908-4f5c-a59c-c7392ae4b131'
+            )
+            order by created_at;"
+
+          echo ""
+          echo "=== 4b. created_at clustering among ALL state='new' (seed signature) ==="
+          echo "    Rows sharing one timestamp to the second + a NULL conv id => single-txn seed/test insert."
+          psql "$OPS_HUB_APP_LOGIN_URL" -P pager=off -c "
+            select set_config('app.current_project', '$PROD_PROJECT_ID', true);
+            select set_config('app.current_tenant', '$PROD_TENANT_ID', true);
+            select
+              date_trunc('second', created_at) as created_second,
+              count(*) as tickets_in_second,
+              count(*) filter (where freescout_conversation_id is null) as null_conv,
+              count(distinct freescout_conversation_id) as distinct_real_conv
+            from tickets
+            where state = 'new'
+            group by 1
+            order by tickets_in_second desc, created_second;"
+
+          echo ""
+          echo "=== 4c. overall state distribution + how many have a real FreeScout conv id ==="
+          psql "$OPS_HUB_APP_LOGIN_URL" -P pager=off -c "
+            select set_config('app.current_project', '$PROD_PROJECT_ID', true);
+            select set_config('app.current_tenant', '$PROD_TENANT_ID', true);
+            select
+              state,
+              count(*) as n,
+              count(*) filter (where freescout_conversation_id is null) as null_conv,
+              count(*) filter (where owner_agent is not null) as has_owner
+            from tickets
+            group by state
+            order by n desc;"
+
+      - name: How to read this
+        if: always()
+        run: |
+          echo "DECISION TABLE:"
+          echo " - POLLING_PROJECT_ID=...0003 AND key MISMATCH  => root cause = master-key mismatch; fix = align ops-hub-prod LITELLM_MASTER_KEY, restart."
+          echo " - POLLING_PROJECT_ID=...0003 AND key MATCH      => LLM auth fine; suspect content-shape/timeout or DB write; pull a post-fix LangFuse trace error string next."
+          echo " - POLLING_PROJECT_ID!=...0003                   => ...0003 tickets are orphaned (no live path scopes to them); reframe 'customer impact' + decide reprocess/purge."
+          echo " - 4b shows many rows sharing one second + NULL conv => those rows are seeded/test data, not real customer emails."
