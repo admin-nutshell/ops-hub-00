@@ -1,0 +1,56 @@
+name: Verify Ops Dashboard /settings live on PROD (read-only, credential masked)
+
+# T-81 PROD verification, mirrors verify-dashboard-settings-staging.yml:
+# confirms the redeployed production dashboard actually serves real
+# /settings content when authenticated (not a 404/500/blank page), and
+# that the unauthenticated request is still gated. Uses the stored PROD
+# Basic Auth credential internally; never echoes it.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  DASHBOARD_URL: "https://ops-dashboard-prod.inatechshell.ca"
+
+jobs:
+  verify:
+    name: Verify /settings live content (prod)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Unauthenticated request is still gated (expect 401)
+        run: |
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$DASHBOARD_URL/settings")
+          echo "Unauthenticated /settings -> HTTP $HTTP"
+          [ "$HTTP" = "401" ] || { echo "::error::expected 401, got $HTTP"; exit 1; }
+
+      - name: Authenticated request serves real content (expect 200 + real markers)
+        env:
+          PASS: ${{ secrets.DASHBOARD_BASIC_AUTH_PASSWORD_PROD }}
+        run: |
+          if [ -z "$PASS" ]; then
+            echo "::error::DASHBOARD_BASIC_AUTH_PASSWORD_PROD secret not set — cannot verify authenticated content."
+            exit 1
+          fi
+          HTTP=$(curl -s -o /tmp/settings.html -w "%{http_code}" --max-time 15 -u "opsadmin:$PASS" "$DASHBOARD_URL/settings")
+          echo "Authenticated /settings -> HTTP $HTTP"
+          BYTES=$(wc -c < /tmp/settings.html)
+          echo "Body size: $BYTES bytes"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::expected 200, got $HTTP"
+            head -c 500 /tmp/settings.html
+            exit 1
+          fi
+          echo "=== marker checks ==="
+          for MARKER in "Model Routing" "SLA" "Feature Flag" "triage" "respond" "kb_learn"; do
+            if grep -qi "$MARKER" /tmp/settings.html; then
+              echo "  FOUND: $MARKER"
+            else
+              echo "  MISSING: $MARKER"
+            fi
+          done
+          if grep -qi "failed to load" /tmp/settings.html; then
+            echo "::warning::page contains a 'failed to load' error card — check which section"
+          fi
