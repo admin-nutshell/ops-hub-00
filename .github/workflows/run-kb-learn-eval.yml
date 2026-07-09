@@ -66,25 +66,52 @@ jobs:
           set -euo pipefail
           pip install --quiet pyyaml
           python3 <<'PYEOF'
-          import yaml
+          import yaml, json, re
 
-          with open("evals/kb-learn.yaml") as f:
+          with open("evals/kb-learn.yaml", encoding="utf-8") as f:
               cfg = yaml.safe_load(f)
 
           LITELLM_BASE = "https://litellm-staging.inatechshell.ca/v1"
 
-          # TARGET provider: swap id + inject apiBaseUrl, but PRESERVE the original
-          # provider's config (system prompt, temperature, max_tokens) verbatim — a
-          # prior attempt (run 28994670193) silently dropped the system prompt by
-          # replacing the whole providers list wholesale, which meant the model got
-          # zero instructions (max_tokens defaulted to 1024, temperature to 0, no
-          # system message at all) and produced a real-looking but meaningless 25%
-          # pass rate. This is the actual bug that run's low score was measuring.
+          # TARGET provider: preserve temperature/max_tokens, point at LiteLLM, and
+          # move the system prompt OUT of config. The openai:chat provider (unlike
+          # the anthropic provider the eval file pins for CI schema validation) does
+          # NOT honor `config.system` — a system prompt left there is silently
+          # dropped and the model runs with ZERO instructions. That is the real bug
+          # behind run 28997069750's meaningless 25%: 497 total prompt tokens across
+          # 4 calls => ~124/call => the user message only, none of the ~850-token
+          # system prompt. An earlier fix tried to "preserve config.system", but that
+          # key is inert once the provider is swapped anthropic -> openai. The system
+          # prompt must be delivered as a real system-role message instead (below).
           original_provider = cfg["providers"][0]
           target_config = dict(original_provider.get("config", {}))
+          system_prompt = target_config.pop("system", "")
           target_config["apiBaseUrl"] = LITELLM_BASE
-          target_provider = {"id": "openai:chat:triage-model", "config": target_config}
-          cfg["providers"] = [target_provider]
+          cfg["providers"] = [{"id": "openai:chat:triage-model", "config": target_config}]
+
+          # Rebuild the single prompt as a system+user chat array via a prompt-FUNCTION
+          # file. A function (not an inline JSON chat string) is deliberate: it builds
+          # the messages from the raw var values in JS, so a ticket body containing a
+          # double-quote or newline can't break a JSON.parse the way an interpolate-
+          # then-parse chat string would. The user message reproduces the eval's
+          # five-tag template verbatim, derived from cfg["prompts"][0] so it can't
+          # drift. `system_prompt` is embedded via json.dumps (a valid JS string
+          # literal) so it stays byte-identical to the eval file's `system:` block.
+          user_template = cfg["prompts"][0].rstrip("\n")
+          user_js = re.sub(r"\{\{\s*(\w+)\s*\}\}", r"${vars.\1 ?? ''}", user_template)
+          prompt_fn = (
+              "const SYSTEM = " + json.dumps(system_prompt) + ";\n"
+              "export default function ({ vars }) {\n"
+              "  const user = `" + user_js + "`;\n"
+              "  return [\n"
+              "    { role: 'system', content: SYSTEM },\n"
+              "    { role: 'user', content: user },\n"
+              "  ];\n"
+              "}\n"
+          )
+          with open("/tmp/kb-learn-prompt.mjs", "w", encoding="utf-8") as f:
+              f.write(prompt_fn)
+          cfg["prompts"] = ["file:///tmp/kb-learn-prompt.mjs"]
 
           # GRADER provider: deliberately NOT the kb-learn system prompt — the grader
           # answers a different question (does this output satisfy rubric X), so it
@@ -93,11 +120,15 @@ jobs:
           grader_provider = {"id": "openai:chat:triage-model", "config": {"apiBaseUrl": LITELLM_BASE}}
           cfg["defaultTest"] = {"options": {"provider": grader_provider}}
 
-          with open("/tmp/kb-learn-live.yaml", "w") as f:
-              yaml.safe_dump(cfg, f, sort_keys=False)
+          with open("/tmp/kb-learn-live.yaml", "w", encoding="utf-8") as f:
+              yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
 
-          print("Generated /tmp/kb-learn-live.yaml — providers + defaultTest overridden:")
-          print(yaml.safe_dump({"providers": cfg["providers"], "defaultTest": cfg["defaultTest"]}, sort_keys=False))
+          print("Generated /tmp/kb-learn-live.yaml + /tmp/kb-learn-prompt.mjs")
+          print("System prompt length (chars):", len(system_prompt))
+          print("--- /tmp/kb-learn-prompt.mjs (head) ---")
+          print(prompt_fn[:600])
+          print("--- live config (providers + prompts + defaultTest) ---")
+          print(yaml.safe_dump({"providers": cfg["providers"], "prompts": cfg["prompts"], "defaultTest": cfg["defaultTest"]}, sort_keys=False))
           PYEOF
 
       - name: Run promptfoo eval against triage-model (target + grader both via LiteLLM)
