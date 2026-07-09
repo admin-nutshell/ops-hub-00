@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { generateKbArticle, learnFromResolvedTicket } from "../kb-learn";
+import { findPiiKind, generateKbArticle, learnFromResolvedTicket } from "../kb-learn";
 import { makeClient, makePool, mockFetchOk } from "./helpers";
 
 /**
@@ -81,6 +81,103 @@ describe("generateKbArticle", () => {
     await generateKbArticle(resolvedRow());
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect((JSON.parse(init.body as string) as { model: string }).model).toBe("triage-model");
+  });
+});
+
+/**
+ * T-88 — defense-in-depth PII guard.
+ *
+ * The system prompt forbids identifiers, but a live eval against the production
+ * model still leaked a customer name/email/account/ticket-ID verbatim. The prompt
+ * was hardened, but prompts are not a safety boundary — a future regression or
+ * model drift must not be able to silently persist PII into kb_articles (a durable,
+ * cross-ticket artifact). generateKbArticle() now re-scans the parsed title/body
+ * for mechanically-detectable identifiers and fails closed (throw → no INSERT,
+ * same fail-closed mode as the existing JSON-parse-failure path) if any are found.
+ */
+describe("findPiiKind (PII guard)", () => {
+  it("returns null for clean, fully-anonymised article text", () => {
+    expect(
+      findPiiKind(
+        "Billing: duplicate subscription charge\nA customer was charged twice; support refunded the duplicate."
+      )
+    ).toBeNull();
+  });
+
+  it("flags an embedded email address", () => {
+    expect(findPiiKind("Contact maria.gonzalez@example.com for details")).toBe("email");
+  });
+
+  it("flags a bare #NNNN ticket reference (4+ digits)", () => {
+    expect(findPiiKind("Resolved under ticket #48210")).toBe("ticket-id");
+  });
+
+  it("flags a keyworded case/account number", () => {
+    expect(findPiiKind("See account ACME 771 — case 48210 refunded")).toBe("ticket-id");
+  });
+
+  it("flags a phone-shaped digit run", () => {
+    expect(findPiiKind("Called the customer back on +1 (555) 123-4567 to confirm")).toBe("phone");
+  });
+
+  it("does NOT flag a 3-digit HTTP status code written as #NNN", () => {
+    // #500 is an HTTP status, not a ticket ID — the bare-# pattern requires 4+ digits.
+    expect(findPiiKind("The endpoint returned a #500 error until the fix")).toBeNull();
+  });
+});
+
+describe("generateKbArticle PII guard (fail-closed before INSERT)", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("LITELLM_URL", "https://litellm.test");
+    vi.stubEnv("LITELLM_MASTER_KEY", "test-key");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it("returns a clean article unchanged (guard is a no-op on anonymised output)", async () => {
+    mockFetchOk(KB_JSON);
+    const article = await generateKbArticle(resolvedRow(), "triage-model");
+    expect(article.title).toBe("Auth: password reset email not received");
+  });
+
+  it("rejects an article whose body embeds an email address", async () => {
+    mockFetchOk(
+      JSON.stringify({
+        title: "Billing: duplicate charge",
+        body: "Refunded the duplicate charge; confirmed with maria.gonzalez@example.com.",
+      })
+    );
+    await expect(generateKbArticle(resolvedRow(), "triage-model")).rejects.toThrow(
+      /rejected: embedded email/
+    );
+  });
+
+  it("rejects an article whose title embeds a ticket-ID-shaped string", async () => {
+    mockFetchOk(
+      JSON.stringify({
+        title: "Billing: duplicate charge (ticket #48210)",
+        body: "Refunded the duplicate charge and confirmed with the customer.",
+      })
+    );
+    await expect(generateKbArticle(resolvedRow(), "triage-model")).rejects.toThrow(
+      /rejected: embedded ticket-id/
+    );
+  });
+
+  it("error message reports only the identifier KIND, never the matched value", async () => {
+    // The error is recorded to LangFuse via String(err); it must not re-leak PII.
+    mockFetchOk(
+      JSON.stringify({
+        title: "Billing: duplicate charge",
+        body: "Emailed secret.person@private.example to confirm the refund.",
+      })
+    );
+    await expect(generateKbArticle(resolvedRow(), "triage-model")).rejects.toThrow(
+      /^KB article rejected: embedded email in generated content$/
+    );
   });
 });
 
