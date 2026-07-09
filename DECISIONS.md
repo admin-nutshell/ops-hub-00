@@ -2212,3 +2212,38 @@ the model. T-88 closed. Follow-up flagged, not scheduled: the same
 config.system-on-openai-provider bug class could affect any future live-run
 override written for the other evals.
 ```
+
+### 2026-07-09 — T-87 Tech Lead review: ADR-0007 real eval gate ACCEPTED
+
+```
+2026-07-09 [Tech Lead] ADR-0007 (real LLM-rubric eval gate, design-of-record)
+reviewed and APPROVED; Status moved Proposed -> Accepted. Appended a real
+"Tech Lead Review (CI / Architecture)" section replacing the PENDING placeholder,
+grounded against what CI runs today (pr-checks.yml's hermetic evals job +
+run-kb-learn-eval.yml) and the live eval_gate_runs schema (T-58). Every finding
+is a Sprint-9 build obligation; none block acceptance (ADR is design-only).
+Key rulings: (1) RATIFIED the auto path-filtered pull_request trigger + scoped
+budget-capped LiteLLM VIRTUAL key over workflow_dispatch-only — a gate that
+depends on a human remembering to dispatch just re-creates the drift this sprint
+closes; scoped-virtual-key reading of non-negotiable #10 is sound (staging +
+capability-scoped + budget-capped != production LLM key). Hard conditions: the
+master key must NEVER enter the auto-triggered job's env (scoped key is a blocker
+on the auto-trigger — stay on workflow_dispatch until it exists); pull_request
+never pull_request_target + fork-skip; the concrete key's security sign-off
+deferred to Sprint 9 Security Lead + Production Manager. (2) CI shape = a SIBLING
+workflow, not an extension of the hermetic contents:read/no-secret evals job
+(which stays as-is) — also because the PR-comment reporter needs
+pull-requests:write. (3) CONCUR baseline-relative (§5.4b), but flagged that
+eval_gate_runs is aggregate-only (no per-test result identity), so per-test
+waiver semantics need either coarse count-comparison (masks a swap-regression),
+a small JSONB/child-table schema delta (contradicts §7's "no new schema"), or
+LangFuse-backed per-test detail — build must pick (recommended: per-test).
+(4) §7 sizing MEDIUM confirmed; cost model verified not hand-waved (Haiku 4.5
+$1/$5 confirmed, ~$0.03/full run, ~$5.50 CAD/mo under the $10 CAD cap). Extra
+build items: reporting path pulls DB (ops_hub_app) + LangFuse secrets into the
+same fork-exfiltratable context §3 only analyzed for the LiteLLM key; per-eval
+(not global-600) token-guard band; concurrency cancel-in-progress on the sibling
+workflow; required-check-neutral-skip-on-fork wedge. No FOUNDER_QUEUE escalation
+(tightens a standing constraint, no provider switch). Landed via PR, left
+UNMERGED for PM/founder review. -> ADR-0007
+```
