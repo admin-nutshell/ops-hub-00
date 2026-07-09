@@ -12,25 +12,29 @@ name: T-83 pg_policy vs migrations reconciliation (read-only)
 # ZERO changes to any table, policy, grant, or running service. There is no DDL,
 # no INSERT/UPDATE/DELETE, and no service_role anywhere.
 #
-# CREDENTIAL: SUPABASE_STAGING_DB_URL (the `postgres` login role) — NOT
-# service_role. Per CLAUDE.md non-negotiable #3 / ADR-0005, agents never hold
-# service_role. The `postgres` role is sufficient (and superior to ops_hub_app)
-# for a catalog dump because it can see every policy on every table regardless
-# of per-table grants — exactly what a full reconciliation needs. Because
-# staging and prod are the SAME physical Supabase project distinguished by rows
-# (ADR-0005), policies (DB-level objects) are identical for both environments;
-# ONE dump is the complete truth for both — do NOT add a prod-specific run.
+# CREDENTIAL — two candidates, tried in order, first that connects wins:
+#   1. SUPABASE_STAGING_DB_URL (the `postgres` login role) — the task/WORK.md T-83
+#      mandated primary. NOTE: empirically this secret is NOT a usable psql DSN
+#      (run 28911214484's baseline step failed with a local-socket error, i.e.
+#      psql could not parse it as a conninfo URI; t60-rls-probe.yml logged the
+#      same "not a usable DSN"). Kept as the documented first choice in case it
+#      is repaired, but the workflow does NOT depend on it.
+#   2. OPS_HUB_APP_LOGIN_URL (the `ops_hub_app` non-superuser role), fetched from
+#      the ops-hub-STAGING Coolify app — the PROVEN path: run 28984439224
+#      (diagnose-feature-flags-rls.yml) dumped pg_policy through exactly this DSN.
+#      pg_policy / pg_class / pg_get_expr / aclexplode are readable by any role
+#      (system catalogs), and ops_hub_app has USAGE on public + grants on all 9
+#      tables, so it can dump every policy and (via aclexplode on pg_catalog ACLs)
+#      every grant regardless of grantee.
+# NEVER service_role (CLAUDE.md non-negotiable #3 / ADR-0005 — agents never hold it).
 #
-# DSN CAVEAT (read before dispatch): t60-rls-probe.yml previously logged that
-# SUPABASE_STAGING_DB_URL was "not a usable DSN" for a direct psql connect, while
-# precheck-litellm-db-wall.yml uses it as a working psql DSN (BASELINE_URL). This
-# workflow therefore HARD-FAILS on the connect probe (does NOT mask a failed
-# connection behind a green run with an empty policy list — that would be the
-# T-81 "reassuring-but-stale" trap in DB form). If the connect probe fails here,
-# the fallback is the proven OPS_HUB_APP_LOGIN_URL Coolify-fetch path used by
-# diagnose-feature-flags-rls.yml / t60-rls-probe.yml (ops_hub_app can read
-# pg_policy for every table it is granted on — which is all 9 of ours); switch
-# this workflow's connection to that path and re-dispatch.
+# Because staging and prod are the SAME physical Supabase project distinguished
+# by rows (ADR-0005), policies (DB-level objects) are identical for both; ONE
+# dump is the complete truth for both — do NOT add a prod-specific run.
+#
+# FAIL-LOUD: if NEITHER candidate connects, the connect step exits non-zero. It
+# will never print a reassuring "0 policies" summary off a dead connection (the
+# T-81 stale-but-green trap in DB form).
 
 on:
   workflow_dispatch: {}
@@ -38,50 +42,96 @@ on:
 permissions:
   contents: read
 
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"   # ops-hub-STAGING (same app diagnose-feature-flags-rls.yml uses)
+
 jobs:
   reconcile:
     name: Dump every live RLS policy + RLS-enabled flags + relevant grants
     runs-on: ubuntu-latest
     env:
-      DB_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_STAGING_DB_URL }}
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
     steps:
-      - name: Validate secret present
+      - name: Validate at least one credential path is available
         run: |
-          [ -n "$DB_URL" ] || { echo "::error::SUPABASE_STAGING_DB_URL is empty"; exit 1; }
-          echo "SUPABASE_STAGING_DB_URL present."
+          if [ -z "$SUPABASE_URL" ] && [ -z "$TOKEN" ]; then
+            echo "::error::Need SUPABASE_STAGING_DB_URL or COOLIFY_API_TOKEN (to fetch OPS_HUB_APP_LOGIN_URL). Both empty."
+            exit 1
+          fi
+          echo "At least one credential path present."
 
       - name: Install psql
         run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
 
-      # ── Mandatory connect probe — HARD FAIL if the DSN cannot connect ────────
-      # This step deliberately has NO `set +e` / `exit 0`. A failed connection
-      # must fail the whole workflow so a post-merge dispatch never prints a
-      # reassuring "0 policies" summary when the real problem is that we never
-      # connected at all.
-      - name: Connect probe (hard fail if DSN unusable)
+      # ── Pick a working read-only DSN — HARD FAIL if none connects ────────────
+      - name: Select a working read-only DSN
         run: |
-          echo "::add-mask::$DB_URL"
-          CU=$(psql "$DB_URL" -tAc "select current_user;") || {
-            echo "::error::Could not connect with SUPABASE_STAGING_DB_URL. See the DSN CAVEAT"
-            echo "::error::in this workflow's header — switch to the OPS_HUB_APP_LOGIN_URL"
-            echo "::error::Coolify-fetch path (diagnose-feature-flags-rls.yml pattern) and re-dispatch."
-            exit 1
+          CHOSEN=""
+          CHOSEN_ROLE=""
+
+          try_dsn () {
+            local url="$1" label="$2"
+            [ -n "$url" ] || return 1
+            echo "::add-mask::$url"
+            local cu
+            if cu=$(psql "$url" -tAc "select current_user;" 2>/tmp/connerr); then
+              cu=$(echo "$cu" | tr -d '[:space:]')
+              if [ "$cu" = "service_role" ]; then
+                echo "::error::[$label] connected as service_role — FORBIDDEN (CLAUDE.md #3). Refusing."
+                return 1
+              fi
+              echo "[$label] connected OK as role: $cu"
+              CHOSEN="$url"; CHOSEN_ROLE="$cu"
+              return 0
+            fi
+            echo "[$label] connect failed: $(head -1 /tmp/connerr)"
+            return 1
           }
-          echo "Connected as role: $CU"
-          case "$CU" in
-            service_role) echo "::error::Connected as service_role — FORBIDDEN (CLAUDE.md #3). Aborting."; exit 1 ;;
-          esac
-          # Confirm read-only session posture (belt-and-suspenders; we only run SELECTs anyway)
-          psql "$DB_URL" -tAc "show default_transaction_read_only;" || true
+
+          # Candidate 1: task-mandated postgres DSN (may be an unusable value — see header).
+          try_dsn "$SUPABASE_URL" "SUPABASE_STAGING_DB_URL"
+
+          # Candidate 2: proven ops_hub_app login URL, fetched from Coolify staging app.
+          if [ -z "$CHOSEN" ] && [ -n "$TOKEN" ]; then
+            echo "Fetching OPS_HUB_APP_LOGIN_URL from Coolify staging app ($STAGING_UUID)…"
+            HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$STAGING_UUID/envs")
+            if [ "$HTTP" = "200" ]; then
+              LOGIN=$(jq -r '[.[] | select(.key=="OPS_HUB_APP_LOGIN_URL")] | last | .value' /tmp/envs.json)
+              if [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ]; then
+                try_dsn "$LOGIN" "OPS_HUB_APP_LOGIN_URL"
+              else
+                echo "OPS_HUB_APP_LOGIN_URL absent on staging app."
+              fi
+            else
+              echo "Could not read Coolify staging envs (HTTP $HTTP)."
+            fi
+          fi
+
+          if [ -z "$CHOSEN" ]; then
+            echo "::error::No read-only DSN connected. SUPABASE_STAGING_DB_URL is likely not a valid"
+            echo "::error::conninfo URI (run 28911214484), and the Coolify fallback did not yield a"
+            echo "::error::working OPS_HUB_APP_LOGIN_URL. Fix one credential and re-dispatch — do NOT"
+            echo "::error::trust an empty policy list."
+            exit 1
+          fi
+          echo "::add-mask::$CHOSEN"
+          echo "CHOSEN_DSN=$CHOSEN"   >> "$GITHUB_ENV"
+          echo "CHOSEN_ROLE=$CHOSEN_ROLE" >> "$GITHUB_ENV"
+          echo "Using role '$CHOSEN_ROLE' for the read-only dump."
 
       # ── The reconciliation dump — connection already proven above ────────────
       - name: Dump — every live RLS policy across public
         run: |
-          echo "::add-mask::$DB_URL"
+          echo "::add-mask::$CHOSEN_DSN"
+          echo "Dumping as role: $CHOSEN_ROLE"
           set +e   # individual query hiccups shouldn't abort; connection is already proven
           echo "=== [1] ALL live RLS policies (table, policy, cmd, permissive, roles, USING, WITH CHECK) ==="
           # polcmd: r=SELECT a=INSERT w=UPDATE d=DELETE *=ALL.  polpermissive: t=PERMISSIVE.
-          psql "$DB_URL" -P pager=off -c "
+          psql "$CHOSEN_DSN" -P pager=off -c "
             select
               c.relname                                   as tbl,
               p.polname                                   as policy,
@@ -97,7 +147,7 @@ jobs:
             order by c.relname, p.polname;"
           echo ""
           echo "=== [2] RLS-enabled flag per table (relrowsecurity MUST be TRUE for every table carrying policies) ==="
-          psql "$DB_URL" -P pager=off -c "
+          psql "$CHOSEN_DSN" -P pager=off -c "
             select c.relname as tbl, c.relrowsecurity as rls_enabled, c.relforcerowsecurity as rls_forced
             from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
@@ -107,32 +157,54 @@ jobs:
                 'agent_cost_events','eval_gate_runs','agent_model_routing')
             order by c.relname;"
           echo ""
-          echo "=== [3] agent_model_routing table-level grants (T-76 Advisory C1 evidence: write verbs on authenticated/anon should be ABSENT) ==="
-          psql "$DB_URL" -P pager=off -c "
-            select grantee, privilege_type
-            from information_schema.role_table_grants
-            where table_schema='public' and table_name='agent_model_routing'
-              and grantee in ('ops_hub_app','authenticated','anon')
-            order by grantee, privilege_type;"
+          # Grants via aclexplode on pg_catalog ACLs — role-agnostic (works even when the
+          # dump runs as ops_hub_app, which information_schema.*_grants would hide from).
+          echo "=== [3] agent_model_routing TABLE grants (T-76 Advisory C1 evidence: write verbs on authenticated/anon should be ABSENT) ==="
+          psql "$CHOSEN_DSN" -P pager=off -c "
+            select g.grantee::regrole::text as grantee, g.privilege_type
+            from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            cross join lateral aclexplode(c.relacl) g
+            where n.nspname='public' and c.relname='agent_model_routing'
+              and g.grantee::regrole::text in ('ops_hub_app','authenticated','anon')
+            order by 1,2;"
           echo ""
-          echo "=== [4] agent_model_routing column-level grants (ALTER DEFAULT PRIVILEGES can auto-grant at column granularity) ==="
-          psql "$DB_URL" -P pager=off -c "
-            select grantee, column_name, privilege_type
-            from information_schema.column_privileges
-            where table_schema='public' and table_name='agent_model_routing'
-              and grantee in ('authenticated','anon')
-            order by grantee, column_name, privilege_type;"
+          echo "=== [4] agent_model_routing COLUMN grants (ALTER DEFAULT PRIVILEGES can auto-grant at column granularity) ==="
+          psql "$CHOSEN_DSN" -P pager=off -c "
+            select a.attname as column, g.grantee::regrole::text as grantee, g.privilege_type
+            from pg_attribute a
+            join pg_class c on c.oid = a.attrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            cross join lateral aclexplode(a.attacl) g
+            where n.nspname='public' and c.relname='agent_model_routing'
+              and a.attnum>0 and not a.attisdropped
+              and g.grantee::regrole::text in ('authenticated','anon')
+            order by 1,2,3;"
           echo ""
-          echo "=== [5] tenants UPDATE grant (T-72 least-privilege: ops_hub_app has NO table-level UPDATE; column-scoped to sla_config only) ==="
-          psql "$DB_URL" -P pager=off -c "
-            select privilege_type from information_schema.role_table_grants
-            where table_schema='public' and table_name='tenants' and grantee='ops_hub_app';"
-          psql "$DB_URL" -P pager=off -c "
-            select column_name, privilege_type from information_schema.column_privileges
-            where table_schema='public' and table_name='tenants' and grantee='ops_hub_app' and privilege_type='UPDATE';"
+          echo "=== [5] tenants grants (T-72 least-privilege: ops_hub_app has NO table-level UPDATE; UPDATE column-scoped to sla_config only) ==="
+          echo "--- table-level grants to ops_hub_app (UPDATE should be ABSENT here) ---"
+          psql "$CHOSEN_DSN" -P pager=off -c "
+            select g.privilege_type
+            from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            cross join lateral aclexplode(c.relacl) g
+            where n.nspname='public' and c.relname='tenants'
+              and g.grantee::regrole::text='ops_hub_app'
+            order by 1;"
+          echo "--- column-level grants to ops_hub_app (expect UPDATE on sla_config only) ---"
+          psql "$CHOSEN_DSN" -P pager=off -c "
+            select a.attname as column, g.privilege_type
+            from pg_attribute a
+            join pg_class c on c.oid = a.attrelid
+            join pg_namespace n on n.oid = c.relnamespace
+            cross join lateral aclexplode(a.attacl) g
+            where n.nspname='public' and c.relname='tenants'
+              and a.attnum>0 and not a.attisdropped
+              and g.grantee::regrole::text='ops_hub_app'
+            order by 1,2;"
           echo ""
           echo "=== [6] policy-referenced helper functions present (current_project_id / current_tenant_id) ==="
-          psql "$DB_URL" -P pager=off -c "
+          psql "$CHOSEN_DSN" -P pager=off -c "
             select proname from pg_proc where proname in ('current_project_id','current_tenant_id') order by proname;"
           echo "=== dump complete ==="
 
