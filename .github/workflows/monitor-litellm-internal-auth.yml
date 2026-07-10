@@ -1,0 +1,110 @@
+name: Monitor — LiteLLM internal-auth path (T-97 / FQ-69 follow-up)
+
+# Closes the monitoring blind spot FQ-69's 3.6-day incident exposed:
+# `/health/litellm` probes LITELLM_EXTERNAL_URL without ever sending the app's
+# own key, so it stays green even when ops-hub-prod's real LITELLM_MASTER_KEY
+# is rejected by LiteLLM (exactly what happened — 70% of prod tickets stuck in
+# state='new' for 3.6 days while /health/litellm reported "ok"). This is the
+# SECOND incident from this same blind spot class (T-71 was the URL-layer
+# version), which is why T-97 is committed, not flagged.
+#
+# The real check lives IN the app: src/healthLitellmInternal.ts
+# (GET /health/litellm-internal) runs inside the ops-hub-prod process, reads
+# LITELLM_URL / LITELLM_MASTER_KEY / LITELLM_TRIAGE_MODEL via the SAME
+# resolveLitellmTarget() helper classifyTicket() calls, and makes a real,
+# minimal completion call over the INTERNAL LITELLM_URL — the exact hop
+# ticket-triage.ts/ticket-respond.ts use. This workflow's only job is to curl
+# that endpoint on a schedule and alert when it's not 200. It holds ZERO
+# copy of LITELLM_MASTER_KEY — the credential never leaves the app process.
+#
+# ALERTING: UptimeRobot's webhook alert contact (the "designed for this"
+# integration point in src/statusWebhook.ts + status-incident.yml's
+# repository_dispatch listener) requires a paid UptimeRobot tier the founder
+# declined for FQ-47 action 4b (free-tier-first). So this workflow uses the
+# channel that's actually live and free: `status-incident.yml`'s own
+# workflow_dispatch open/resolve actions (the same ones an agent or the
+# founder already uses manually) plus GitHub's built-in failed-run
+# notification email to repo watchers (the same backstop
+# backup-verification.yml already relies on). No new paid service.
+#
+# mode=live (default, used by the schedule): curls the real endpoint on
+#   ops-hub-prod.
+# mode=simulate-failure (manual verification only — never on the schedule):
+#   curls a path guaranteed to 404, to prove the open/resolve dispatch logic
+#   itself fires correctly WITHOUT touching prod's real credential or state.
+#   See DECISIONS.md T-97 entry for the run that used this to verify.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [live, simulate-failure]
+        description: "live = real prod probe; simulate-failure = verification-only, forces a non-200 without touching prod"
+        default: live
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: monitor-litellm-internal-auth
+  cancel-in-progress: false
+
+env:
+  PROD_URL: "https://ops-hub-prod.inatechshell.ca"
+  INCIDENT_TITLE: "LiteLLM internal-auth probe failing on ops-hub-prod"
+
+jobs:
+  probe:
+    name: Probe /health/litellm-internal
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine probe URL for this mode
+        id: target
+        env:
+          MODE: ${{ inputs.mode || 'live' }}
+        run: |
+          if [ "$MODE" = "simulate-failure" ]; then
+            echo "This is a VERIFICATION-ONLY run — it deliberately probes a path"
+            echo "guaranteed to fail so we can prove the open/resolve dispatch logic"
+            echo "works, without ever touching ops-hub-prod's real credential or state."
+            echo "url=$PROD_URL/health/litellm-internal-DOES-NOT-EXIST" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=$PROD_URL/health/litellm-internal" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Curl the probe endpoint (no secrets — the app holds the real key, not this job)
+        id: probe
+        run: |
+          HTTP=$(curl -s --max-time 15 -o /tmp/probe_body.json -w "%{http_code}" \
+            "${{ steps.target.outputs.url }}" || echo "000")
+          echo "http_status=$HTTP" >> "$GITHUB_OUTPUT"
+          echo "Probed ${{ steps.target.outputs.url }} -> HTTP $HTTP"
+          cat /tmp/probe_body.json 2>/dev/null || true
+          echo ""
+
+      - name: On failure — open a status-page incident + fail the run
+        if: steps.probe.outputs.http_status != '200'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::error::LiteLLM internal-auth probe returned HTTP ${{ steps.probe.outputs.http_status }} — the app's real LITELLM_MASTER_KEY path may be failing (FQ-69 failure mode) or the endpoint is unreachable."
+          gh workflow run status-incident.yml --ref main \
+            -f action=open \
+            -f title="$INCIDENT_TITLE" \
+            -f affected="Ops Hub Production,LiteLLM Production" \
+            -f severity=down
+          exit 1
+
+      - name: On success — resolve any open incident from this monitor
+        if: steps.probe.outputs.http_status == '200'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Probe healthy (HTTP 200) — resolving any open incident opened by this monitor."
+          gh workflow run status-incident.yml --ref main \
+            -f action=resolve \
+            -f title="$INCIDENT_TITLE"

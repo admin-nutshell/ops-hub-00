@@ -12,6 +12,7 @@ import { syncAgentCosts } from "./inngest/agent-cost-sync";
 import { emitTrace } from "./langfuse";
 import { handleStatusWebhook } from "./statusWebhook";
 import { handleLitellmHealth } from "./healthLitellm";
+import { handleLitellmInternalHealth } from "./healthLitellmInternal";
 import { handleEnvHealth } from "./healthEnv";
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
@@ -41,6 +42,10 @@ export const server = http.createServer((req, res) => {
   }
   if ((req.method === "GET" || req.method === "HEAD") && req.url === "/health/litellm") {
     void handleLitellmHealth(req, res);
+    return;
+  }
+  if ((req.method === "GET" || req.method === "HEAD") && req.url === "/health/litellm-internal") {
+    void handleLitellmInternalHealth(req, res);
     return;
   }
   if ((req.method === "GET" || req.method === "HEAD") && req.url === "/health/env") {

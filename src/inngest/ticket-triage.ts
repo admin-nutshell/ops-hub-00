@@ -44,6 +44,29 @@ export function _resetPool(mock?: Pool): void {
   _opsPool.reset(mock);
 }
 
+// T-97 (FQ-69 follow-up): the ONE place that resolves which LiteLLM URL/key/
+// model classifyTicket (and therefore the real ticket-triage.ts call path)
+// uses. handleLitellmInternalHealth (src/healthLitellmInternal.ts) calls this
+// SAME function rather than re-reading env vars itself — the whole point is
+// that the health probe cannot silently drift from the app's real credential
+// resolution the way the old external `/health/litellm` check could (it
+// probed LITELLM_EXTERNAL_URL with LiteLLM's OWN key, never the app's — the
+// exact blind spot FQ-69's 3.6-day incident lived in). Do not inline this
+// logic anywhere else; add a second caller here instead.
+export function resolveLitellmTarget(model?: string): {
+  litellmUrl: string;
+  litellmKey: string;
+  modelName: string;
+} {
+  const litellmUrl = process.env.LITELLM_URL;
+  const litellmKey = process.env.LITELLM_MASTER_KEY;
+  if (!litellmUrl || !litellmKey) {
+    throw new Error("LITELLM_URL or LITELLM_MASTER_KEY not configured");
+  }
+  const modelName = model ?? process.env.LITELLM_TRIAGE_MODEL ?? "triage-model";
+  return { litellmUrl, litellmKey, modelName };
+}
+
 // Instructions go in the system message; untrusted ticket content goes in the user message.
 // This separation prevents ticket bodies from overriding classification instructions.
 export async function classifyTicket(
@@ -51,13 +74,7 @@ export async function classifyTicket(
   body: string | null,
   model?: string
 ): Promise<ClassifyResult> {
-  const litellmUrl = process.env.LITELLM_URL;
-  const litellmKey = process.env.LITELLM_MASTER_KEY;
-  if (!litellmUrl || !litellmKey) {
-    throw new Error("LITELLM_URL or LITELLM_MASTER_KEY not configured");
-  }
-
-  const modelName = model ?? process.env.LITELLM_TRIAGE_MODEL ?? "triage-model";
+  const { litellmUrl, litellmKey, modelName } = resolveLitellmTarget(model);
 
   const resp = await fetch(`${litellmUrl}/chat/completions`, {
     method: "POST",
