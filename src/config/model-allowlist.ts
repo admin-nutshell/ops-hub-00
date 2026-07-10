@@ -54,6 +54,13 @@
 // the eval result. Removing an alias needs no eval. This keeps the standing
 // eval-gate constraint enforced by construction.
 //
+// NOTE (T-93): the "live multi-provider gate" referenced above is now WIRED as a
+// sibling CI workflow — .github/workflows/eval-gate-live.yml (path-filtered
+// pull_request, grader != target, scoped LITELLM_EVAL_KEY only). It is not yet a
+// required merge check (T-94) and is dormant while fallback-model is FQ-70-blocked;
+// this PROCESS block is reconciled to point at it in T-95 once the gate enforces.
+// (This comment also serves as the path-filtered trigger proving T-93's wiring.)
+//
 // SCOPE BOUNDARY: this allowlist constrains which aliases the dashboard may
 // SELECT. It does not, and cannot, constrain what each alias RESOLVES TO inside
 // LiteLLM — remapping an alias to a different provider is a LiteLLM master-key

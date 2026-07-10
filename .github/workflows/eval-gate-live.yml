@@ -1,0 +1,373 @@
+name: Eval Gate (live LLM-rubric)
+
+# T-93 (ADR-0007 §3 + §6 step 5 + Tech Lead Review Findings 1/2/3/6 + Conditions C1-C4).
+#
+# THE "REAL" LLM-RUBRIC EVAL GATE — CI WIRING.
+# This is the SIBLING workflow the Tech Lead review resolved §6 step 5 to (Finding 2):
+# a separate file, NOT an extension of pr-checks.yml's hermetic `evals` job. The
+# hermetic schema-only `validate` loop in pr-checks.yml stays EXACTLY as-is (no secret,
+# `contents: read`, runs on every PR). This workflow adds the live, metered, secret-
+# holding, path-filtered quality gate as a distinct surface with its own trigger,
+# permissions, and secret scope — because folding a secret-bearing LiteLLM-calling job
+# into the hermetic job would destroy that job's least-privilege posture and force a
+# false choice between "schema check on every PR" and "live job on every PR".
+#
+# TRIGGER / SECRET POSTURE (Tech Lead Finding 1, RATIFIED):
+#   - AUTO path-filtered `pull_request` (NEVER `pull_request_target`). C1's only literal
+#     gate was "the scoped LITELLM_EVAL_KEY exists" — it does (T-90, 2026-07-10) — so the
+#     auto-trigger legitimately turns on now. A dispatch-only gate re-creates the exact
+#     "stated invariant the system does not enforce" drift this whole track closes.
+#   - ONLY the scoped, budget-capped virtual key `LITELLM_EVAL_KEY` (T-90:
+#     [triage-model, fallback-model], $7 USD/30d cap) enters this job's env. The LiteLLM
+#     MASTER key is never referenced here (C1 hard rule / non-negotiable #10).
+#   - FORK PRs neutral green-skip: GitHub withholds secrets + a write token from fork
+#     `pull_request` runs, so a fork PR cannot (and must not) run the live steps. The job
+#     still runs and concludes green under the SAME check context (so a required check —
+#     T-94 — is not wedged); a maintainer re-runs via workflow_dispatch as merge evidence.
+#
+# NOT MERGE-BLOCKING YET: registering this as a required branch-protection status check
+# is T-94 (founder/admin, build tail, AFTER a grader!=target baseline is re-captured).
+# Today this gate is wired + auto-triggered but informational.
+#
+# FQ-70 (fallback-model Anthropic-credit-exhaustion) HANDLING — the explicit call:
+#   The ADR's real gate design is grader != target (§5.3): target=triage-model,
+#   judge=fallback-model. `fallback-model` is currently 400ing on litellm-staging (FQ-70,
+#   an external billing issue, NOT a harness defect). We DELIBERATELY keep grader!=target
+#   (rejecting the "downgrade to judge==target=triage-model" shortcut — that would trip
+#   live-run.sh's own exit-3 §5.3 guard and violate the ADR). Instead a JUDGE PREFLIGHT
+#   runs FIRST and, on a judge-unavailable response, NEUTRAL green-skips the metered run
+#   with a LOUD, legible message that distinguishes "expected FQ-70 credit-exhaustion"
+#   from "if fallback-model is healthy, THIS IS A REAL FAILURE". So a broken judge yields
+#   a dormant/neutral gate, never a misleading red, and never a silent pass. When FQ-70
+#   resolves, this same workflow starts evaluating for real with ZERO code change.
+
+on:
+  pull_request:
+    branches: [main]
+    # Path filter (ADR §3, verbatim) — the primary cost lever. Unrelated PRs cost nothing.
+    paths:
+      - 'evals/**'
+      - 'src/inngest/ticket-triage.ts'
+      - 'src/inngest/ticket-respond.ts'
+      - 'src/inngest/kb-learn.ts'
+      - 'src/config/model-allowlist.ts'
+  workflow_dispatch:
+    inputs:
+      target_alias:
+        description: 'LiteLLM alias under test (all 3 evals route through it today)'
+        required: false
+        default: 'triage-model'
+      judge_alias:
+        description: 'LiteLLM grader alias — MUST differ from target (§5.3); default is the intended fallback-model (currently FQ-70-blocked)'
+        required: false
+        default: 'fallback-model'
+      strict_new:
+        description: 'Block on a new (not-in-baseline) test that fails (compare-baseline --strict-new)'
+        required: false
+        default: 'false'
+
+# Least privilege (Finding 3 — extended to EVERY secret/permission, not just the key):
+#   contents: read        — checkout only.
+#   pull-requests: write  — the PR-comment reporter (a fork PR's read-only token cannot
+#                           satisfy this, a second independent reason for the sibling shape).
+#   actions: read         — `gh run download` of the latest green baseline artifact from
+#                           the capture-eval-baseline.yml workflow (cross-workflow read).
+permissions:
+  contents: read
+  pull-requests: write
+  actions: read
+
+# Finding 6: a prompt-touching PR pushed rapidly must not stack N concurrent METERED live
+# runs — the cost model assumes one run per PR head. Cancel the superseded run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-eval-gate:
+    # Stable check-context name — T-94 registers THIS name as the required check, and the
+    # fork/skip paths all report under it so branch protection is never wedged (C4).
+    name: live-eval-gate
+    runs-on: ubuntu-latest
+    env:
+      TARGET_ALIAS: ${{ github.event.inputs.target_alias || 'triage-model' }}
+      JUDGE_ALIAS: ${{ github.event.inputs.judge_alias || 'fallback-model' }}
+      LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
+      OUT_DIR: /tmp/eval-live
+      STRICT_NEW: ${{ github.event.inputs.strict_new || 'false' }}
+    steps:
+      # --- STEP 0: fork detection (no secret touched). Always runs so the check context
+      #     always reports, even for a fork PR (C4 non-wedge).
+      - name: Detect fork PR (secrets unavailable on a fork → neutral green-skip)
+        id: forkcheck
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "is_fork=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Eval Gate neutral-skip (fork PR)::Fork PR (${{ github.event.pull_request.head.repo.full_name }} != ${{ github.repository }}). The live gate holds a scoped secret + needs pull-requests:write, both withheld from fork pull_request runs. Neutral green-skip — NOT a failure. A maintainer re-runs via workflow_dispatch as merge evidence."
+          else
+            echo "is_fork=false" >> "$GITHUB_OUTPUT"
+            echo "Same-repo run (or workflow_dispatch) — the live gate is eligible to run."
+          fi
+
+      - name: Checkout
+        if: steps.forkcheck.outputs.is_fork != 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 20
+        if: steps.forkcheck.outputs.is_fork != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      # --- STEP 1: scoped-key presence. Absent on a same-repo run = a config problem, but
+      #     we neutral-skip (loud) rather than red — the gate is not a required check yet and
+      #     a missing key is not a quality signal. The judge preflight below is the real
+      #     "can we run" probe.
+      - name: Guard — scoped eval key present (NOT the master key)
+        id: keyguard
+        if: steps.forkcheck.outputs.is_fork != 'true'
+        env:
+          LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$OUT_DIR"
+          if [ -z "${LITELLM_EVAL_KEY:-}" ]; then
+            echo "key_present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Eval Gate neutral-skip (no scoped key)::LITELLM_EVAL_KEY is absent from this job's env. On a same-repo run this is a config issue (provision T-90's scoped key as a repo secret). The gate did NOT evaluate quality — this is NOT a regression signal."
+            {
+              echo "### Eval Gate (live) — SKIPPED :warning:"
+              echo ""
+              echo "\`LITELLM_EVAL_KEY\` (T-90 scoped virtual key) is not available to this run, so the live gate could not run."
+              echo "**This is not a quality signal.** No regression is implied."
+            } > "$OUT_DIR/gate-comment.md"
+          else
+            echo "key_present=true" >> "$GITHUB_OUTPUT"
+            echo "::add-mask::$LITELLM_EVAL_KEY"
+            echo "Scoped eval key present."
+          fi
+
+      # --- STEP 2: JUDGE PREFLIGHT (runs FIRST, before any metered eval — a dormant run
+      #     therefore spends ~0 metered calls). One minimal completion against the JUDGE
+      #     alias. On a non-2xx we neutral-skip LOUDLY and legibly (advisor Finding 1:
+      #     narrow-and-loud, so this new skip surface can't itself become a silent
+      #     over-report the way the T-84 harness did).
+      - name: Judge preflight — is the grader alias actually reachable? (FQ-70 detector)
+        id: preflight
+        if: steps.forkcheck.outputs.is_fork != 'true' && steps.keyguard.outputs.key_present == 'true'
+        env:
+          LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          echo "::add-mask::$LITELLM_EVAL_KEY"
+          echo "Preflighting judge alias '$JUDGE_ALIAS' (grader != target, §5.3) at $LITELLM_BASE ..."
+          HTTP=$(curl -s -o "$OUT_DIR/judge-preflight.json" -w "%{http_code}" --max-time 30 \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\":\"$JUDGE_ALIAS\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+            "$LITELLM_BASE/chat/completions" || echo "000")
+          BODY_SNIPPET="$(head -c 400 "$OUT_DIR/judge-preflight.json" 2>/dev/null || true)"
+          echo "Judge preflight -> HTTP ${HTTP} for model=$JUDGE_ALIAS"
+          echo "Body (first 400 chars): ${BODY_SNIPPET}"
+          case "$HTTP" in
+            2*)
+              echo "judge_ok=true" >> "$GITHUB_OUTPUT"
+              echo "Judge alias reachable — proceeding to the metered live run."
+              ;;
+            *)
+              echo "judge_ok=false" >> "$GITHUB_OUTPUT"
+              echo "::warning title=Eval Gate neutral-skip (judge unavailable)::Judge alias '$JUDGE_ALIAS' returned HTTP ${HTTP}. Gate did NOT evaluate quality. If this is FQ-70 (Anthropic credit-exhaustion on fallback-model) it is EXPECTED and NOT a signal. If '$JUDGE_ALIAS' is supposed to be healthy, THIS IS A REAL FAILURE — investigate the judge alias, do not ignore this skip."
+              {
+                echo "### Eval Gate (live) — SKIPPED (judge unavailable) :warning:"
+                echo ""
+                echo "The gate runs **grader != target** (ADR-0007 §5.3): target \`${TARGET_ALIAS}\`, judge \`${JUDGE_ALIAS}\`."
+                echo "The judge alias preflight returned **HTTP ${HTTP}**, so the gate **did not evaluate prompt quality** this run."
+                echo ""
+                echo "\`\`\`"
+                echo "${BODY_SNIPPET}"
+                echo "\`\`\`"
+                echo ""
+                echo "- If this is **FQ-70** (\`fallback-model\` Anthropic-credit-exhaustion on litellm-staging): **expected, not a regression signal.** The gate is dormant until FQ-70 resolves, at which point it evaluates automatically with no code change."
+                echo "- If \`${JUDGE_ALIAS}\` is supposed to be **healthy**: this skip is a **real failure** — investigate the judge alias."
+                echo ""
+                echo "_This gate is wired but not a required merge check yet (T-94). A neutral skip does not block merge._"
+              } > "$OUT_DIR/gate-comment.md"
+              ;;
+          esac
+
+      # --- STEP 3: the metered live run (only if the judge is actually reachable). Loops
+      #     all three product evals through the shared runner (T-89 + T-91 guards inline),
+      #     continue-on-error PER EVAL so all results.json are produced for the comparison.
+      - name: Run all 3 product evals live (shared runner + T-91 guards)
+        id: liverun
+        if: steps.preflight.outputs.judge_ok == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          echo "::add-mask::$OPENAI_API_KEY"
+          rc=0
+          for EVAL in ticket-triage ticket-respond kb-learn; do
+            echo "::group::Eval $EVAL (target=$TARGET_ALIAS judge=$JUDGE_ALIAS)"
+            EVAL_FILE="evals/${EVAL}.yaml" \
+            TARGET_ALIAS="$TARGET_ALIAS" \
+            JUDGE_ALIAS="$JUDGE_ALIAS" \
+            LITELLM_BASE="$LITELLM_BASE" \
+            OUT_DIR="$OUT_DIR" \
+            OPENAI_API_KEY="$OPENAI_API_KEY" \
+            bash scripts/eval/live-run.sh || { echo "::warning::eval $EVAL returned nonzero (real red test, or a T-91 guard trip) — continuing so every eval's results are captured for the baseline comparison"; rc=1; }
+            echo "::endgroup::"
+          done
+          echo "liverun_rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "live-run loop rc=$rc (nonzero = at least one eval failed or tripped a guard; the comparison step is the gate decision, not this rc)"
+
+      # --- STEP 4: fetch the LATEST successful green baseline artifact dynamically (advisor
+      #     Finding 2 — never hardcode a run id). Self-heals: today it pulls the judge==target
+      #     baseline (unused, since the preflight skips before we ever get here while FQ-70 is
+      #     live); post-FQ-70, once a grader!=target baseline is re-captured, it pulls THAT.
+      - name: Download latest green baseline (from capture-eval-baseline.yml)
+        id: baseline
+        if: steps.preflight.outputs.judge_ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          RUN_ID=$(gh run list --workflow=capture-eval-baseline.yml --status=success \
+            --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          if [ -z "${RUN_ID:-}" ]; then
+            echo "baseline_found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No successful capture-eval-baseline.yml run found — cannot compare. (A baseline must be captured before the gate can decide; ADR §5.5.)"
+            exit 0
+          fi
+          echo "Latest green baseline run id: $RUN_ID"
+          rm -rf /tmp/baseline && mkdir -p /tmp/baseline
+          gh run download "$RUN_ID" --dir /tmp/baseline || true
+          BASELINE_JSON=$(find /tmp/baseline -name baseline.json | head -1 || true)
+          if [ -z "${BASELINE_JSON:-}" ]; then
+            echo "baseline_found=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::baseline.json not present in artifact of run $RUN_ID."
+            exit 0
+          fi
+          {
+            echo "baseline_found=true"
+            echo "baseline_path=$BASELINE_JSON"
+            echo "baseline_run_id=$RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+          echo "Using baseline: $BASELINE_JSON (from run $RUN_ID)"
+
+      # --- STEP 5: baseline-relative comparison (T-92). Writes the PR-comment body and
+      #     records pass/fail as an output. Does NOT itself fail the job — gating is
+      #     decoupled from reporting (Finding 3); the enforce step (STEP 8) is the decision.
+      - name: Compare current run vs baseline (baseline-relative, T-92)
+        id: compare
+        if: steps.preflight.outputs.judge_ok == 'true' && steps.baseline.outputs.baseline_found == 'true'
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          CUR=("$OUT_DIR"/ticket-triage-results.json "$OUT_DIR"/ticket-respond-results.json "$OUT_DIR"/kb-learn-results.json)
+          EXIST=(); for f in "${CUR[@]}"; do [ -f "$f" ] && EXIST+=("$f"); done
+          STRICT_FLAG=""; [ "$STRICT_NEW" = "true" ] && STRICT_FLAG="--strict-new"
+          echo "Comparing ${#EXIST[@]} current results file(s) against ${{ steps.baseline.outputs.baseline_path }}"
+          set +e
+          python3 scripts/eval/compare-baseline.py compare \
+            --baseline "${{ steps.baseline.outputs.baseline_path }}" \
+            --current "${EXIST[@]}" $STRICT_FLAG | tee "$OUT_DIR/compare.out"
+          GATE_RC=${PIPESTATUS[0]}
+          set -e
+          echo "gate_rc=$GATE_RC" >> "$GITHUB_OUTPUT"
+          {
+            if [ "$GATE_RC" = "0" ]; then
+              echo "### Eval Gate (live) — PASS :white_check_mark:"
+            else
+              echo "### Eval Gate (live) — FAIL :x:"
+            fi
+            echo ""
+            echo "Baseline-relative (zero regressions vs last green baseline), grader != target."
+            echo "Target \`${TARGET_ALIAS}\` · judge \`${JUDGE_ALIAS}\` · baseline run \`${{ steps.baseline.outputs.baseline_run_id }}\`."
+            echo ""
+            echo "\`\`\`"
+            cat "$OUT_DIR/compare.out"
+            echo "\`\`\`"
+            echo ""
+            echo "_Not a required merge check yet (T-94)._"
+          } > "$OUT_DIR/gate-comment.md"
+
+      # --- STEP 6: DB persistence (Finding 3 — structurally wired, NON-FATAL, secret-gated).
+      #     Deferred/untested pending BOTH (a) a scoped CI DB credential (Security-Lead-gated,
+      #     not yet provisioned) and (b) eval_gate_runs.case_results (migration 20260709020000,
+      #     pending FQ-71). We produce the EXACT recordEvalGateRun payload (via compare-baseline
+      #     capture, mirroring capture-eval-baseline.yml) so the write is a copy-paste once both
+      #     land — but the INSERT itself is not attempted here, and NOTHING about the gate
+      #     decision depends on this step (it cannot fail the job).
+      - name: Persist run to eval_gate_runs (best-effort, non-blocking — deferred)
+        if: steps.preflight.outputs.judge_ok == 'true'
+        continue-on-error: true
+        env:
+          EVAL_GATE_DB_URL: ${{ secrets.EVAL_GATE_DB_URL }}
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          RESULTS=("$OUT_DIR"/*-results.json)
+          if [ -z "${EVAL_GATE_DB_URL:-}" ]; then
+            echo "DB persistence DEFERRED: no scoped CI DB credential (EVAL_GATE_DB_URL) is provisioned."
+            echo "  - recordEvalGateRun (src/metrics/evalHealth.ts) is the wiring target."
+            echo "  - Also blocked on eval_gate_runs.case_results (migration 20260709020000, pending FQ-71)."
+            echo "  - Finding 3: the gate's merge decision does NOT depend on this write."
+            if [ "${#RESULTS[@]}" -gt 0 ]; then
+              echo "--- recordEvalGateRun payload the write WOULD use (copy-paste once the cred + column land) ---"
+              python3 scripts/eval/compare-baseline.py capture --results "${RESULTS[@]}" --git-sha "${GITHUB_SHA:-}" || true
+            fi
+            exit 0
+          fi
+          echo "EVAL_GATE_DB_URL present, but the DB writer is not yet wired into CI (needs FQ-71's case_results column applied and a small invoker). Skipping the INSERT; non-fatal by design."
+          exit 0
+
+      # --- STEP 7: PR-comment reporter. Runs for pull_request events (not workflow_dispatch,
+      #     which has no PR), non-fork, whenever a comment body exists — pass, fail, or skip.
+      #     `if: always()` so a red compare still posts its report before the enforce step.
+      - name: Post PR comment (per-eval / per-test breakdown or neutral-skip note)
+        if: always() && github.event_name == 'pull_request' && steps.forkcheck.outputs.is_fork != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          if [ -f "$OUT_DIR/gate-comment.md" ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body-file "$OUT_DIR/gate-comment.md" \
+              && echo "Posted PR comment." \
+              || echo "::warning::PR comment post failed (non-fatal — reporting is decoupled from gating)."
+          else
+            echo "No gate-comment.md produced (e.g. no results yet) — nothing to post."
+          fi
+
+      # --- STEP 8: job summary (so workflow_dispatch runs, which post no PR comment, are
+      #     still legible). Always runs, non-fork.
+      - name: Write job summary
+        if: always() && steps.forkcheck.outputs.is_fork != 'true'
+        run: |
+          set -uo pipefail
+          if [ -f "$OUT_DIR/gate-comment.md" ]; then
+            cat "$OUT_DIR/gate-comment.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "### Eval Gate (live) — no evaluation this run"
+              echo "See the fork/skip notices above."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # --- STEP 9: ENFORCE the gate decision. LAST, so the PR comment already posted. Fails
+      #     the job ONLY on a real baseline regression (compare exit 1). A judge-unavailable
+      #     neutral-skip, a missing baseline, or a fork skip all leave the job GREEN — a
+      #     dormant gate must never be a red gate.
+      - name: Enforce gate result
+        if: steps.preflight.outputs.judge_ok == 'true' && steps.baseline.outputs.baseline_found == 'true'
+        run: |
+          set -uo pipefail
+          GATE_RC="${{ steps.compare.outputs.gate_rc }}"
+          if [ "${GATE_RC:-1}" != "0" ]; then
+            echo "::error title=Eval Gate FAIL::Baseline-relative comparison found a regression (compare exit ${GATE_RC}). See the PR comment / job summary for the per-test breakdown."
+            exit 1
+          fi
+          echo "Eval Gate PASS — zero regressions vs last green baseline."
