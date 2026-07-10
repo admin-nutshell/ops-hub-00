@@ -68,24 +68,20 @@ describe("handleLitellmInternalHealth — live against litellm-staging", () => {
   // Always runs — no secret required. Proves the REAL handler code, hitting a
   // REAL LiteLLM instance, with a wrong key, produces the 503 auth_rejected
   // response the T-97 monitor depends on.
-  it(
-    "returns 503 auth_rejected when the real litellm-staging instance rejects a deliberately-wrong key",
-    async () => {
-      vi.stubEnv("LITELLM_URL", LITELLM_STAGING_EXTERNAL_URL);
-      vi.stubEnv("LITELLM_MASTER_KEY", DELIBERATELY_BAD_KEY);
-      vi.stubEnv("LITELLM_TRIAGE_MODEL", "triage-model");
+  it("returns 503 auth_rejected when the real litellm-staging instance rejects a deliberately-wrong key", async () => {
+    vi.stubEnv("LITELLM_URL", LITELLM_STAGING_EXTERNAL_URL);
+    vi.stubEnv("LITELLM_MASTER_KEY", DELIBERATELY_BAD_KEY);
+    vi.stubEnv("LITELLM_TRIAGE_MODEL", "triage-model");
 
-      const [res, done] = makeRes();
-      void handleLitellmInternalHealth({} as http.IncomingMessage, res);
-      const { status, body } = await done;
+    const [res, done] = makeRes();
+    void handleLitellmInternalHealth({} as http.IncomingMessage, res);
+    const { status, body } = await done;
 
-      expect(status).toBe(503);
-      const parsed = JSON.parse(body) as { litellm_internal: string; httpStatus?: number };
-      expect(parsed.litellm_internal).toBe("auth_rejected");
-      expect(parsed.httpStatus).toBe(401);
-    },
-    15_000
-  );
+    expect(status).toBe(503);
+    const parsed = JSON.parse(body) as { litellm_internal: string; httpStatus?: number };
+    expect(parsed.litellm_internal).toBe("auth_rejected");
+    expect(parsed.httpStatus).toBe(401);
+  }, 15_000);
 
   // Self-skips without failing CI when LITELLM_MASTER_KEY is absent (pr-checks.yml's
   // hermetic pull_request trigger never sets it — same convention as every other

@@ -44,10 +44,7 @@ export const server = http.createServer((req, res) => {
     void handleLitellmHealth(req, res);
     return;
   }
-  if (
-    (req.method === "GET" || req.method === "HEAD") &&
-    req.url === "/health/litellm-internal"
-  ) {
+  if ((req.method === "GET" || req.method === "HEAD") && req.url === "/health/litellm-internal") {
     void handleLitellmInternalHealth(req, res);
     return;
   }
