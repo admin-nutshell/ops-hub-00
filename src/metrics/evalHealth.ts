@@ -77,6 +77,20 @@ export async function getEvalHealth(pool: Pool): Promise<EvalHealthResult> {
   };
 }
 
+// One per-test outcome, stored in eval_gate_runs.case_results (JSONB array) for
+// run_type='llm_rubric' rows (T-92 / ADR-0007 §5.4(b)). `test_id` is the stable
+// identity the baseline-relative gate keys on — "<eval>::<description>" (see
+// scripts/eval/compare-baseline.py, which produces exactly this shape). This is
+// what lets the gate say "test X newly fails" instead of only "the count dropped"
+// — the aggregate total/passed cannot express a swap-regression, this can.
+export type EvalCaseResult = {
+  testId: string;
+  eval: string;
+  description: string;
+  passed: boolean;
+  score: number | null;
+};
+
 export type EvalGateRunRecord = {
   projectId?: string | null;
   runType: "schema_validation" | "llm_rubric";
@@ -87,17 +101,23 @@ export type EvalGateRunRecord = {
   workflowRunUrl?: string | null;
   ciRunAt: string;
   notes?: string | null;
+  // Per-test detail (T-92). Persisted as JSONB. Leave undefined/null for
+  // schema_validation rows (they have no per-test quality outcome), matching the
+  // pass_rate GENERATED column being NULL for those rows. REQUIRES the
+  // eval_gate_runs.case_results column (migration 20260709020000_t92_*, founder-
+  // applied via FQ-71) — a pre-migration DB will reject the INSERT below.
+  caseResults?: EvalCaseResult[] | null;
 };
 
 // Writer, provided now so the day the real LLM-rubric gate exists it has
 // somewhere to write to without a schema change. NOT called from CI today —
 // wiring it up needs a scoped DB credential in CI (a new GitHub secret) and is
-// Evals Lead/Tech Lead's call once the real gate is built, not this task's.
+// Evals Lead/Tech Lead's call once the real gate is built (T-93), not this task's.
 export async function recordEvalGateRun(pool: Pool, run: EvalGateRunRecord): Promise<void> {
   await pool.query(
     `INSERT INTO eval_gate_runs
-       (project_id, run_type, status, total_cases, passed_cases, git_sha, workflow_run_url, ci_run_at, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+       (project_id, run_type, status, total_cases, passed_cases, git_sha, workflow_run_url, ci_run_at, notes, case_results)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
     [
       run.projectId ?? null,
       run.runType,
@@ -108,6 +128,7 @@ export async function recordEvalGateRun(pool: Pool, run: EvalGateRunRecord): Pro
       run.workflowRunUrl ?? null,
       run.ciRunAt,
       run.notes ?? null,
+      run.caseResults != null ? JSON.stringify(run.caseResults) : null,
     ]
   );
 }

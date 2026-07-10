@@ -2416,4 +2416,111 @@ additive new file + clearly-delimited live-run.sh additions; NO supabase/migrati
 touched, NO eval_gate_runs/baseline-relative logic (T-92), NO CI auto-trigger wiring (T-93,
 gated on T-90/C1). PR #366, self-merged per the standing eval-gate self-merge policy.
 Agent-owned, no founder escalation.
+2026-07-09 [Evals Lead] T-92 — per-test baseline store = JSONB column
+`eval_gate_runs.case_results` (over child-table or LangFuse-backed). This is
+ADR-0007 Finding 4 / Condition C3's recommended per-test path (so the "joint
+Tech Lead" input is already on record). Rationale: closes the swap-masking hole
+with per-test identity (a coarse passed_cases>=baseline check goes green when
+one test breaks and another improves — the exact regression the gate exists to
+catch); smallest delta; aggregate read path (evalHealth.ts/dashboard.ts) untouched;
+aggregate + per-test detail + git_sha stay atomic in one row. LangFuse-backed
+rejected on evidence — grep confirms nothing pushes evals to LangFuse today, so
+that path is build-not-read, on the merge-blocking path. Migration
+20260709020000_t92_eval_gate_case_results.sql authored (nullable additive column,
+jsonb-array CHECK, NO RLS/grant change), NOT self-applied (non-negotiable #3) —
+FQ-71 filed. Baseline-relative "zero regressions vs last green baseline" logic =
+scripts/eval/compare-baseline.py (pure function over files, no secret/DB/network —
+keeps the merge-blocking comparator credential-free, pre-empting Tech Lead
+Finding 3); fail-closed on a dropped/absent baselined test and on a passed→fail
+test; validated on 5 synthetic cases incl. the decisive swap (3/4→3/4 same count
+→ coarse PASS, per-test BLOCK). ADR §7 "no new schema" now CONDITIONAL (one JSONB
+column) — named, still medium. Baseline capture via workflow_dispatch
+capture-eval-baseline.yml using the scoped LITELLM_EVAL_KEY (master key never in
+env), all 3 evals target=judge=triage-model (only healthy scoped config; FQ-70).
+Deferred + named: DB baseline row (needs FQ-71 + CI DB cred/T-93); LangFuse record
+(no eval→LangFuse mechanism exists to follow); grader≠target re-baseline (T-91).
+Agent-owned technical decision, no founder business call. → ADR-0007 §5.4(b)
+```
+
+### 2026-07-10 — T-90 Security Lead sign-off: LITELLM_EVAL_KEY scope/cap APPROVED — T-90 closed
+
+```
+2026-07-10 [Security Lead] T-90 — LITELLM_EVAL_KEY scope/cap review: APPROVED.
+Joint sign-off now complete (Production Manager provisioned + verified 2026-07-10;
+Security Lead review = this entry), per ADR-0007 deciders list + Tech Lead
+Finding 1c / Condition C1. T-90 CLOSED.
+
+Independently verified, not taken from the WORK.md summary:
+- The actual /key/generate payload in .github/workflows/provision-litellm-eval-key.yml
+  (main) matches the record exactly: models=[triage-model, fallback-model],
+  max_budget=7.00 USD, soft_budget=3.00 USD, budget_duration=30d,
+  key_alias=eval-gate-t90 — and, load-bearing: NO user_id, NO team_id, NO
+  permissions field. A plain, non-admin virtual key.
+- The RAW log of run 29066125110 (pulled via gh, not the description of it):
+  /key/info readback confirmed the scope/cap STORED, not just requested
+  (models=fallback-model,triage-model, max_budget=7.0, budget_duration=30d);
+  positive test target (triage-model) HTTP 200; NEGATIVE test HTTP 403,
+  type=key_model_access_denied, "key not allowed to access model. This key can
+  only access models=['triage-model', 'fallback-model']. Tried to access
+  meta/llama-3.3-70b-instruct" — dispositive because the same run first proved
+  the out-of-scope alias healthy under the master key (HTTP 200), so the 403
+  is scope enforcement, not a broken alias.
+- Secret hygiene in that log: zero key material (grep for key-shaped strings =
+  0 hits); both secrets add-mask'd and GitHub-masked (***); /key/generate and
+  /key/info responses printed only after jq del(.key)/del(.token). The workflow
+  is workflow_dispatch-ONLY with permissions: contents:read — the master key
+  has never entered a PR-triggered job's env; the C1 posture is intact.
+- Capability model checked against LiteLLM's documented auth model, not
+  assumed: management routes (/key/generate, /key/delete, /model/new,
+  /model/delete, /user/new) require the master key / proxy_admin. This key has
+  no admin association, so it cannot mint or delete keys, cannot register or
+  remove models, cannot touch routing. Completion-class routes (including
+  /embeddings etc.) are model-allowlist-scoped and spend-metered against the
+  same max_budget.
+
+Blast-radius assessment (ADR-0007 §3 threat model — the key leaks via a
+malicious same-repo PR once T-93 wires it): worst case is ~$7 USD/30d of
+completions on two cheap staging aliases (plus a small in-flight overshoot
+window inherent to LiteLLM's spend check — cents, not dollars), after which
+the key blocks. No routing mutation, no key minting, no tenant data (staging
+LiteLLM is stateless completion routing; no customer data behind it). The
+residual harm is an availability nuisance: an attacker can burn the budget and
+lock the eval gate out until reset/re-provision — annoying, recoverable, and
+exactly the "assume the key can leak, bound the blast radius" posture the Tech
+Lead ratified. Consistent with non-negotiable #10 as read by Finding 1: this
+is a staging, capability-scoped, budget-capped key, not a production LLM key.
+
+Scope minimality: correct. Exactly target + judge — the minimum ADR §5.3
+(grader != target) permits; narrower is impossible without breaking the gate's
+own design. Broadening (e.g. T-96 KB Learn unpin adding a vetted alias)
+correctly requires a NEW key value + fresh gh secret set per the workflow's
+own header — a re-run cannot silently widen the existing secret's scope. Good.
+
+Non-blocking observations (recorded, none gate closure):
+- O1: /key/info is called with the raw key in a URL query string
+  (?key=<value>). Masked in Actions logs, but query strings can land in our
+  own reverse-proxy (Traefik/Coolify) access logs server-side. Low severity
+  (own infra, HTTPS, $7-bounded key). Next time this workflow is touched,
+  switch to the self-info form (key as its own Bearer, no query param). Not
+  worth a rotation on its own.
+- O2: soft_budget read back EMPTY at /key/info's top-level path (the
+  /key/generate response shows it stored in the key's budget table, 3.0).
+  Since /alerting/settings shows no delivery channel configured anyway, treat
+  soft_budget as a recorded threshold only — the max_budget hard cap is the
+  enforced backstop, and THAT is confirmed stored. Revisit if an alert
+  channel is ever wired.
+- O3: the key has no expiry (duration unset). Acceptable for a CI secret with
+  a 30d budget reset; rotate on suspicion. It gets re-reviewed at T-93 when
+  it first enters PR-triggered context — that review is already scheduled and
+  is where per-job env least-privilege (every secret, not just this one —
+  Tech Lead Finding 3 / C2) gets checked.
+
+The judge-alias (fallback-model) HTTP 400 is Anthropic credit exhaustion on
+staging — a provider/billing issue in FQ-70's territory, not a scoping defect;
+the key IS correctly scoped to include the judge alias. Correctly non-gating.
+
+Scope of this sign-off: the KEY ITSELF (scope, cap, storage path, test
+hygiene). The CI wiring that will consume it is T-93 and gets its own security
+review. No FOUNDER_QUEUE escalation — technical scoping review, no business
+decision; the prod-fallback finding is already FQ-70, not duplicated here.
 ```
