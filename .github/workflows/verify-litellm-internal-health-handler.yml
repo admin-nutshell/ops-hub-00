@@ -1,0 +1,53 @@
+name: Verify handleLitellmInternalHealth against real litellm-staging (T-97)
+
+# One-shot, workflow_dispatch-only verification: runs the REAL
+# handleLitellmInternalHealth code (src/healthLitellmInternal.ts) against the
+# REAL litellm-staging instance -- not a mock -- proving both halves of the
+# T-97 exit criteria ("fires on a simulated/known auth-reject and clears on a
+# good path"):
+#   1. A deliberately-wrong bearer token -> real 401 from litellm-staging ->
+#      handler maps it to 503 auth_rejected. No secret used for this half.
+#   2. The real LITELLM_MASTER_KEY -> real 200 from litellm-staging -> handler
+#      maps it to 200 reachable_and_authenticated.
+#
+# Deliberately NOT part of `pnpm test` / pr-checks.yml / main-deploy.yml: an
+# earlier version of this test ran unconditionally under plain `vitest run`,
+# which main-deploy.yml's "Unit tests" step also executes before every
+# staging deploy -- a transient network hiccup against litellm-staging turned
+# a verification test into a flaky deploy-blocking dependency the first time
+# it ran there. The test file now self-skips unless T97_LIVE_PROBE=1, and
+# this workflow is the ONLY place that sets it.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Live-run the real handler (bad key + good key)
+    runs-on: ubuntu-latest
+    env:
+      T97_LIVE_PROBE: "1"
+      LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Guard — required secret present
+        run: |
+          [ -n "$LITELLM_MASTER_KEY" ] || { echo "::error::LITELLM_MASTER_KEY not set — the good-key half cannot run."; exit 1; }
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Live-run the real handler against real litellm-staging (bad key + good key)
+        run: pnpm exec vitest run src/integration/litellm-internal-health.integration.test.ts
