@@ -1,8 +1,7 @@
 ---
 Title: "LiteLLM internal-auth probe failing on ops-hub-prod"
-date: 2026-07-10T05:08:26Z
-resolved: true
-resolvedWhen: 2026-07-10T05:12:38Z
+date: 2026-07-10T20:42:21Z
+resolved: false
 severity: down
 affected:
   - Ops Hub Production
