@@ -1,0 +1,127 @@
+name: T-92 — capture green eval baseline (all 3 evals, live via LiteLLM)
+
+# T-92 (ADR-0007 §5.5): capture the GREEN BASELINE the real LLM-rubric gate
+# compares against. Runs ALL THREE product evals (ticket-triage, ticket-respond,
+# kb-learn) live against their production target alias via the shared runner
+# (scripts/eval/live-run.sh, T-89), normalizes the per-test results into a single
+# baseline document (scripts/eval/compare-baseline.py capture, T-92), and uploads
+# it as an artifact. "A gate with no baseline is just noise" (ADR §5.5).
+#
+# SCOPED KEY, NOT THE MASTER KEY (ADR C1 / T-90): this reads only
+# LITELLM_EVAL_KEY — the budget-capped virtual key scoped to
+# [triage-model, fallback-model] provisioned in T-90. The master key is NOT in
+# this job's env. This is a MANUAL workflow_dispatch (a maintainer fires it to
+# mint/refresh a baseline); it is NOT the auto `pull_request` gate (that is T-93,
+# still gated on C1) and is NOT wired to auto-trigger.
+#
+# JUDGE == TARGET FOR NOW (documented limitation, re-baseline required):
+# all three evals route through `triage-model` in production today
+# (src/config/model-allowlist.ts), so TARGET_ALIAS=triage-model for all three.
+# The judge also uses triage-model — grader != target (ADR §5.3, enforced by T-91)
+# needs a SECOND healthy alias, but the only other scoped alias, `fallback-model`,
+# is currently broken on litellm-staging (Anthropic credit exhaustion, FQ-70).
+# So this captures a valid green baseline under the ONLY healthy config available.
+# WHEN T-91 lands grader!=target AND a healthy judge alias exists, the baseline
+# MUST be re-captured under the gate's real config before the gate blocks anything.
+#
+# DB WRITE IS DEFERRED (not done here): recording the baseline row into
+# eval_gate_runs needs (a) the case_results column (migration 20260709020000,
+# founder-applied via FQ-71) and (b) a scoped ops_hub_app DB credential in CI
+# (T-93 / Finding 3). This job prints the exact recordEvalGateRun payload so that
+# write is a copy-paste once both land. Recording to LangFuse is likewise deferred:
+# no eval->LangFuse push mechanism exists today (the runner only prints results);
+# the durable baseline evidence this job produces is the run permalink + artifact.
+#
+# READ-ONLY from an infra standpoint: no Coolify mutation, no schema change.
+# It DOES make real (metered, ~$0.03) LLM calls against litellm-staging.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_alias:
+        description: "LiteLLM alias under test (all 3 evals route through it today)"
+        required: false
+        default: "triage-model"
+      judge_alias:
+        description: "LiteLLM grader alias (== target until a 2nd healthy alias exists; see FQ-70)"
+        required: false
+        default: "triage-model"
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    name: Run all 3 evals live and capture the green baseline
+    runs-on: ubuntu-latest
+    env:
+      LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+      TARGET_ALIAS: ${{ github.event.inputs.target_alias || 'triage-model' }}
+      JUDGE_ALIAS: ${{ github.event.inputs.judge_alias || 'triage-model' }}
+      LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
+      OUT_DIR: /tmp/eval-live
+    steps:
+      - name: Guard — scoped eval key present (NOT the master key)
+        run: |
+          [ -n "$LITELLM_EVAL_KEY" ] || { echo "::error::LITELLM_EVAL_KEY not set — provision T-90 first"; exit 1; }
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Sanity-check LITELLM_EVAL_KEY against /v1/models before spending eval calls
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$LITELLM_EVAL_KEY"
+          HTTP=$(curl -s -o /tmp/models.json -w "%{http_code}" --max-time 15 \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            "$LITELLM_BASE/models")
+          echo "GET $LITELLM_BASE/models with LITELLM_EVAL_KEY -> HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            echo "Aliases visible to the scoped key:"; jq -r '.data[]?.id' /tmp/models.json 2>/dev/null || cat /tmp/models.json
+          else
+            echo "::warning::LITELLM_EVAL_KEY not usable against litellm-staging (HTTP $HTTP) — the eval steps will fail identically. Credential/scope problem, not an eval-file problem."
+          fi
+
+      - name: Run all three product evals via the shared runner (scripts/eval/live-run.sh)
+        env:
+          OPENAI_API_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$OPENAI_API_KEY"
+          for EVAL in ticket-triage ticket-respond kb-learn; do
+            echo "::group::Eval $EVAL (target=$TARGET_ALIAS judge=$JUDGE_ALIAS)"
+            EVAL_FILE="evals/${EVAL}.yaml" \
+            TARGET_ALIAS="$TARGET_ALIAS" \
+            JUDGE_ALIAS="$JUDGE_ALIAS" \
+            LITELLM_BASE="$LITELLM_BASE" \
+            OUT_DIR="$OUT_DIR" \
+            OPENAI_API_KEY="$OPENAI_API_KEY" \
+            bash scripts/eval/live-run.sh
+            echo "::endgroup::"
+          done
+
+      - name: Capture + normalize the green baseline (per-test identity, T-92)
+        run: |
+          set -euo pipefail
+          python3 scripts/eval/compare-baseline.py capture \
+            --results "$OUT_DIR"/ticket-triage-results.json \
+                      "$OUT_DIR"/ticket-respond-results.json \
+                      "$OUT_DIR"/kb-learn-results.json \
+            --git-sha "$GITHUB_SHA" \
+            --out "$OUT_DIR/baseline.json"
+
+      - name: Upload baseline + raw results as an artifact (durable capture evidence)
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-baseline-${{ github.sha }}
+          path: |
+            /tmp/eval-live/baseline.json
+            /tmp/eval-live/*-results.json
+          if-no-files-found: warn
+          retention-days: 90

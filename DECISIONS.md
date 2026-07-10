@@ -2369,4 +2369,28 @@ T-90 exit criteria met; core scope/cap/negative-test proof is agent-owned and
 does not require founder input. Handing off to Security Lead for the sign-off
 recorded in WORK.md's T-90 exit criteria (ADR-0007 deciders list) — not closed
 out from within this task, per the original plan.
+2026-07-09 [Evals Lead] T-92 — per-test baseline store = JSONB column
+`eval_gate_runs.case_results` (over child-table or LangFuse-backed). This is
+ADR-0007 Finding 4 / Condition C3's recommended per-test path (so the "joint
+Tech Lead" input is already on record). Rationale: closes the swap-masking hole
+with per-test identity (a coarse passed_cases>=baseline check goes green when
+one test breaks and another improves — the exact regression the gate exists to
+catch); smallest delta; aggregate read path (evalHealth.ts/dashboard.ts) untouched;
+aggregate + per-test detail + git_sha stay atomic in one row. LangFuse-backed
+rejected on evidence — grep confirms nothing pushes evals to LangFuse today, so
+that path is build-not-read, on the merge-blocking path. Migration
+20260709020000_t92_eval_gate_case_results.sql authored (nullable additive column,
+jsonb-array CHECK, NO RLS/grant change), NOT self-applied (non-negotiable #3) —
+FQ-71 filed. Baseline-relative "zero regressions vs last green baseline" logic =
+scripts/eval/compare-baseline.py (pure function over files, no secret/DB/network —
+keeps the merge-blocking comparator credential-free, pre-empting Tech Lead
+Finding 3); fail-closed on a dropped/absent baselined test and on a passed→fail
+test; validated on 5 synthetic cases incl. the decisive swap (3/4→3/4 same count
+→ coarse PASS, per-test BLOCK). ADR §7 "no new schema" now CONDITIONAL (one JSONB
+column) — named, still medium. Baseline capture via workflow_dispatch
+capture-eval-baseline.yml using the scoped LITELLM_EVAL_KEY (master key never in
+env), all 3 evals target=judge=triage-model (only healthy scoped config; FQ-70).
+Deferred + named: DB baseline row (needs FQ-71 + CI DB cred/T-93); LangFuse record
+(no eval→LangFuse mechanism exists to follow); grader≠target re-baseline (T-91).
+Agent-owned technical decision, no founder business call. → ADR-0007 §5.4(b)
 ```
