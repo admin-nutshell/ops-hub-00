@@ -31,3 +31,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.sublime-workspace
+
+# Python bytecode (scripts/eval/*.py — T-89/T-91 eval tooling)
+__pycache__/
+*.pyc
