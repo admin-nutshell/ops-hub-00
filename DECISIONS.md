@@ -2316,7 +2316,9 @@ separate self-contained live config). Verified: generator run against all three 
 (system popped from config + re-delivered as {role:'system'}, 3398/479/1060 chars, 4
 tests + llm-rubric@0.8 preserved each); end-to-end CI dispatch reproduces T-88's 100%
 (4/4) — run 29065282245, prompt_tokens 829–875/call (≈853 expected, vs ~124/call of the
-25% no-instructions bug). Out of scope per T-89: calibration guards (T-91), per-test
+25% no-instructions bug); and a second-eval spot-check on ticket-respond (temp 0.3, no
+max_tokens, free-form) run 29065588894 also 100% (4/4), proving "parameterized for all
+three" isn't aspirational. PR #356. Out of scope per T-89: calibration guards (T-91), per-test
 baseline store (T-92), CI auto-trigger (T-93, gated on T-90's virtual key). Agent-owned,
 no founder escalation.
 ```
