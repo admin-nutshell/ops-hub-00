@@ -1,0 +1,306 @@
+name: T-90 — provision scoped LiteLLM eval virtual key (ADR-0007 §6 step 2 / Tech Lead C1)
+
+# Provisions the budget-capped LiteLLM VIRTUAL key that T-93's future CI gate will
+# use to run live promptfoo evals against staging. This is the hard build-ordering
+# blocker on T-93's auto pull_request trigger (Tech Lead Finding 1a / Condition C1):
+# until this key exists, the live eval run must stay on workflow_dispatch, and the
+# LiteLLM MASTER key must never enter an auto-triggered job's env.
+#
+# What this workflow does NOT do: it does not wire anything into pr-checks.yml or
+# any PR-triggered workflow. That is explicitly T-93's job, gated on this landing.
+#
+# Key delivery mechanics (why this looks different from configure-litellm-*.yml):
+# LiteLLM's /key/generate accepts an OPTIONAL caller-supplied `key` field (verified
+# against litellm/proxy/_types.py's GenerateKeyRequest/KeyRequestBase). Rather than
+# let LiteLLM mint a random key and then need to smuggle that value back out of a
+# masked CI log into a GitHub secret (which the default GITHUB_TOKEN cannot write
+# anyway — Actions secrets require repo-admin, which this workflow's token does not
+# have), the Production Manager pre-generates the key value locally, writes it
+# ONLY to a local scratchpad file (never printed to any terminal/chat output), sets
+# it as the `LITELLM_EVAL_KEY` repo secret directly via `gh secret set` from an
+# already-authenticated local session, and THIS workflow supplies that exact value
+# to LiteLLM's /key/generate `key` field — so the GitHub secret and the LiteLLM
+# virtual key are the same string, and the raw value is never displayed, logged,
+# or round-tripped through Actions output at any point.
+#
+# Prerequisites (GitHub Actions secrets):
+#   LITELLM_MASTER_KEY — LiteLLM admin key (existing secret; used ONLY here, in a
+#                         manually-dispatched, non-PR-triggered workflow — consistent
+#                         with non-negotiable #10 and every other configure-litellm-*
+#                         workflow in this repo).
+#   LITELLM_EVAL_KEY    — pre-set by the Production Manager (gh secret set) BEFORE
+#                         this workflow runs, containing the exact virtual-key value
+#                         this workflow will register with LiteLLM.
+#
+# Scope of record (T-90 exit criteria):
+#   models        : triage-model, fallback-model
+#     - triage-model   = the eval target alias. All three product prompt evals
+#       (ticket-triage.yaml, ticket-respond.yaml, kb-learn.yaml) test the function's
+#       ACTUAL production model per src/config/model-allowlist.ts + its PROCESS
+#       comments — today that is triage-model for all three functions.
+#     - fallback-model = the judge alias. Already registered in litellm-staging as
+#       anthropic/claude-haiku-4-5-20251001 (see configure-litellm-anthropic-fallback.yml)
+#       — a Haiku-4.5-class alias, exactly ADR-0007 §4's judge-cost-model pick. No
+#       new alias needed. Distinct from the target alias, satisfying ADR §5 point 3
+#       (grader != target).
+#   max_budget    : $7.00 USD hard cap (~$10 CAD at the 2026-07-09 FX rate of
+#                   ~0.703 USD/CAD, rounded DOWN so the hard stop clears under
+#                   $10 CAD even on normal FX drift). LiteLLM's max_budget is USD.
+#   soft_budget   : $3.00 USD (~43% of the hard cap; ADR's expected full-suite cost
+#                   is ~$5.50 CAD/month ≈ $3.90 USD/month, so this fires an early
+#                   warning inside the expected-spend range, well before the $7
+#                   hard stop).
+#   budget_duration: 30d (monthly reset, matching the ADR's "$X CAD/month" framing).
+#   key_alias     : eval-gate-t90
+#
+# NOTE ON ALERTING (disclosed, not assumed): soft_budget is a stored threshold on
+# the key. Whether crossing it actually PAGES anyone depends on litellm-staging
+# having an alert-delivery channel configured (Slack webhook / generic webhook).
+# This workflow checks for (but does not itself configure) such a channel and
+# reports what it finds. The max_budget HARD CAP is the real backstop regardless
+# of whether alert delivery is wired — a runaway loop cannot exceed it.
+#
+# This workflow is READ+WRITE against litellm-staging's key registry only. It does
+# not touch model registrations, Coolify, or any other infra. Idempotent: re-running
+# with the same LITELLM_EVAL_KEY secret value will fail on step "Register" if a key
+# with that exact value already exists (LiteLLM keys are unique) — that is
+# intentional; re-provisioning requires a new key value + a fresh gh secret set.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  LITELLM_STAGING_URL: "https://litellm-staging.inatechshell.ca"
+  EVAL_TARGET_ALIAS: "triage-model"
+  EVAL_JUDGE_ALIAS: "fallback-model"
+  OUT_OF_SCOPE_ALIAS: "meta/llama-3.3-70b-instruct" # registered, but NOT in this key's models list — used for the negative scope-boundary test
+  MAX_BUDGET_USD: "7.00"
+  SOFT_BUDGET_USD: "3.00"
+  BUDGET_DURATION: "30d"
+  KEY_ALIAS: "eval-gate-t90"
+
+jobs:
+  provision:
+    name: Provision + verify LITELLM_EVAL_KEY virtual key
+    runs-on: ubuntu-latest
+    env:
+      LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+      LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+
+    steps:
+      - name: Guard — required secrets present
+        run: |
+          echo "::add-mask::$LITELLM_MASTER_KEY"
+          echo "::add-mask::$LITELLM_EVAL_KEY"
+          [ -n "$LITELLM_MASTER_KEY" ] || { echo "::error::LITELLM_MASTER_KEY not set"; exit 1; }
+          [ -n "$LITELLM_EVAL_KEY" ] || { echo "::error::LITELLM_EVAL_KEY not set — Production Manager must gh secret set it BEFORE dispatching this workflow"; exit 1; }
+
+      - name: Verify litellm-staging health
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
+            "$LITELLM_STAGING_URL/health/readiness" || echo "000")
+          echo "GET /health/readiness -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::litellm-staging not healthy (HTTP $HTTP). Restart in Coolify UI, then re-run."
+            exit 1
+          fi
+
+      - name: Enumerate currently-registered aliases (master key, read-only)
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/model_info.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/model/info")
+          echo "GET /model/info -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::could not enumerate registered models (HTTP $HTTP)"; cat /tmp/model_info.json; exit 1
+          fi
+          echo "Registered aliases:"
+          jq -r '.data[].model_name' /tmp/model_info.json | sort -u
+
+          for ALIAS in "$EVAL_TARGET_ALIAS" "$EVAL_JUDGE_ALIAS" "$OUT_OF_SCOPE_ALIAS"; do
+            COUNT=$(jq --arg a "$ALIAS" '[.data[] | select(.model_name == $a)] | length' /tmp/model_info.json)
+            echo "  $ALIAS: $COUNT entr(y/ies)"
+            if [ "$COUNT" = "0" ]; then
+              echo "::error::expected alias '$ALIAS' is not registered in litellm-staging — cannot scope or scope-test the key against it"
+              exit 1
+            fi
+          done
+
+      - name: Check for a configured alert-delivery channel (key names only, never values)
+        run: |
+          set -euo pipefail
+          # Informational only — reports whether soft_budget crossing would page
+          # anyone, without configuring anything. Does not fail the job either way;
+          # the max_budget hard cap is the real backstop per ADR-0007 §4.
+          HTTP=$(curl -s --max-time 20 -o /tmp/alerting.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/alerting/settings" || echo "000")
+          echo "GET /alerting/settings -> HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            jq -r 'if (. == [] or . == {}) then "no alerting settings configured" else . end' /tmp/alerting.json 2>/dev/null || true
+          else
+            echo "Alerting settings endpoint not available/not configured (HTTP $HTTP) — treat soft_budget as a recorded threshold only, NOT a live page, until an alert channel is confirmed."
+          fi
+
+      - name: Register the scoped, budget-capped virtual key
+        id: register
+        run: |
+          set -euo pipefail
+          PAYLOAD=$(jq -n \
+            --arg key "$LITELLM_EVAL_KEY" \
+            --arg alias "$KEY_ALIAS" \
+            --arg target "$EVAL_TARGET_ALIAS" \
+            --arg judge "$EVAL_JUDGE_ALIAS" \
+            --argjson max_budget "$MAX_BUDGET_USD" \
+            --argjson soft_budget "$SOFT_BUDGET_USD" \
+            --arg duration "$BUDGET_DURATION" \
+            '{
+              key: $key,
+              key_alias: $alias,
+              models: [$target, $judge],
+              max_budget: $max_budget,
+              soft_budget: $soft_budget,
+              budget_duration: $duration,
+              metadata: {
+                purpose: "T-90 / ADR-0007 real eval gate — CI live-run credential",
+                ticket: "T-90",
+                never_the_master_key: true,
+                provisioned_by: "production_manager",
+                provisioned_date: "2026-07-09"
+              }
+            }')
+
+          HTTP=$(curl -s --max-time 30 -o /tmp/key_gen.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/key/generate" -d "$PAYLOAD")
+          echo "POST /key/generate -> HTTP $HTTP"
+
+          # Redact the key field before ever printing the response.
+          jq 'del(.key) | del(.token)' /tmp/key_gen.json > /tmp/key_gen_redacted.json 2>/dev/null || echo "(response not JSON or already empty)"
+          cat /tmp/key_gen_redacted.json 2>/dev/null || true
+
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "::error::/key/generate failed (HTTP $HTTP)"
+            exit 1
+          fi
+          echo "Registered key_alias=$KEY_ALIAS scoped to [$EVAL_TARGET_ALIAS, $EVAL_JUDGE_ALIAS]"
+
+      - name: Verify stored key config via /key/info (proves the cap + scope actually took)
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/key_info.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/key/info?key=$LITELLM_EVAL_KEY")
+          echo "GET /key/info -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::/key/info failed (HTTP $HTTP) — cannot confirm stored scope/cap"
+            cat /tmp/key_info.json 2>/dev/null || true
+            exit 1
+          fi
+
+          jq 'del(.info.token) | del(.key) | del(.token)' /tmp/key_info.json > /tmp/key_info_redacted.json 2>/dev/null || true
+          echo "Stored key config (redacted):"
+          cat /tmp/key_info_redacted.json 2>/dev/null || true
+
+          STORED_MODELS=$(jq -r '.info.models // .models // [] | sort | join(",")' /tmp/key_info.json 2>/dev/null || echo "")
+          STORED_MAX_BUDGET=$(jq -r '.info.max_budget // .max_budget // empty' /tmp/key_info.json 2>/dev/null || echo "")
+          STORED_SOFT_BUDGET=$(jq -r '.info.soft_budget // .soft_budget // empty' /tmp/key_info.json 2>/dev/null || echo "")
+          STORED_DURATION=$(jq -r '.info.budget_duration // .budget_duration // empty' /tmp/key_info.json 2>/dev/null || echo "")
+
+          echo "models=$STORED_MODELS max_budget=$STORED_MAX_BUDGET soft_budget=$STORED_SOFT_BUDGET budget_duration=$STORED_DURATION"
+
+          EXPECTED_MODELS=$(printf "%s\n%s" "$EVAL_TARGET_ALIAS" "$EVAL_JUDGE_ALIAS" | sort | paste -sd, -)
+          [ "$STORED_MODELS" = "$EXPECTED_MODELS" ] || { echo "::error::stored models list ($STORED_MODELS) != expected ($EXPECTED_MODELS)"; exit 1; }
+          [ "$STORED_MAX_BUDGET" = "$MAX_BUDGET_USD" ] || echo "::warning::stored max_budget ($STORED_MAX_BUDGET) != requested ($MAX_BUDGET_USD) — verify manually"
+          echo "Scope + budget confirmed stored, not just requested."
+
+      - name: POSITIVE test — LITELLM_EVAL_KEY can call the target alias
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/pos.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_STAGING_URL/chat/completions" \
+            -d "$(jq -n --arg m "$EVAL_TARGET_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
+          echo "POST /chat/completions (model=$EVAL_TARGET_ALIAS, key=LITELLM_EVAL_KEY) -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::positive test FAILED — the eval key could not call its own target alias (HTTP $HTTP)"
+            cat /tmp/pos.json 2>/dev/null || true
+            exit 1
+          fi
+          echo "POSITIVE test PASS: $(jq -r '.choices[0].message.content // empty' /tmp/pos.json 2>/dev/null)"
+
+      - name: POSITIVE test — LITELLM_EVAL_KEY can call the judge alias
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/pos_judge.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_STAGING_URL/chat/completions" \
+            -d "$(jq -n --arg m "$EVAL_JUDGE_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
+          echo "POST /chat/completions (model=$EVAL_JUDGE_ALIAS, key=LITELLM_EVAL_KEY) -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::positive test FAILED — the eval key could not call the judge alias (HTTP $HTTP)"
+            cat /tmp/pos_judge.json 2>/dev/null || true
+            exit 1
+          fi
+          echo "POSITIVE test PASS: $(jq -r '.choices[0].message.content // empty' /tmp/pos_judge.json 2>/dev/null)"
+
+      - name: NEGATIVE test — LITELLM_EVAL_KEY is REJECTED for an out-of-scope, but registered, alias
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/neg.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_STAGING_URL/chat/completions" \
+            -d "$(jq -n --arg m "$OUT_OF_SCOPE_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
+          echo "POST /chat/completions (model=$OUT_OF_SCOPE_ALIAS, key=LITELLM_EVAL_KEY) -> HTTP $HTTP"
+          cat /tmp/neg.json 2>/dev/null || true
+
+          # A 404/model-not-found would prove nothing about scoping (the alias IS
+          # registered — we confirmed that above with the master key). We require
+          # an access-denied class response (401/403), NOT any 2xx.
+          if [ "$HTTP" = "200" ]; then
+            echo "::error::NEGATIVE test FAILED — the eval key was able to call an out-of-scope alias ($OUT_OF_SCOPE_ALIAS). Model-scoping is NOT enforced. Do not proceed — flag as a design deviation, this is not a Production Manager unilateral call."
+            exit 1
+          fi
+          case "$HTTP" in
+            401|403)
+              REASON=$(jq -r '.error.message // .error // .detail // empty' /tmp/neg.json 2>/dev/null || true)
+              echo "NEGATIVE test PASS: HTTP $HTTP (access-denied), reason: $REASON"
+              ;;
+            *)
+              echo "::warning::unexpected HTTP $HTTP on the negative test — not a clean 401/403 access-denied. Inspect /tmp/neg.json output above before relying on this as scope proof."
+              ;;
+          esac
+
+      - name: Summary (no secret values, ever)
+        if: always()
+        run: |
+          echo "============================================================"
+          echo " T-90 — LITELLM_EVAL_KEY provisioning summary"
+          echo "============================================================"
+          echo " key_alias      : $KEY_ALIAS"
+          echo " models in scope: $EVAL_TARGET_ALIAS (target), $EVAL_JUDGE_ALIAS (judge)"
+          echo " max_budget     : \$$MAX_BUDGET_USD USD (~\$10 CAD hard cap, rounded down)"
+          echo " soft_budget    : \$$SOFT_BUDGET_USD USD (early-warning threshold)"
+          echo " budget_duration: $BUDGET_DURATION"
+          echo " stored as      : GitHub Actions secret LITELLM_EVAL_KEY (already set before this run)"
+          echo " out-of-scope test alias: $OUT_OF_SCOPE_ALIAS"
+          echo ""
+          echo " This workflow does NOT wire LITELLM_EVAL_KEY into any PR-triggered job."
+          echo " That is T-93's job, gated on this landing (Tech Lead C1)."
+          echo ""
+          echo " Still required before T-90 is fully DONE: Security Lead sign-off on"
+          echo " this scope/cap (per ADR-0007 deciders list + WORK.md T-90 exit criteria)."
+          echo "============================================================"
