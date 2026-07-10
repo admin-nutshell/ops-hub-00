@@ -2642,3 +2642,111 @@ Process note: PR #370 was abandoned/closed — a parallel-agent HEAD-collision (
   MEMORY.md worktree-isolation hazard) left it pointing at an unrelated T-97 commit;
   rebuilt clean on current main as #372. T-97's work untouched.
 ```
+
+### 2026-07-10 — T-97: internal LiteLLM auth-path monitor closes the FQ-69 blind spot, live-proven end-to-end
+
+```
+2026-07-10 [Production Manager] T-97 DONE. Closes the monitoring blind spot FQ-69's
+  3.6-day incident exposed: /health/litellm (healthLitellm.ts) probes
+  LITELLM_EXTERNAL_URL without ever sending the app's own key — it can be green
+  while the app's real LITELLM_MASTER_KEY is rejected. This is the SECOND
+  incident from this blind-spot class (T-71 was the URL layer; FQ-69 was the
+  master-key layer), which is why it was committed, not flagged.
+
+DESIGN: same credential path, not a copy.
+  resolveLitellmTarget() extracted from classifyTicket (ticket-triage.ts) — the
+  ONE place LITELLM_URL/LITELLM_MASTER_KEY/LITELLM_TRIAGE_MODEL get resolved.
+  New GET/HEAD /health/litellm-internal (src/healthLitellmInternal.ts) calls
+  the SAME function and makes a real, minimal completion call (max_tokens:5,
+  "Reply with the single word OK") over the internal LITELLM_URL against the
+  triage-model alias — the exact hop ticket-triage.ts/ticket-respond.ts use.
+  Maps 401/403 -> 503 auth_rejected, other non-2xx -> 503 error, network/
+  timeout -> 503 unreachable, 2xx -> 200. No separate/duplicated credential
+  that could itself drift out of sync with what the app actually uses — the
+  whole root cause this task exists to close.
+
+ALERTING: reused the channel that's actually live, not UptimeRobot's webhook.
+  UptimeRobot's webhook alert-contact path (src/statusWebhook.ts +
+  status-incident.yml's repository_dispatch listener) needs a paid tier the
+  founder declined per FQ-47 action 4b (free-tier-first) — so it was never
+  wired to a real monitor. New scheduled workflow
+  monitor-litellm-internal-auth.yml (every 15 min + workflow_dispatch) curls
+  the deployed endpoint and holds ZERO copy of LITELLM_MASTER_KEY in CI. On
+  non-200 it calls `gh workflow run status-incident.yml -f action=open`
+  (the SAME manual open/resolve action an agent or the founder already uses)
+  and fails the run (GitHub's own failure-notification email, the same
+  backstop backup-verification.yml already relies on — no new paid service).
+  On 200 it resolves any open incident the same way.
+
+BUGS FOUND AND FIXED DURING LIVE VERIFICATION (not just designed, PROVEN):
+  1. An early version of the live-network integration test
+     (src/integration/litellm-internal-health.integration.test.ts) needed no
+     secret for its bad-key case, so it ran unconditionally under plain
+     `vitest run` -- which is also what main-deploy.yml's "Unit tests" step
+     runs before every staging deploy. A transient network hiccup against
+     litellm-staging turned a verification test into a flaky deploy-blocking
+     dependency the FIRST time it ran there (observed directly on the
+     main-deploy.yml run right after PR #369 merged). Fixed (PR #371): the
+     whole describe block now self-skips unless T97_LIVE_PROBE=1 (same "skip,
+     don't fail" convention as every other src/integration/ test, gated on an
+     explicit opt-in rather than secret presence). Added
+     verify-litellm-internal-health-handler.yml (workflow_dispatch-only) as
+     the one place that sets the flag deliberately.
+  2. Live-dispatching monitor-litellm-internal-auth.yml with
+     mode=simulate-failure against real ops-hub-prod caught a real bug: the
+     probe job has no actions/checkout step (deliberately -- it only curls a
+     public endpoint), so `gh workflow run status-incident.yml --ref main`
+     had no local git remote to infer the target repo from and failed with
+     "fatal: not a git repository". The job still failed correctly (exit 1),
+     but the incident-open side effect silently never fired. Fixed (PR #373):
+     pass --repo "${{ github.repository }}" explicitly on both dispatch calls.
+  3. A live mode=live run against the real (healthy) prod endpoint genuinely
+     timed out at --max-time 15 (a manual recheck seconds later returned 200
+     in ~2s) -- a real completion call's total round-trip can occasionally run
+     close to that, and the failure fallback made it worse: `$(curl ... ||
+     echo "000")` let curl's own -w output and the echo fallback both land in
+     the substitution, producing the nonsensical "HTTP 000000". Fixed
+     (PR #374): --max-time 15->25, and curl's real exit code captured
+     separately so "000" only applies when curl truly produced no code.
+
+FULL EXIT-CRITERIA PROOF (every link live-verified, not just unit-mocked):
+  1. Real handler code vs. real litellm-staging with a deliberately-wrong key
+     (not a real secret) -> genuine 401 -> mapped to 503 auth_rejected.
+     Observed inline in PR #369's CI before the opt-in gate landed, and
+     reproduced via verify-litellm-internal-health-handler.yml post-gate.
+  2. Deployed to ops-hub-prod (prod-deploy.yml run 29070242860). Live
+     `curl https://ops-hub-prod.inatechshell.ca/health/litellm-internal` with
+     the REAL configured credential -> 200
+     {"status":"ok","litellm_internal":"reachable_and_authenticated"}.
+  3. Alert-OPEN path: dispatched monitor-litellm-internal-auth.yml
+     mode=simulate-failure (forces a 404 WITHOUT touching prod's real
+     credential/state) -> status-incident.yml run 29070612022 -> real incident
+     file created on the status-content branch
+     (2026-07-10-litellm-internal-auth-probe-failing-on-ops-hub-pro.md).
+  4. Alert-RESOLVE path: dispatched mode=live against the healthy endpoint ->
+     status-incident.yml run 29070815778 -> the SAME incident file flipped to
+     resolved: true. Fires on a simulated/known auth-reject AND clears on a
+     good path, per T-97's exit criteria verbatim.
+
+INCIDENTAL FINDING (staging, NOT prod, out of scope for T-97, not fixed here):
+  /health/litellm-internal on ops-hub-staging currently reports 503
+  unreachable (network error, not auth_rejected) even though /health/litellm
+  (external) and /health/env both report healthy — consistent with the known
+  "LiteLLM internal container suffix changes on redeploy" footgun (CLAUDE.md),
+  now on staging rather than prod. This is itself a small demonstration of the
+  monitor's value (it caught a real internal-hop problem /health/litellm
+  structurally cannot see) but is explicitly out of T-97's prod-scoped exit
+  criteria — flagged for a follow-up staging LITELLM_URL fix, not actioned
+  here.
+
+Process note: worked in a shared/reused Claude Code worktree
+  (agent-a35c7146b5c0b63c6, bound to another agent's feat/t93-eval-gate-live
+  branch) -- an uncommitted edit was lost to a concurrent commit mid-task
+  (same MEMORY.md worktree-isolation hazard PR #372's note above independently
+  hit). Recovered by creating a fresh `git worktree add` off origin/main for
+  all follow-up fixes (PRs #371/#373/#374) rather than continuing to contend
+  for the shared directory.
+
+Deploy record: docs/deploys/2026-07-10-t97-litellm-internal-auth-monitor.md
+PRs: #369 (feature), #371, #373, #374 (fixes found during live verification)
+```
