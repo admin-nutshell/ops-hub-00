@@ -79,10 +79,27 @@ jobs:
       - name: Curl the probe endpoint (no secrets — the app holds the real key, not this job)
         id: probe
         run: |
-          HTTP=$(curl -s --max-time 15 -o /tmp/probe_body.json -w "%{http_code}" \
-            "${{ steps.target.outputs.url }}" || echo "000")
+          # 25s here vs. the handler's own internal 10s fetch budget
+          # (AbortSignal.timeout(10_000) in healthLitellmInternal.ts) -- a real
+          # completion call can occasionally run close to that internal budget
+          # before it aborts; 25s leaves headroom for TLS/queueing overhead on
+          # top so a slow-but-still-healthy response isn't mistaken for a
+          # monitor failure. (Observed once during verification: a 15s
+          # --max-time genuinely timed out against a real, otherwise-healthy
+          # prod response -- see DECISIONS.md T-97 entry.)
+          set +e
+          HTTP=$(curl -s --max-time 25 -o /tmp/probe_body.json -w "%{http_code}" \
+            "${{ steps.target.outputs.url }}")
+          CURL_EXIT=$?
+          set -e
+          # Never string-concat a fallback onto curl's own -w output (curl can
+          # print a partial/garbage code on timeout while still exiting
+          # non-zero) -- only trust $HTTP when curl itself exited 0.
+          if [ "$CURL_EXIT" -ne 0 ] || [ -z "$HTTP" ]; then
+            HTTP="000"
+          fi
           echo "http_status=$HTTP" >> "$GITHUB_OUTPUT"
-          echo "Probed ${{ steps.target.outputs.url }} -> HTTP $HTTP"
+          echo "Probed ${{ steps.target.outputs.url }} -> HTTP $HTTP (curl exit $CURL_EXIT)"
           cat /tmp/probe_body.json 2>/dev/null || true
           echo ""
 
