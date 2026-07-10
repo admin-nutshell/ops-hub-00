@@ -1,0 +1,167 @@
+name: Diagnose litellm-prod Anthropic fallback (read-only, no mutation)
+
+# Read-only investigation triggered from T-90 follow-up: the T-90 provisioning
+# workflow (provision-litellm-eval-key.yml) found litellm-STAGING's
+# "fallback-model" alias (anthropic/claude-haiku-4-5-20251001, registered by
+# configure-litellm-anthropic-fallback.yml, T-46) is credit-exhausted
+# ("Your credit balance is too low to access the Anthropic API", HTTP 400,
+# confirmed on two separate runs: 29065628215 and 29066125110).
+#
+# configure-litellm-anthropic-fallback.yml's own header comment states it
+# targets litellm-STAGING only ("Registers ... in litellm-staging"). This
+# workflow checks whether litellm-PROD has any separate fallback-model /
+# Anthropic registration of its own, and if so, whether IT is also
+# credit-exhausted -- because if prod's fallback path is degraded, primary
+# model failures in production currently cannot fall back, which is a
+# customer-impacting risk requiring a founder billing decision, not something
+# this workflow or the Production Manager fixes unilaterally.
+#
+# Makes NO changes: no /model/new, no /model/delete, no /key/*, no restart.
+# GET /model/info (read) + at most one minimal chat/completions smoke call
+# against whatever alias is found, ONLY if one is found. If prod has no
+# fallback-style alias at all, this workflow reports that and stops -- no
+# assumptions, no follow-on calls.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  LITELLM_PROD_UUID: "hlik1d96uvkkjzpbxa3azhcv"
+  LITELLM_PROD_URL: "https://litellm-prod.inatechshell.ca"
+
+jobs:
+  diagnose:
+    name: Read-only check — litellm-prod fallback / Anthropic registration + health
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    steps:
+      - name: Guard — required secrets present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+
+      # Same pattern as restart-verify-litellm-prod.yml: no LITELLM_MASTER_KEY_PROD
+      # GitHub secret exists (confirmed via `gh secret list`) — fetch prod's own
+      # master key fresh from its Coolify env vars, mask immediately, never store
+      # as a new secret, never print.
+      - name: Fetch LITELLM_MASTER_KEY from litellm-prod (masked)
+        id: key
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "https://coolify.inatechshell.ca/api/v1/applications/$LITELLM_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read litellm-prod envs (HTTP $HTTP)"; exit 1; }
+          KEY=$(jq -r '.[] | select(.key=="LITELLM_MASTER_KEY") | .value' /tmp/litellm_envs.json | head -1)
+          [ -n "$KEY" ] && [ "$KEY" != "null" ] || { echo "::error::LITELLM_MASTER_KEY absent on litellm-prod"; exit 1; }
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "Fetched litellm-prod's own LITELLM_MASTER_KEY (masked)."
+
+      - name: Verify litellm-prod health
+        env:
+          MASTER_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          HTTP=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" \
+            "$LITELLM_PROD_URL/health/readiness" || echo "000")
+          echo "GET /health/readiness -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::warning::litellm-prod not healthy (HTTP $HTTP) — cannot complete this diagnostic; treat as inconclusive, not as 'no fallback risk'."
+          fi
+
+      - name: Enumerate litellm-prod's registered aliases (read-only)
+        id: enumerate
+        env:
+          MASTER_KEY: ${{ steps.key.outputs.key }}
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/prod_model_info.json -w "%{http_code}" \
+            -H "Authorization: Bearer $MASTER_KEY" -H "Accept: application/json" \
+            "$LITELLM_PROD_URL/model/info")
+          echo "GET /model/info -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::could not enumerate litellm-prod models (HTTP $HTTP)"
+            cat /tmp/prod_model_info.json 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "=== litellm-prod registered aliases ==="
+          jq -r '.data[] | "  alias=\(.model_name)  underlying_model=\(.litellm_params.model // "?")"' \
+            /tmp/prod_model_info.json 2>/dev/null || true
+
+          # Look for anything that looks like a fallback alias by NAME, and
+          # separately anything whose underlying model is Anthropic, by MODEL
+          # STRING — a prod fallback could exist under any alias name.
+          FALLBACK_BY_NAME=$(jq -r '[.data[] | select(.model_name | test("fallback"; "i"))] | length' /tmp/prod_model_info.json)
+          ANTHROPIC_BY_MODEL=$(jq -r '[.data[] | select(.litellm_params.model // "" | test("anthropic|claude"; "i"))] | length' /tmp/prod_model_info.json)
+
+          echo ""
+          echo "aliases matching /fallback/i in the NAME       : $FALLBACK_BY_NAME"
+          echo "aliases whose underlying MODEL is anthropic/claude: $ANTHROPIC_BY_MODEL"
+
+          FALLBACK_ALIAS=$(jq -r '[.data[] | select(.model_name | test("fallback"; "i"))][0].model_name // empty' /tmp/prod_model_info.json)
+          ANTHROPIC_ALIAS=$(jq -r '[.data[] | select(.litellm_params.model // "" | test("anthropic|claude"; "i"))][0].model_name // empty' /tmp/prod_model_info.json)
+
+          FOUND_ALIAS="${FALLBACK_ALIAS:-$ANTHROPIC_ALIAS}"
+          if [ -z "$FOUND_ALIAS" ]; then
+            echo ""
+            echo "RESULT: litellm-prod has NO fallback-named alias and NO Anthropic/Claude-backed alias registered at all."
+            echo "found_alias=" >> "$GITHUB_OUTPUT"
+          else
+            echo ""
+            echo "RESULT: litellm-prod has a candidate alias to smoke-test: $FOUND_ALIAS"
+            echo "found_alias=$FOUND_ALIAS" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test the found alias (read-only completion call, only if one exists)
+        if: steps.enumerate.outputs.found_alias != ''
+        env:
+          MASTER_KEY: ${{ steps.key.outputs.key }}
+          FOUND_ALIAS: ${{ steps.enumerate.outputs.found_alias }}
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/prod_smoke.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $MASTER_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_PROD_URL/chat/completions" \
+            -d "$(jq -n --arg m "$FOUND_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
+          echo "POST /chat/completions (model=$FOUND_ALIAS, litellm-prod, master key) -> HTTP $HTTP"
+          cat /tmp/prod_smoke.json 2>/dev/null || true
+          echo ""
+          if [ "$HTTP" = "200" ]; then
+            echo "RESULT: litellm-prod's $FOUND_ALIAS is HEALTHY — no credit-exhaustion / billing failure observed."
+          else
+            REASON=$(jq -r '.error.message // empty' /tmp/prod_smoke.json 2>/dev/null || true)
+            echo "RESULT: litellm-prod's $FOUND_ALIAS call FAILED (HTTP $HTTP). Reason: $REASON"
+            case "$REASON" in
+              *"credit balance"*|*"Plans & Billing"*)
+                echo "::error::litellm-prod's $FOUND_ALIAS is ALSO Anthropic-credit-exhausted — same failure class as litellm-staging's fallback-model. This is customer-impacting (prod fallback degraded) and needs a FOUNDER_QUEUE entry per CLAUDE.md escalation rules."
+                ;;
+              *)
+                echo "::warning::litellm-prod's $FOUND_ALIAS failed for a DIFFERENT reason than staging's known Anthropic-billing issue — read the reason above before concluding this is (or isn't) the same class of problem."
+                ;;
+            esac
+          fi
+
+      - name: Summary (no secret values, ever)
+        if: always()
+        env:
+          FOUND_ALIAS: ${{ steps.enumerate.outputs.found_alias }}
+        run: |
+          echo "============================================================"
+          echo " litellm-prod Anthropic-fallback diagnostic summary"
+          echo "============================================================"
+          if [ -z "$FOUND_ALIAS" ]; then
+            echo " litellm-prod has NO fallback-model / Anthropic-backed alias registered."
+            echo " configure-litellm-anthropic-fallback.yml (T-46) targets litellm-staging"
+            echo " only, per its own header comment — prod never got an equivalent."
+            echo " => Prod has NO Anthropic fallback path to be degraded. Not a prod risk"
+            echo "    from THIS issue. Low-priority staging-only note, not an escalation."
+          else
+            echo " litellm-prod DOES have a candidate alias: $FOUND_ALIAS"
+            echo " See the smoke-test step above for its health result."
+          fi
+          echo "============================================================"
