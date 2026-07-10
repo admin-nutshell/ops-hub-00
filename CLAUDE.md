@@ -59,10 +59,11 @@ If you encounter a security concern, stop work and post to `FOUNDER_QUEUE.md` im
 
 ## Active sprint
 
-**Sprint 8 — Drift Reconciliation + Eval Coverage**
-Window: July 9–23, 2026
-Goal: Close the class of live-vs-record drift both prior sprints surfaced the hard way — one-shot reconciliation of every live `pg_policy` against what our migrations should have created (T-83, sprint anchor); write the missing KB Learn prompt eval (T-84); author the design-of-record ADR for the "real" LLM-rubric eval gate, build deferred to Sprint 9 (T-87); close the T-62 LiteLLM freeze-schema carry (T-85). Hardening sprint, not a feature sprint. No milestone targeted — see WORK.md's "Milestone numbering note."
+**Sprint 9 — Real LLM-Rubric Eval Gate (build) + Monitoring Hardening**
+Window: July 23 – August 6, 2026
+Goal: Build the "real" LLM-rubric eval gate designed in ADR-0007 (Accepted) — the live, calibration-guarded, path-filtered `llm-rubric` gate that finally makes the "eval-gated >95%" constraint true instead of schema-validation-only, using a scoped budget-capped LiteLLM **virtual** key (never the master key). Anchor = the medium build across the shared live-run runner, calibration guards, per-test baseline store, and CI wiring (T-89–T-95, folding in Tech Lead conditions C1–C4). In parallel: close the FQ-69 monitoring blind spot with a monitor that exercises the app's real internal LiteLLM auth path (T-97), and cash in the now-unblocked KB Learn allowlist unpin (T-96). No milestone targeted — see WORK.md's "Milestone numbering note."
 
+*(Sprint 8 — Drift Reconciliation + Eval Coverage — COMPLETE 2026-07-09. No milestone (capability/hardening). T-83 closed the `pg_policy` drift class proactively; FQ-69 (70% of prod tickets stuck 3.6 days on a rejected master key) found mid-sprint and fully resolved. Retro: `docs/retros/sprint-8.md`.)*
 *(Sprint 7 — Ops Dashboard Settings / Write Surface — COMPLETE 2026-07-09. No milestone (capability-building). Retro: `docs/retros/sprint-7.md`.)*
 *(Sprint 6 — Ops Dashboard MVP + Reliability Debt Closure — COMPLETE 2026-07-08. No milestone (capability-building). Retro: `docs/retros/sprint-6.md`.)*
 *(Sprint 5 — Reliability Hardening + TTS Production Go-Live — COMPLETE 2026-07-03/04. M6 "TTS Live in Production" declared. Retro: `docs/retros/sprint-5.md`.)*
@@ -71,7 +72,7 @@ Goal: Close the class of live-vs-record drift both prior sprints surfaced the ha
 **Recent decisions:** `DECISIONS.md`
 **Founder queue:** `FOUNDER_QUEUE.md`
 
-Critical path (mostly parallel — distinct owners): T-83 (`pg_policy` read-only diff → Security-Lead-reviewed fix migration → founder apply) is the sprint anchor; T-84 / T-85 / T-86 / T-87 run independently.
+Critical path: T-89 (shared live-run runner) → T-91 (calibration guards) + T-92 (per-test baseline store + green baseline) → T-93 (CI wiring — sibling workflow) → T-94 (register required check + nightly, founder/admin, build tail) → T-95 (docs reconciliation once live). Hard build-ordering edge (Tech Lead C1): T-90's scoped LiteLLM **virtual** key (Production Manager + Security Lead) gates T-93's auto `pull_request` trigger — the live run stays `workflow_dispatch` and the master key never enters the auto-triggered job until `LITELLM_EVAL_KEY` exists. T-96 (KB Learn unpin) rides the gate once live; T-97 (internal-auth monitor) runs independently.
 
 ---
 
