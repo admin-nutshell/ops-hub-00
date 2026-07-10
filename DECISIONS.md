@@ -2369,4 +2369,51 @@ T-90 exit criteria met; core scope/cap/negative-test proof is agent-owned and
 does not require founder input. Handing off to Security Lead for the sign-off
 recorded in WORK.md's T-90 exit criteria (ADR-0007 deciders list) — not closed
 out from within this task, per the original plan.
+
+2026-07-10 [Evals Lead] T-91 — added the three ADR-0007 §5 calibration guards to the
+shared live-run runner so a broken harness FAILS LOUD instead of silently reporting a
+confident-but-wrong pass rate (the T-84 "25%" lesson encoded as automated controls, not
+"be careful next time"). New scripts/eval/calibration-guards.py (subcommands: token-band,
+canary-check, grader-target) + three canary fixtures evals/canaries/{ticket-triage,
+ticket-respond,kb-learn}-canary.yaml, wired into scripts/eval/live-run.sh to run
+automatically on every invocation.
+(1) grader != target (§5.3): fail-FAST in live-run.sh BEFORE any metered call and before
+the key is even required (exit 3); JUDGE_ALIAS is now REQUIRED (no silent default to
+TARGET_ALIAS). run-kb-learn-eval.yml updated to JUDGE_ALIAS=fallback-model to comply (was
+triage-model, i.e. judge==target, which the guard now rejects).
+(2) Per-eval token band (§5.1, Tech Lead Finding 5): floor = user_max + 0.30*sys, ceil =
+2.5*(sys+user_max), derived from EACH eval's own reference system+user size — NOT a global
+>=600. Bands genuinely differ per eval (triage [124,520], respond [191,943], kb-learn
+[405,2500]), so a global 600 would both false-trip triage/respond AND miss a collapse
+there. A collapse toward user-only tokens (the exact T-84 config.system-dropped signature)
+is a HARD ERROR (exit 2); missing/zero usage is also a hard error, never a silent skip.
+(3) Canaries (§5.2): each eval carries one must-pass + one must-fail fixture
+(metadata.canary: pass|fail); the must-fail rubric demands an impossible sentinel token a
+correct model never emits, so a correctly-wired grader MUST fail it — if it PASSES the
+grader is rubber-stamping; if the must-pass FAILS the harness/model is broken. Either =>
+exit 4, never a reported rate. Canaries live under evals/canaries/ (CI globs evals/*.yaml
+only, so they don't enter the product schema loop or pass rate) and mirror the product
+structure so gen-live-config swaps them identically.
+
+Verification (all guard branches proven, no live LiteLLM key needed): the results-JSON
+schema was LOCKED against REAL promptfoo-0.121 output — ran promptfoo with file:// mock
+providers under a portable Node 20.20 (real promptfoo, real JSON schema, only the model
+call stubbed) — confirming per-call TARGET tokens live at
+results.results[i].response.tokenUsage.prompt (grader tokens sit separately under
+row.tokenUsage.assertions), pass/fail at .success, canary role at .metadata.canary. Token
+values are anchored to T-88/T-89's real measurement (~853 healthy vs ~124 collapsed). A
+12-branch guard matrix PLUS a full end-to-end run of live-run.sh with a stubbed promptfoo
+proved every branch: healthy 853 + correct canaries -> all guards pass, exit 0; collapse
+124 -> token-band exit 2; rubber-stamp canary -> canary exit 4; broken must-pass -> canary
+exit 4; judge==target -> grader guard exit 3 (keyless, fail-fast via the real script). A
+fully-green LIVE grader!=target dispatch is currently blocked by fallback-model's Anthropic
+credit exhaustion on litellm-staging (external — T-90/FQ-70, a billing issue, NOT a harness
+defect), which is exactly why the guard logic was proven against real promptfoo output
+locally rather than via a flaky live grader run.
+
+Scope kept tight (mergeable alongside T-92, which owns the runner's baseline logic):
+additive new file + clearly-delimited live-run.sh additions; NO supabase/migrations
+touched, NO eval_gate_runs/baseline-relative logic (T-92), NO CI auto-trigger wiring (T-93,
+gated on T-90/C1). PR #TBD, self-merged per the standing eval-gate self-merge policy.
+Agent-owned, no founder escalation.
 ```

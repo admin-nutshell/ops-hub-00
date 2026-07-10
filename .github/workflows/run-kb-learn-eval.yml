@@ -78,12 +78,21 @@ jobs:
         # The runner generates a self-contained live config (provider swap ->
         # openai:chat:triage-model, system prompt as a real {role:'system'} message,
         # grader via LiteLLM on the judge alias), runs promptfoo eval --no-cache, and
-        # prints the pass-rate summary. Judge == target here to reproduce T-88's 4/4
-        # apples-to-apples (grader != target is a T-91 calibration guard, not enforced here).
+        # then runs the T-91 calibration guards (grader!=target fail-fast, per-eval
+        # token band, must-pass/must-fail canaries).
+        #
+        # T-91 UPDATE: JUDGE_ALIAS is now `fallback-model` (was `triage-model`) so this
+        # invocation SATISFIES the new grader!=target guard (ADR §5.3) — the runner now
+        # HARD-ERRORS (exit 3) on judge==target, so the old apples-to-apples config is
+        # deliberately no longer permitted. KNOWN ENV CAVEAT: `fallback-model` on
+        # litellm-staging currently 400s (Anthropic credit exhaustion — see T-90 /
+        # FQ-70, an external billing issue, NOT a harness defect), so a *fully-green*
+        # dispatch here is blocked until that alias is funded. The T-91 guard logic is
+        # verified independently against real promptfoo-0.121 output (DECISIONS.md T-91).
         env:
           EVAL_FILE: evals/kb-learn.yaml
           TARGET_ALIAS: triage-model
-          JUDGE_ALIAS: triage-model
+          JUDGE_ALIAS: fallback-model
           LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
           OUT_DIR: /tmp/eval-live
           OPENAI_API_KEY: ${{ secrets.LITELLM_MASTER_KEY }}

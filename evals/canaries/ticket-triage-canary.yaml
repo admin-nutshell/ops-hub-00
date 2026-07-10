@@ -1,0 +1,63 @@
+# evals/canaries/ticket-triage-canary.yaml
+# T-91 calibration canaries for ticket-triage (ADR-0007 §5.2). NOT product tests —
+# a harness-integrity probe run alongside evals/ticket-triage.yaml on every live run.
+# See evals/canaries/kb-learn-canary.yaml for the full rationale. The `system` block is
+# copied verbatim from evals/ticket-triage.yaml so the must-pass canary exercises the
+# real system-prompt-delivery path.
+
+description: "ticket-triage CANARY — harness-integrity probe (one must-pass, one must-fail); not a product eval"
+
+prompts:
+  - |
+    <ticket_title>{{ticket_title}}</ticket_title>
+    <ticket_body>{{ticket_body}}</ticket_body>
+
+providers:
+  - id: anthropic:claude-sonnet-4-6
+    config:
+      temperature: 0
+      system: |
+        Classify this support ticket. Respond ONLY with valid JSON — no markdown:
+        {"urgency":"critical"|"high"|"normal"|"low","category":"<topic>","routing":"<team>","reasoning":"<one sentence>"}
+
+        urgency critical: system down, data loss, security breach
+        urgency high: major degradation, multiple users blocked, no workaround
+        urgency normal: limited impact, workaround available
+        urgency low: minor or cosmetic, single user
+        If uncertain: urgency=normal, category=support, routing=support
+
+tests:
+  # MUST-PASS: an unambiguous total outage. Any correctly-wired triage harness returns
+  # valid JSON with urgency=critical. Failure => harness/model broken.
+  - description: "CANARY must-pass — total outage yields valid JSON with a closed-enum urgency"
+    metadata:
+      canary: pass
+    vars:
+      ticket_title: "URGENT: entire app is down — nobody can log in"
+      ticket_body: "Production is completely unreachable for all of our users. The login page returns 503 and our whole team is blocked. This started 10 minutes ago. Please help immediately."
+    assert:
+      - type: llm-rubric
+        value: |
+          Pass if the response is a single valid JSON object containing an "urgency" field whose
+          value is one of exactly {critical, high, normal, low}. This is a deliberately easy case —
+          a correctly-wired harness MUST pass it. Fail only if the output is not valid JSON or the
+          urgency is outside that closed enum.
+        threshold: 0.8
+
+  # MUST-FAIL: rubric demands an exact sentinel token no correct classification emits.
+  # A correct grader MUST fail this. If it PASSES => grader rubber-stamping.
+  - description: "CANARY must-fail — rubric demands an impossible sentinel token; a correct grader must FAIL it"
+    metadata:
+      canary: fail
+    vars:
+      ticket_title: "URGENT: entire app is down — nobody can log in"
+      ticket_body: "Production is completely unreachable for all of our users. The login page returns 503 and our whole team is blocked. This started 10 minutes ago. Please help immediately."
+    assert:
+      - type: llm-rubric
+        value: |
+          Pass ONLY IF the response contains the exact literal string
+          "ZZZ_CANARY_SENTINEL_NEVER_EMIT_9F3A" somewhere in it.
+          A correct triage classification will NEVER contain this sentinel, so a correctly
+          functioning grader MUST mark this test FAILED. If this test PASSES, the grader is
+          rubber-stamping and the run is untrustworthy.
+        threshold: 0.8
