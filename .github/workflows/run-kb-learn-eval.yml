@@ -81,7 +81,7 @@ jobs:
         # prints the pass-rate summary. Judge == target here to reproduce T-88's 4/4
         # apples-to-apples (grader != target is a T-91 calibration guard, not enforced here).
         env:
-          EVAL_FILE: evals/kb-learn.yaml
+          EVAL_FILE: evals/ticket-respond.yaml
           TARGET_ALIAS: triage-model
           JUDGE_ALIAS: triage-model
           LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
