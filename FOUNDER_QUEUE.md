@@ -4,6 +4,55 @@
 
 ---
 
+## FQ-72 — Apply T-93's migration via Supabase SQL Editor (service_role) — creates the scoped CI role `eval_gate_ci_writer` (INSERT-only on one table), Security-Lead-designed
+
+**Filed:** 2026-07-10 | **Filed by:** Tech Lead (Sprint 9, T-93; design origin = Security Lead review of T-93 CI DB persistence)
+**Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-71/FQ-68/FQ-67/FQ-61/FQ-62/FQ-45).
+**Deadline:** Non-blocking for today's live service — nothing uses this role yet. It unblocks the *deferred* DB-persistence step of the live eval gate (`eval-gate-live.yml`), which today just prints the row it *would* write. Needed before that gate can actually record its runs to the database.
+
+**In plain language:** We're building the "real" eval gate — the automated check that re-runs our AI prompts on a pull request and can block a change that makes them behave worse. When it runs, we want it to save a small record of each run into the database (one row: pass/fail, how many tests passed, the git commit). To do that, the automated check needs a database login of its own.
+
+The safe way to give it one is the whole point of this request. We already have a database login sitting in our automation (`SUPABASE_STAGING_DB_URL`), and the obvious shortcut would be to reuse it — but the security review found that login is an **owner-level, master key of the database**: it can read and write *everything*, including real customer support tickets, and it ignores all the safety walls we put up. Handing that to an automated check that runs automatically on every pull request would mean: if that login ever leaked (e.g. someone opens a malicious pull request), the whole database is exposed. That was rejected.
+
+Instead, this creates a **brand-new, deliberately near-powerless login** just for the eval gate. It can do exactly one thing — add a row to the one eval-results table — and **nothing else**: it can't read any table (not even that one), can't change or delete anything, can't touch customer data. If it ever leaked, the worst case is someone adds junk rows to a CI-results table. That's the trade-off the security review asked for: assume the login can leak, and make leaking it harmless.
+
+One more thing that's intentional: this new login is created **without a password**, so it **cannot actually log in yet** — it just exists, inert. A follow-up step (handled by the team, not you) will set a password and finish wiring it up. So running this migration is safe and does not, by itself, turn anything on.
+
+**What's needed (via Supabase Dashboard → SQL Editor, project `yocoljutbiizdbfraapx`, as the project owner / `service_role`):**
+1. Run the full contents of `supabase/migrations/20260710000000_t93_eval_gate_ci_writer_role.sql` (forward-only, idempotent — guarded role-create + `drop policy if exists`, safe to re-run). Expected: a few `DO` / `ALTER ROLE` / `GRANT` / `REVOKE` / `CREATE POLICY` / `COMMENT` confirmations, no errors.
+2. **Verify** with these four queries (they prove the security property — the login can only INSERT into one table and read nothing):
+   ```sql
+   -- (a) the role exists with the right attributes (login=t, inherit=f, bypassrls=f, connlimit=3):
+   select rolname, rolcanlogin, rolinherit, rolbypassrls, rolconnlimit
+     from pg_roles where rolname = 'eval_gate_ci_writer';
+
+   -- (b) its statement timeout is 15s:
+   select rolname, rolconfig from pg_roles where rolname = 'eval_gate_ci_writer';
+   --     expect rolconfig to contain: statement_timeout=15s
+
+   -- (c) it has EXACTLY one table privilege — INSERT — and no SELECT/UPDATE/DELETE:
+   select grantee, privilege_type from information_schema.role_table_grants
+     where table_name = 'eval_gate_runs' and grantee = 'eval_gate_ci_writer';
+   --     expect EXACTLY one row: eval_gate_ci_writer | INSERT
+
+   -- (d) its INSERT policy is present:
+   select polname from pg_policy
+     where polrelid = 'eval_gate_runs'::regclass
+       and polname = 'eval_gate_runs_insert_ci';
+   --     expect one row.
+   ```
+3. Reply here or in `WORK.md` once done — the team then does the follow-up (set the role's password, create the `EVAL_GATE_DB_URL` GitHub secret with an explicit `:5432` port, and wire the INSERT into `eval-gate-live.yml`). That follow-up gets its own review; this FQ does **not** make the gate write to the DB by itself.
+
+**Options:**
+- **(A)** Apply the migration as written (recommended).
+- **(B)** Do nothing — the eval gate keeps printing the row it *would* write but never persists it (the gate itself still works and still blocks regressions; only the historical DB record is missing).
+
+**Recommendation:** (A) — the migration implements the Security Lead review's spec exactly, was verified against the actual code that writes the row (`recordEvalGateRun` in `src/metrics/evalHealth.ts`), and creates the least-privilege alternative that closes the "reuse the master-key credential in an auto-triggered PR job" risk the review rejected. Lower blast-radius than any migration in the FQ-67/68/71 series (it *reduces* the credential surface of the eval gate rather than opening new access).
+
+**Notify:** Tech Lead / Security Lead / Production Manager once done.
+
+---
+
 ## ✅ FQ-71 — RESOLVED: migration applied via Supabase SQL Editor — `case_results` column live on `eval_gate_runs`
 
 **Filed:** 2026-07-09 | **Resolved:** 2026-07-10
