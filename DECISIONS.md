@@ -2454,6 +2454,32 @@ on staging (FQ-70); MUST be re-captured under grader!=target (T-91) before the g
 blocks.
 ```
 
+### 2026-07-09 — T-92 seam fix: compare-baseline reads the flat DB-row baseline shape (PR #368)
+
+```
+2026-07-09 [Evals Lead] T-92 — closed a shape seam an advisor review caught before
+it could ship as a dead gate. `capture` stores per-test data as a FLAT array (in
+eval_gate_runs.case_results / the printed caseResults payload), but `compare`
+originally read the baseline ONLY as a nested {evals:{…}} document. Once T-93
+materializes the DB baseline row (a flat array) and feeds it to
+`compare --baseline`, the nested-only reader would have found ZERO baselined tests
+and returned GATE PASS on everything — the exact swap-masking no-op T-92 exists to
+close, reopened one seam over. The file-round-trip validation never caught it
+because every prior test fed `compare` a `capture --out` file (nested shape), which
+structurally could not exercise the DB-row shape that is the gate-time source of
+truth.
+
+Fix (additive, ~54 lines): `compare` now normalizes ANY of three baseline shapes
+via _load_baseline_map — (1) the nested `capture --out` doc, (2) an eval_gate_runs
+row `{case_results:[…]}` / `{caseResults:[…]}`, (3) a bare flat array — into the
+same {test_id: case} map. AND it now FAILS CLOSED on an empty/malformed baseline
+(zero tests => BLOCK, not pass), so a future shape divergence can't silently
+green-light. New stdlib regression test scripts/eval/test_compare_baseline.py (9
+cases, no pytest dep — scripts/eval has no CI test runner yet; that's T-93) proves a
+swap BLOCKS under the flat DB-row shape, dropped-test fails closed, all three shapes
+map identically, and empty/wrong-shape baselines block. All 9 green locally.
+```
+
 ### 2026-07-10 — T-90 Security Lead sign-off: LITELLM_EVAL_KEY scope/cap APPROVED — T-90 closed
 
 ```

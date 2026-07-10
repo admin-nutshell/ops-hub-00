@@ -185,6 +185,45 @@ def _flatten(evals: dict) -> dict:
     return out
 
 
+def _case_test_id(c: dict) -> str:
+    """A per-test identity for a flat case. Prefer the stored test_id; fall back
+    to <eval>::<description> so a row that predates test_id still keys stably."""
+    tid = c.get("test_id")
+    if tid:
+        return tid
+    return f"{c.get('eval', '?')}::{c.get('description', '?')}"
+
+
+def _load_baseline_map(doc) -> dict:
+    """Normalize ANY accepted baseline shape to a {test_id: case} map.
+
+    THREE shapes must round-trip, or the gate silently reads an empty baseline
+    and passes everything (the swap-masking failure mode T-92 exists to close):
+      1. `capture --out` document:  {"evals": {name: [case, ...]}, ...}
+      2. an eval_gate_runs ROW:     {"case_results": [flatcase, ...]}  (or the
+         camelCase "caseResults" the recordEvalGateRun payload prints)  <-- the
+         gate-time source of truth once T-93 materializes the DB row to a file.
+      3. a bare flat array:         [flatcase, ...]  (the case_results column value)
+
+    Every flat case carries `eval` + `test_id`, so shapes 2/3 regroup trivially.
+    """
+    if isinstance(doc, dict) and isinstance(doc.get("evals"), dict):
+        return _flatten(doc["evals"])
+    if isinstance(doc, list):
+        cases = doc
+    elif isinstance(doc, dict):
+        cases = doc.get("case_results") or doc.get("caseResults") or []
+    else:
+        cases = []
+    return {_case_test_id(c): c for c in cases if isinstance(c, dict)}
+
+
+def _baseline_git_sha(doc) -> str:
+    if isinstance(doc, dict):
+        return doc.get("git_sha") or doc.get("gitSha") or "<unknown>"
+    return "<unknown>"
+
+
 def cmd_capture(args) -> int:
     baseline = build_baseline(args.results, args.git_sha)
     text = json.dumps(baseline, indent=2)
@@ -229,7 +268,20 @@ def cmd_capture(args) -> int:
 def cmd_compare(args) -> int:
     with open(args.baseline, encoding="utf-8") as f:
         baseline_doc = json.load(f)
-    base = _flatten(baseline_doc.get("evals", {}))
+    base = _load_baseline_map(baseline_doc)
+
+    # FAIL-CLOSED on an empty baseline. `compare` only runs when a green baseline
+    # is supposed to EXIST, so zero baselined tests means the baseline file is the
+    # wrong shape / failed to materialize (e.g. a DB row's flat case_results fed in
+    # but read as a nested doc). Passing everything against an empty baseline is the
+    # dead-gate no-op T-92 exists to prevent -- refuse instead of green-lighting.
+    if not base:
+        print(
+            "::error::GATE FAIL -- baseline has ZERO tests. Refusing to compare "
+            "against an empty baseline (wrong shape or failed materialization). "
+            "A gate that reads an empty baseline passes everything silently."
+        )
+        return 1
 
     cur_evals: dict[str, list] = {}
     for path in args.current:
@@ -286,7 +338,7 @@ def cmd_compare(args) -> int:
                 warnings.append(msg + " Not blocking (no baseline state); surfaced loudly.")
 
     print("=== Baseline-relative comparison ===")
-    print(f"  baseline: {args.baseline} (git_sha={baseline_doc.get('git_sha')})")
+    print(f"  baseline: {args.baseline} (git_sha={_baseline_git_sha(baseline_doc)})")
     print(f"  baselined tests: {len(base)} | current tests: {len(cur)}")
     for line in ok_lines:
         print("  " + line)
