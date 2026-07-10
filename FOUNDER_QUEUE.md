@@ -4,9 +4,11 @@
 
 ---
 
-## FQ-72 — Apply T-93's migration via Supabase SQL Editor (service_role) — creates the scoped CI role `eval_gate_ci_writer` (INSERT-only on one table), Security-Lead-designed
+## ✅ FQ-72 — RESOLVED: scoped CI role `eval_gate_ci_writer` created via Supabase SQL Editor
 
-**Filed:** 2026-07-10 | **Filed by:** Tech Lead (Sprint 9, T-93; design origin = Security Lead review of T-93 CI DB persistence)
+**Filed:** 2026-07-10 | **Resolved:** 2026-07-10
+**Filed by:** Tech Lead (Sprint 9, T-93; design origin = Security Lead review of T-93 CI DB persistence)
+**Status:** RESOLVED — founder applied the migration via Supabase SQL Editor. Verified: `eval_gate_runs_insert_ci` policy present on `eval_gate_runs`, confirming the migration ran to completion (it's the final statement in the script). The role exists, INSERT-only, no password yet (inert until the team's follow-up sets one).
 **Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-71/FQ-68/FQ-67/FQ-61/FQ-62/FQ-45).
 **Deadline:** Non-blocking for today's live service — nothing uses this role yet. It unblocks the *deferred* DB-persistence step of the live eval gate (`eval-gate-live.yml`), which today just prints the row it *would* write. Needed before that gate can actually record its runs to the database.
 
