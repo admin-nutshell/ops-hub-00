@@ -92,7 +92,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "::error::LiteLLM internal-auth probe returned HTTP ${{ steps.probe.outputs.http_status }} — the app's real LITELLM_MASTER_KEY path may be failing (FQ-69 failure mode) or the endpoint is unreachable."
-          gh workflow run status-incident.yml --ref main \
+          # --repo is required: this job has no actions/checkout step (deliberately —
+          # the probe itself needs no repo contents), so `gh` has no local git remote
+          # to infer the target repo from and would otherwise fail with
+          # "fatal: not a git repository".
+          gh workflow run status-incident.yml --repo "${{ github.repository }}" --ref main \
             -f action=open \
             -f title="$INCIDENT_TITLE" \
             -f affected="Ops Hub Production,LiteLLM Production" \
@@ -105,6 +109,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Probe healthy (HTTP 200) — resolving any open incident opened by this monitor."
-          gh workflow run status-incident.yml --ref main \
+          gh workflow run status-incident.yml --repo "${{ github.repository }}" --ref main \
             -f action=resolve \
             -f title="$INCIDENT_TITLE"
