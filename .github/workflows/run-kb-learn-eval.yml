@@ -1,16 +1,29 @@
-name: T-84 — run kb-learn eval against production model (triage-model via LiteLLM)
+name: T-84/T-89 — run kb-learn eval against production model (triage-model via LiteLLM)
 
-# T-84's exit criterion requires a real pass-rate proof against KB Learn's
-# actual production model (the triage-model alias, routed through LiteLLM
-# staging), not the anthropic:claude-sonnet-4-6 prompt-contract reference
-# evals/kb-learn.yaml's provider block uses for CI schema validation.
+# T-84's exit criterion required a real pass-rate proof against KB Learn's actual
+# production model (the triage-model alias, routed through LiteLLM staging), not the
+# anthropic:claude-sonnet-4-6 prompt-contract reference evals/kb-learn.yaml's provider
+# block uses for CI schema validation.
 #
-# No new credential: reuses the existing `LITELLM_MASTER_KEY` GitHub secret
-# (same one configure-litellm-openai-only.yml already uses for staging) as
-# the OpenAI-compatible API key against LiteLLM's own /v1 endpoint — both
-# the target provider (triage-model) AND the grader run through the SAME
-# LiteLLM staging instance/key, so no separate Anthropic/OpenAI key is
-# needed. Key is never printed; only the pass/fail summary is surfaced.
+# T-89 UPDATE: the live-config generation this workflow originally inlined has been
+# EXTRACTED into a shared, parameterised runner — scripts/eval/live-run.sh (which calls
+# scripts/eval/gen-live-config.py). That runner is generic across all three product evals
+# (kb-learn, ticket-triage, ticket-respond), parameterised by eval file + target alias +
+# judge alias. This workflow is now the KB Learn *invocation* of that shared runner — it
+# hardcodes KB Learn's args and is the manual-dispatch verification vehicle proving the
+# extraction preserved T-88's behaviour (100% / 4/4). The T-93 sibling CI workflow will
+# consume the SAME scripts/eval/live-run.sh; the generalized runner already lives there.
+#
+# No new credential: reuses the existing `LITELLM_MASTER_KEY` GitHub secret (same one
+# configure-litellm-openai-only.yml already uses for staging) as the OpenAI-compatible API
+# key against LiteLLM's own /v1 endpoint — both the target provider (triage-model) AND the
+# grader run through the SAME LiteLLM staging instance/key, so no separate Anthropic/OpenAI
+# key is needed. Key is never printed; only the pass/fail summary is surfaced.
+#
+# NB (ADR-0007 C1): keeping the master key here is acceptable because this is a
+# MANUAL workflow_dispatch a maintainer decides to fire. The master key must NOT enter the
+# T-93 AUTO `pull_request`-triggered gate — that job reads only the scoped LITELLM_EVAL_KEY
+# (T-90). This workflow is not that gate.
 #
 # READ-ONLY from an infra standpoint: no Coolify mutation, no schema change.
 # It DOES make real (metered) LLM calls against litellm-staging.
@@ -61,95 +74,19 @@ jobs:
             echo "::warning::LITELLM_MASTER_KEY appears invalid/stale against litellm-staging (HTTP $MODELS_HTTP on /v1/models) — the eval step below will fail identically. This is a credential problem, not an eval-file problem."
           fi
 
-      - name: Generate a single self-contained live-run config (no CLI-flag overrides, no multi-config merge)
-        run: |
-          set -euo pipefail
-          pip install --quiet pyyaml
-          python3 <<'PYEOF'
-          import yaml, json, re
-
-          with open("evals/kb-learn.yaml", encoding="utf-8") as f:
-              cfg = yaml.safe_load(f)
-
-          LITELLM_BASE = "https://litellm-staging.inatechshell.ca/v1"
-
-          # TARGET provider: preserve temperature/max_tokens, point at LiteLLM, and
-          # move the system prompt OUT of config. The openai:chat provider (unlike
-          # the anthropic provider the eval file pins for CI schema validation) does
-          # NOT honor `config.system` — a system prompt left there is silently
-          # dropped and the model runs with ZERO instructions. That is the real bug
-          # behind run 28997069750's meaningless 25%: 497 total prompt tokens across
-          # 4 calls => ~124/call => the user message only, none of the ~850-token
-          # system prompt. An earlier fix tried to "preserve config.system", but that
-          # key is inert once the provider is swapped anthropic -> openai. The system
-          # prompt must be delivered as a real system-role message instead (below).
-          original_provider = cfg["providers"][0]
-          target_config = dict(original_provider.get("config", {}))
-          system_prompt = target_config.pop("system", "")
-          target_config["apiBaseUrl"] = LITELLM_BASE
-          cfg["providers"] = [{"id": "openai:chat:triage-model", "config": target_config}]
-
-          # Rebuild the single prompt as a system+user chat array via a prompt-FUNCTION
-          # file. A function (not an inline JSON chat string) is deliberate: it builds
-          # the messages from the raw var values in JS, so a ticket body containing a
-          # double-quote or newline can't break a JSON.parse the way an interpolate-
-          # then-parse chat string would. The user message reproduces the eval's
-          # five-tag template verbatim, derived from cfg["prompts"][0] so it can't
-          # drift. `system_prompt` is embedded via json.dumps (a valid JS string
-          # literal) so it stays byte-identical to the eval file's `system:` block.
-          user_template = cfg["prompts"][0].rstrip("\n")
-          user_js = re.sub(r"\{\{\s*(\w+)\s*\}\}", r"${vars.\1 ?? ''}", user_template)
-          prompt_fn = (
-              "const SYSTEM = " + json.dumps(system_prompt) + ";\n"
-              "export default function ({ vars }) {\n"
-              "  const user = `" + user_js + "`;\n"
-              "  return [\n"
-              "    { role: 'system', content: SYSTEM },\n"
-              "    { role: 'user', content: user },\n"
-              "  ];\n"
-              "}\n"
-          )
-          with open("/tmp/kb-learn-prompt.mjs", "w", encoding="utf-8") as f:
-              f.write(prompt_fn)
-          cfg["prompts"] = ["file:///tmp/kb-learn-prompt.mjs"]
-
-          # GRADER provider: deliberately NOT the kb-learn system prompt — the grader
-          # answers a different question (does this output satisfy rubric X), so it
-          # gets a clean provider pointed at the same LiteLLM instance/key, no
-          # target-specific system message attached.
-          grader_provider = {"id": "openai:chat:triage-model", "config": {"apiBaseUrl": LITELLM_BASE}}
-          cfg["defaultTest"] = {"options": {"provider": grader_provider}}
-
-          with open("/tmp/kb-learn-live.yaml", "w", encoding="utf-8") as f:
-              yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
-
-          print("Generated /tmp/kb-learn-live.yaml + /tmp/kb-learn-prompt.mjs")
-          print("System prompt length (chars):", len(system_prompt))
-          print("--- /tmp/kb-learn-prompt.mjs (head) ---")
-          print(prompt_fn[:600])
-          print("--- live config (providers + prompts + defaultTest) ---")
-          print(yaml.safe_dump({"providers": cfg["providers"], "prompts": cfg["prompts"], "defaultTest": cfg["defaultTest"]}, sort_keys=False))
-          PYEOF
-
-      - name: Run promptfoo eval against triage-model (target + grader both via LiteLLM)
+      - name: Run KB Learn eval via the shared live-run runner (scripts/eval/live-run.sh)
+        # The runner generates a self-contained live config (provider swap ->
+        # openai:chat:triage-model, system prompt as a real {role:'system'} message,
+        # grader via LiteLLM on the judge alias), runs promptfoo eval --no-cache, and
+        # prints the pass-rate summary. Judge == target here to reproduce T-88's 4/4
+        # apples-to-apples (grader != target is a T-91 calibration guard, not enforced here).
         env:
+          EVAL_FILE: evals/kb-learn.yaml
+          TARGET_ALIAS: triage-model
+          JUDGE_ALIAS: triage-model
+          LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
+          OUT_DIR: /tmp/eval-live
           OPENAI_API_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
         run: |
-          set -euo pipefail
           echo "::add-mask::$OPENAI_API_KEY"
-          npx -y promptfoo@0.121 eval -c /tmp/kb-learn-live.yaml --no-cache --verbose \
-            -o /tmp/kb-learn-results.json \
-            2>&1 | tee /tmp/kb-learn-eval.log
-
-      - name: Summarize pass rate (JSON stats if available, else parsed from stdout)
-        if: always()
-        run: |
-          echo "=== JSON stats (if promptfoo's output schema has them) ==="
-          if [ -f /tmp/kb-learn-results.json ]; then
-            jq '.results.stats // .results.table.stats // "no .stats key at this path — see log summary below"' /tmp/kb-learn-results.json 2>/dev/null || echo "(could not jq-parse results JSON — see log summary below)"
-          else
-            echo "(no results JSON produced)"
-          fi
-          echo ""
-          echo "=== Tail of eval log (pass/fail summary line(s)) ==="
-          tail -40 /tmp/kb-learn-eval.log || true
+          bash scripts/eval/live-run.sh
