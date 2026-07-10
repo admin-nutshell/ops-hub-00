@@ -19,7 +19,7 @@ Instead, this creates a **brand-new, deliberately near-powerless login** just fo
 One more thing that's intentional: this new login is created **without a password**, so it **cannot actually log in yet** — it just exists, inert. A follow-up step (handled by the team, not you) will set a password and finish wiring it up. So running this migration is safe and does not, by itself, turn anything on.
 
 **What's needed (via Supabase Dashboard → SQL Editor, project `yocoljutbiizdbfraapx`, as the project owner / `service_role`):**
-1. Run the full contents of `supabase/migrations/20260710000000_t93_eval_gate_ci_writer_role.sql` (forward-only, idempotent — guarded role-create + `drop policy if exists`, safe to re-run). Expected: a few `DO` / `ALTER ROLE` / `GRANT` / `REVOKE` / `CREATE POLICY` / `COMMENT` confirmations, no errors.
+1. Run the full contents of `supabase/migrations/20260710000000_t93_eval_gate_ci_writer_role.sql` (forward-only, idempotent — guarded role-create + `drop policy if exists`, safe to re-run). Expected: a few `DO` / `ALTER ROLE` / `GRANT` / `REVOKE` / `CREATE POLICY` / `COMMENT` confirmations, no errors. **If instead you see an error mentioning permission to create a role (e.g. "permission denied to create role" / "must have CREATEROLE"), stop and tell the team** — it just means this project's SQL Editor is locked down and the role has to be created from the Supabase dashboard instead; it is not a problem with the migration.
 2. **Verify** with these four queries (they prove the security property — the login can only INSERT into one table and read nothing):
    ```sql
    -- (a) the role exists with the right attributes (login=t, inherit=f, bypassrls=f, connlimit=3):
