@@ -59,6 +59,7 @@ describe("recordEvalGateRun", () => {
     expect(query).toHaveBeenCalledTimes(1);
     const [sql, params] = query.mock.calls[0];
     expect(sql).toContain("INSERT INTO eval_gate_runs");
+    expect(sql).toContain("case_results");
     expect(params).toEqual([
       null,
       "llm_rubric",
@@ -69,6 +70,31 @@ describe("recordEvalGateRun", () => {
       "https://example.test/run/1",
       "2026-07-04T10:00:00.000Z",
       null,
+      // case_results — null when not supplied (e.g. schema_validation rows)
+      null,
     ]);
+  });
+
+  it("serializes per-test case_results to a JSON string for the JSONB column (T-92)", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const pool = { query } as unknown as Pool;
+    const caseResults = [
+      { testId: "kb-learn::happy", eval: "kb-learn", description: "happy", passed: true, score: 1 },
+      { testId: "kb-learn::pii", eval: "kb-learn", description: "pii", passed: false, score: 0.4 },
+    ];
+    await recordEvalGateRun(pool, {
+      runType: "llm_rubric",
+      status: "fail",
+      totalCases: 2,
+      passedCases: 1,
+      ciRunAt: "2026-07-09T10:00:00.000Z",
+      caseResults,
+    });
+    const [, params] = query.mock.calls[0];
+    // The last bind param is the JSONB payload — a JSON string, not the array,
+    // so `pg` sends it to a jsonb column without a driver-side object coercion.
+    const jsonbParam = params[params.length - 1] as string;
+    expect(typeof jsonbParam).toBe("string");
+    expect(JSON.parse(jsonbParam)).toEqual(caseResults);
   });
 });

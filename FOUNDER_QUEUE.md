@@ -4,6 +4,32 @@
 
 ---
 
+## FQ-71 — Apply T-92's migration via Supabase SQL Editor (service_role) — adds one nullable JSONB column to `eval_gate_runs`, no new access surface
+
+**Filed:** 2026-07-09 | **Filed by:** Evals Lead (Sprint 9, T-92; Tech Lead concurs — this is ADR-0007 Finding 4 / Condition C3)
+**Status:** OPEN — awaiting founder apply via Supabase SQL Editor.
+**Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-67/FQ-68/FQ-61/FQ-62/FQ-45).
+**Deadline:** Non-blocking for today's live service — nothing reads or writes this column yet. It gates the *DB half* of the T-92 green-baseline record (the eval run itself + its per-test detail are captured as a CI artifact regardless). Needed before the real eval gate (T-93/T-94) can persist or compare baselines against the database.
+
+**In plain language:** Sprint 9 is building the "real" eval gate — the one that actually re-runs our AI prompts and blocks a change that makes them behave worse. For the gate to answer "did this change make something worse?" it has to remember, per individual test, what "good" looked like last time — not just a total score. (A total score hides a swap: one test breaks while another improves, the total is unchanged, and a real regression sails through.) The `eval_gate_runs` table today only stores totals. This adds one optional column to hold the per-test detail. It's a smaller, safer change than the last two migrations (FQ-67/FQ-68): it creates no table, changes no permissions, and opens no new access — it just adds a nullable column to a table whose access is already locked down. Existing dashboard code is unaffected (it reads named columns only).
+
+**What's needed (via Supabase Dashboard → SQL Editor, project `yocoljutbiizdbfraapx`, as the project owner/`service_role`):**
+1. Run the full contents of `supabase/migrations/20260709020000_t92_eval_gate_case_results.sql` (forward-only, idempotent — `add column if not exists`, safe to re-run). Expected: an `ALTER TABLE` + `COMMENT` confirmation, no errors.
+2. **Verify** with:
+   ```sql
+   select column_name, data_type
+     from information_schema.columns
+    where table_name = 'eval_gate_runs' and column_name = 'case_results';
+   ```
+   — expect one row: `case_results | jsonb`.
+3. Reply here or in `WORK.md` once done — the T-92 green-baseline DB row (per-test detail from the captured baseline) can then be written, and T-93 can wire baseline comparison against the live table.
+
+**Recommendation:** Apply as written — a single nullable additive column, no RLS/grant change, reviewed against the existing `eval_gate_runs` schema (T-58) and the ADR-0007 Tech Lead review that recommends exactly this per-test path (Finding 4 / C3). Lowest-risk migration in the FQ-67/68/71 series.
+
+**Notify:** Evals Lead / Tech Lead once done.
+
+---
+
 ## FQ-70 — litellm-prod's Anthropic fallback path is broken (customer-impacting risk: no fallback if the primary model fails)
 
 **Filed:** 2026-07-10 | **Filed by:** Production Manager, T-90 follow-up investigation.
