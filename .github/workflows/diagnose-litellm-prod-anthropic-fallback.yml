@@ -61,6 +61,25 @@ jobs:
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
           echo "Fetched litellm-prod's own LITELLM_MASTER_KEY (masked)."
 
+      - name: Check ANTHROPIC_API_KEY row count on litellm-prod (count only, never the value)
+        run: |
+          set -euo pipefail
+          # Distinguishes two very different remediation paths for whatever the
+          # smoke test below finds: a known Coolify footgun (duplicate env-var
+          # rows, "last row wins" — see project memory) vs. a single row whose
+          # value is simply invalid/revoked at the provider. The former is a
+          # mechanical Production Manager fix (dedup rows); the latter needs a
+          # NEW key value only the founder can supply. Never prints the value.
+          COUNT=$(jq '[.[] | select(.key=="ANTHROPIC_API_KEY")] | length' /tmp/litellm_envs.json 2>/dev/null || echo "0")
+          echo "ANTHROPIC_API_KEY row count on litellm-prod: $COUNT"
+          if [ "$COUNT" = "0" ]; then
+            echo "::warning::no ANTHROPIC_API_KEY env var found on litellm-prod at all — the fallback-model alias config references it but it's absent/never set."
+          elif [ "$COUNT" -gt 1 ]; then
+            echo "::warning::$COUNT duplicate ANTHROPIC_API_KEY rows found — matches the known Coolify 'Save appends rows, last row wins' footgun (see project memory). Worth checking in the Coolify UI whether an EARLIER row held a still-valid key before assuming a brand-new key is needed."
+          else
+            echo "Exactly 1 ANTHROPIC_API_KEY row — not a duplicate-row footgun. If the smoke test below fails with an auth error, the single stored value itself is invalid/revoked at the provider."
+          fi
+
       - name: Verify litellm-prod health
         env:
           MASTER_KEY: ${{ steps.key.outputs.key }}
