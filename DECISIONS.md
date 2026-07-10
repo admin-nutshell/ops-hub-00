@@ -2247,3 +2247,55 @@ workflow; required-check-neutral-skip-on-fork wedge. No FOUNDER_QUEUE escalation
 (tightens a standing constraint, no provider switch). Landed via PR, left
 UNMERGED for PM/founder review. -> ADR-0007
 ```
+
+### 2026-07-09 — Sprint 8 complete + Sprint 9 scoped (PM)
+
+```
+2026-07-09 [PM] Sprint 8 (Drift Reconciliation + Eval Coverage) COMPLETE — all
+tasks T-83..T-88 done. Retro authored: docs/retros/sprint-8.md. Headline: T-83
+closed the pg_policy drift class PROACTIVELY (zero gaps across all 20 policies —
+first time this team got ahead of that class instead of finding a break in prod),
+and FQ-69 (found mid-sprint, NOT proactively, as a side effect of T-85's E2E
+pre-flight) fully resolved: 70% of prod tickets stuck 3.6 days on two STACKED root
+causes — a stale LITELLM_URL after a container restart (T-71-class, shallower) AND
+a separate LITELLM_MASTER_KEY mismatch rejected by litellm-prod (401, the real
+3.6-day root cause) — both fixed, full 14-ticket backlog drained to 20/20 on real
+data. Retro also captures the T-84 eval-harness bug (config.system silently
+ignored by the openai provider → a misleading 25% that read like a vulnerability
+but measured a model with no system prompt) as a "our own tooling misled us"
+incident, generalized structurally into ADR-0007 §5's calibration guards. No
+milestone (capability/hardening); Milestone numbering note still stands.
+
+2026-07-09 [PM] Sprint 9 (Real LLM-Rubric Eval Gate build + Monitoring Hardening)
+scoped in WORK.md, window July 23 – Aug 6 2026. Anchor = build the ADR-0007 gate
+(Accepted, PR #354 on main; Tech Lead sized it MEDIUM). Tasks pulled from ADR §6's
+7-step migration path, not invented: T-89 shared live-run runner (Evals Lead) →
+T-91 calibration guards (Evals Lead) + T-92 per-test baseline store + capture
+(Evals Lead + Tech Lead) → T-93 CI wiring as a SIBLING workflow (Tech Lead) → T-94
+required-check registration + nightly (founder/admin, build tail) → T-95 docs/
+allowlist reconciliation (Evals Lead). Tech Lead conditions C1–C4 folded in as exit
+criteria: C1 (T-90 scoped budget-capped LiteLLM VIRTUAL key — Production Manager +
+Security Lead — gates the auto pull_request trigger; stay on workflow_dispatch and
+keep the master key out of the auto-triggered job's env until it exists), C2
+(sibling workflow + scope EVERY secret incl the DB/LangFuse reporting creds, not
+just the LiteLLM key), C3 (per-test baseline store, recommended over coarse count),
+C4 (per-eval token band, concurrency cancel-in-progress, fork neutral-skip wedge).
+Plus T-96 KB Learn allowlist unpin (Evals Lead) — mechanically unblocked now that
+T-84/T-88 pass 100%; rides the gate's admission path (ADR §8), exit = ≥2 vetted
+aliases in kb_learn. T-76 Advisory C1 does NOT carry — T-83 proved zero such grants
+exist live; resolved, not carried. No FOUNDER_QUEUE escalation from this planning
+(the only founder-facing item, T-94 branch-protection registration, is mechanical
+and due at the build tail — file the FQ then, not now).
+
+2026-07-09 [PM] Monitoring-hardening scoping calls from FQ-69's blind spot:
+(1) COMMITTED as T-97 (Production Manager) — a monitor that exercises the app's
+REAL internal LiteLLM auth path (minimal completion over internal LITELLM_URL with
+the app's own key, alert on 401), closing the gap where /health/litellm probes the
+external URL with LiteLLM's own key and structurally can't see the app's key being
+rejected. Committed (not flagged) because this is the SECOND incident from this
+exact blind spot (T-71 URL layer, then FQ-69's master-key layer) and it was
+customer-impacting for 3.6 days. (2) DEFERRED / kept flagged — the broader
+synthetic downstream-triage E2E monitor (Sprint 6 §7): larger, and partly subsumed
+by T-97 + the FQ-69 real-data-drain evidence; revisit once T-97 lands. Judgment
+call, agent-owned, no founder input needed.
+```
