@@ -4,10 +4,11 @@
 
 ---
 
-## FQ-71 — Apply T-92's migration via Supabase SQL Editor (service_role) — adds one nullable JSONB column to `eval_gate_runs`, no new access surface
+## ✅ FQ-71 — RESOLVED: migration applied via Supabase SQL Editor — `case_results` column live on `eval_gate_runs`
 
-**Filed:** 2026-07-09 | **Filed by:** Evals Lead (Sprint 9, T-92; Tech Lead concurs — this is ADR-0007 Finding 4 / Condition C3)
-**Status:** OPEN — awaiting founder apply via Supabase SQL Editor.
+**Filed:** 2026-07-09 | **Resolved:** 2026-07-10
+**Filed by:** Evals Lead (Sprint 9, T-92; Tech Lead concurs — this is ADR-0007 Finding 4 / Condition C3)
+**Status:** RESOLVED — founder applied the migration via Supabase SQL Editor. Verified: `select column_name, data_type from information_schema.columns where table_name='eval_gate_runs' and column_name='case_results';` returned `case_results | jsonb`. T-92's DB-persistence half is now unblocked — the gate can write and later compare per-test baselines against the real table.
 **Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-67/FQ-68/FQ-61/FQ-62/FQ-45).
 **Deadline:** Non-blocking for today's live service — nothing reads or writes this column yet. It gates the *DB half* of the T-92 green-baseline record (the eval run itself + its per-test detail are captured as a CI artifact regardless). Needed before the real eval gate (T-93/T-94) can persist or compare baselines against the database.
 
