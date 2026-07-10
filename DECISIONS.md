@@ -2562,3 +2562,83 @@ hygiene). The CI wiring that will consume it is T-93 and gets its own security
 review. No FOUNDER_QUEUE escalation — technical scoping review, no business
 decision; the prod-fallback finding is already FQ-70, not duplicated here.
 ```
+
+### 2026-07-10 — T-93 real LLM-rubric eval gate: CI wiring (Tech Lead)
+
+```
+2026-07-10 [Tech Lead] T-93 DONE — the real LLM-rubric eval gate is WIRED as a
+  sibling CI workflow (.github/workflows/eval-gate-live.yml, PR #372), separate
+  from pr-checks.yml's hermetic `evals` job (untouched). → ADR-0007 §3/§6 + Tech
+  Lead Review Findings 1/2/3/6 + Conditions C1–C4.
+
+One-sentence honest framing (read this before reading it as "the gate is live"):
+  The T-93 gate is wired, auto-triggered on prompt-surface paths, grader != target,
+  but functionally DORMANT (neutral green-skips) until FQ-70 resolves, and NOT
+  merge-blocking until T-94 registers it against a re-captured grader!=target
+  baseline.
+
+Posture shipped (my calls, named explicitly):
+- Trigger: AUTO path-filtered `pull_request` (never pull_request_target) on the
+  ADR §3 surfaces (evals/**, the 3 src/inngest/*.ts prompt bodies,
+  model-allowlist.ts) + a workflow_dispatch escape hatch. C1's literal gate was
+  "the scoped LITELLM_EVAL_KEY exists" — it does (T-90) — so I turned the auto
+  trigger ON now rather than leaving it on workflow_dispatch: a dispatch-only gate
+  re-creates the exact "stated-but-unenforced invariant" drift this whole track
+  closes (my own Finding 1). It's not a required check yet (T-94), so turning it on
+  now is zero-risk to PR flow and lets it bake.
+- Secret least-privilege: ONLY the scoped LITELLM_EVAL_KEY enters the job env; the
+  LiteLLM master key is never referenced (C1 hard rule / non-negotiable #10).
+  permissions = contents:read + pull-requests:write (PR comment) + actions:read
+  (cross-workflow baseline artifact download) — nothing broader.
+- FQ-70 (fallback-model Anthropic-credit-exhaustion) handling — a real judgment
+  call: I KEEP grader != target (target=triage-model, judge=fallback-model, §5.3)
+  and REJECT the "downgrade to judge==target=triage-model" shortcut the task
+  dangled — that would trip live-run.sh's own exit-3 §5.3 guard and violate the
+  ADR. Instead a JUDGE PREFLIGHT runs FIRST (one minimal completion, ~0 metered
+  cost) and, on a non-2xx, NEUTRAL green-skips the metered run with a LOUD, narrow
+  message that distinguishes "expected FQ-70" from "if the judge is healthy, THIS
+  IS A REAL FAILURE" (the preflight is itself a new silent-over-report surface, so
+  it's scoped narrow + prints the actual HTTP status + body). Result: a broken
+  judge yields a dormant/neutral gate, never a misleading red, never a silent pass
+  — and ZERO code change when FQ-70 resolves (the same workflow starts evaluating).
+- Fork safety (C4): fork PRs neutral green-skip under the SAME check context (no
+  secret touched), so a future required check (T-94) is not wedged.
+- concurrency: cancel-in-progress (Finding 6). Baseline fetched DYNAMICALLY (latest
+  successful capture-eval-baseline.yml run), never a hardcoded run id — self-heals
+  to a grader!=target baseline once one is re-captured post-FQ-70.
+- Reporting decoupled from gating (Finding 3): PR-comment reporter + job summary;
+  the merge decision comes ONLY from compare-baseline.py compare. DB write to
+  eval_gate_runs is STRUCTURALLY WIRED but NON-FATAL + deferred (needs a scoped CI
+  DB cred, Security-Lead-gated + not provisioned, AND FQ-71's case_results column)
+  — it emits the exact recordEvalGateRun payload for copy-paste and cannot fail the
+  gate. LangFuse push named as a deferred gap (no eval->LangFuse mechanism exists;
+  same honesty T-92 established).
+
+PROVEN (real run, PR #372, run 29070106517):
+- The gate auto-triggered on a path-matched PR, fork-check resolved same-repo, the
+  judge preflight hit fallback-model and got HTTP 400 with the exact FQ-70 body
+  ("Your credit balance is too low to access the Anthropic API"), fired the loud
+  FQ-70-vs-real-failure warning, skipped the metered run + baseline + compare + DB
+  steps (dormant, ~0 cost), POSTED the explanatory PR comment, and concluded GREEN
+  (enforce step skipped) — NOT a misleading red. Real-environment proof the
+  environment-vs-quality distinction works.
+- Catch path proven against the REAL captured baseline (run 29068118128): clean
+  re-compare exits 0 (PASS); a synthetic single-test regression exits 1 (FAIL)
+  catching the exact flipped test — same compare-baseline.py compare the workflow
+  invokes. T-92's 9-case comparator regression suite green. (A true end-to-end live
+  green/red is FQ-70-blocked and lands at the post-FQ-70 grader!=target re-capture,
+  not today — stated plainly, not dressed up.)
+
+NOT done here (correctly out of scope): registering as a required branch-protection
+  check (T-94, founder/admin, after the grader!=target baseline re-capture); applying
+  FQ-71's migration. T-94 handoff: BOTH the fork-PR path AND a non-path-matching PR
+  never run this check, so before it becomes required, main branch protection must
+  not wedge on "Expected — waiting for status" for those PRs (name both wedge
+  sources); and the grader!=target baseline MUST be re-captured (capture-eval-
+  baseline.yml's current defaults are judge==target, which now trips live-run.sh's
+  exit-3 — re-capture must be dispatched with judge=fallback-model once FQ-70 clears).
+
+Process note: PR #370 was abandoned/closed — a parallel-agent HEAD-collision (the
+  MEMORY.md worktree-isolation hazard) left it pointing at an unrelated T-97 commit;
+  rebuilt clean on current main as #372. T-97's work untouched.
+```
