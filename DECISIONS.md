@@ -2440,6 +2440,18 @@ env), all 3 evals target=judge=triage-model (only healthy scoped config; FQ-70).
 Deferred + named: DB baseline row (needs FQ-71 + CI DB cred/T-93); LangFuse record
 (no eval→LangFuse mechanism exists to follow); grader≠target re-baseline (T-91).
 Agent-owned technical decision, no founder business call. → ADR-0007 §5.4(b)
+2026-07-09 [Evals Lead] T-92 — GREEN BASELINE captured: all 3 product evals live
+against triage-model (judge==target; scoped LITELLM_EVAL_KEY) = 12/12, every case
+score 1.0 (kb-learn 4/4, ticket-respond 4/4, ticket-triage 4/4 — the last was
+live-unverified before now). Run 29068118128, git_sha 4701fdb, artifact
+eval-baseline-4701fdb. End-to-end re-proven: compare-baseline.py compare (baseline
+vs the same run) → 12/12 stable, GATE PASS exit 0. This is the ADR §5.5 "baseline
+before enforcing" green baseline — held as an artifact + run permalink until FQ-71
+lands the case_results column and the DB row can be written (gate isn't blocking
+until T-93/T-94, so the DB deferral gates nothing). Caveat on record: captured
+under judge==target because fallback-model (the only other scoped alias) is broken
+on staging (FQ-70); MUST be re-captured under grader!=target (T-91) before the gate
+blocks.
 ```
 
 ### 2026-07-10 — T-90 Security Lead sign-off: LITELLM_EVAL_KEY scope/cap APPROVED — T-90 closed

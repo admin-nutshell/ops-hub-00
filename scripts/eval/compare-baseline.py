@@ -302,7 +302,20 @@ def cmd_compare(args) -> int:
     return 0
 
 
+def _harden_output_encoding() -> None:
+    # Test descriptions legitimately contain non-ASCII (e.g. "->" rendered as an
+    # arrow). The gate's diagnostic output must NEVER crash on a console codepage
+    # (Windows cp1252 raises UnicodeEncodeError on such chars). Force UTF-8 with
+    # replacement so a comparator crash can't be misread as a gate failure.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass  # older/replaced stream — best effort
+
+
 def main() -> int:
+    _harden_output_encoding()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
 
