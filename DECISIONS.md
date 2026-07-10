@@ -2917,3 +2917,71 @@ FOUNDER_QUEUE escalation — agent-owned technical scoping; the founder touch
 (role-creation SQL + secret set) is mechanical and gets filed as its own FQ
 at implementation time.
 ```
+
+### 2026-07-10 — T-93 CI DB writer role: scoped `eval_gate_ci_writer` migration authored (Tech Lead)
+
+```
+2026-07-10 [Tech Lead] T-93 DB-persistence credential — migration AUTHORED, awaiting
+  founder apply (FQ-72). Implements the Security Lead design review of T-93's CI DB
+  persistence: the review REJECTED reusing the existing SUPABASE_STAGING_DB_URL GitHub
+  secret for the eval-gate-live.yml DB write, because that secret turned out to be an
+  owner-level, RLS-BYPASSING superuser credential (not the scoped ops_hub_app role it was
+  assumed to be) — handing it to the repo's first pull_request-auto-triggered, secret-
+  holding job would put an unbounded, RLS-bypassing prod-customer-ticket credential one
+  malicious-PR leak away. The review specified a new, single-purpose role instead; this
+  migration implements that spec.
+
+Migration: supabase/migrations/20260710000000_t93_eval_gate_ci_writer_role.sql
+  - Role `eval_gate_ci_writer`: LOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE,
+    NOREPLICATION, NOBYPASSRLS, NOINHERIT, CONNECTION LIMIT 3, statement_timeout=15s —
+    the review's full explicit attribute set (spelled out, not left to CREATE ROLE
+    defaults, so the idempotent re-assert `alter role` branch provably converges).
+    Created WITHOUT a password → cannot authenticate → INERT until a deliberate
+    follow-up sets a password (no credential ever committed — non-negotiable #1).
+  - GRANT INSERT ON eval_gate_runs ONLY (preceded by REVOKE ALL so the final privilege
+    set is provably exactly {INSERT}). Deliberately NO SELECT, NO UPDATE/DELETE, and no
+    privilege on any other table. Plus GRANT USAGE ON SCHEMA public (a prerequisite to
+    reference the table; not table access — mirrors ops_hub_app, 20260618120100).
+  - RLS INSERT policy eval_gate_runs_insert_ci scoped `to eval_gate_ci_writer`
+    with check (project_id is null and run_type = 'llm_rubric') — policy name matches
+    the review spec verbatim. A dedicated policy is REQUIRED because the role is
+    NOBYPASSRLS + NOINHERIT (not a member of ops_hub_app), so the existing ops_hub_app
+    policies do not apply to it and RLS default-deny would otherwise block every insert.
+
+Spec-vs-reality verification (the task required checking, not trusting, the predicate):
+  Traced the actual insert. recordEvalGateRun (src/metrics/evalHealth.ts) issues a plain
+  INSERT ... VALUES — no RETURNING, no ON CONFLICT, and it does not supply the generated
+  pass_rate column — so table INSERT privilege alone is sufficient; the no-SELECT grant
+  is both the security property AND functionally complete. The eval-gate write path
+  (eval-gate-live.yml STEP 6 -> compare-baseline.py `capture` -> recordEvalGateRun)
+  produces project_id = NULL (the payload never sets projectId; recordEvalGateRun's
+  `run.projectId ?? null` yields NULL — eval_gate_runs is platform-wide CI health data
+  with a nullable project_id by T-58 design) and run_type = 'llm_rubric'. The spec
+  predicate `project_id is null and run_type = 'llm_rubric'` therefore matches the real
+  insert EXACTLY — NO correction needed. Recorded explicitly (not silent compliance):
+  the predicate is INTENTIONALLY unable to write schema_validation or project-scoped
+  rows; a future per-project eval suite would require a deliberate policy widening — the
+  narrowness is the security property, not an oversight.
+
+Spec provenance: the authoritative spec is the Security Lead review entry immediately
+  above (2026-07-10 — "T-93 CI DB persistence: security design review", landed on main
+  as PR #377 while this migration was being authored). This migration matches it verbatim
+  — role attribute set, INSERT-only grant + schema usage, policy name
+  eval_gate_runs_insert_ci, and the predicate. Cross-checked against the review's wiring
+  conditions W1–W5: W1–W4 constrain the FOLLOW-UP workflow wiring (step-level env,
+  non-gating, parameterized INSERT, never reference SUPABASE_STAGING_DB_URL) and are NOT
+  in scope for this migration; W5 (LangFuse keys need their own review) likewise. The
+  review's provisioning-verification negative tests (SELECT/UPDATE/DELETE denied, non-null
+  project_id → RLS violation, well-formed platform llm_rubric INSERT succeeds) run as a
+  workflow_dispatch-only readback during the follow-up (with the live DSN), and get a
+  T-90-style Security Lead sign-off then; FQ-72's static verify queries are the founder's
+  at-apply proof of the grant/attr/policy shape.
+
+NOT self-applied (non-negotiable #3): FQ-72 filed with plain-language summary + literal
+  SQL Editor steps + four verify queries (role attrs / statement_timeout / exactly-INSERT
+  grant / policy presence — the queries that PROVE the security property). Deferred to a
+  separate follow-up once the role exists live: set the role password, create the
+  EVAL_GATE_DB_URL GitHub secret (explicit :5432 port), and wire the INSERT into
+  eval-gate-live.yml STEP 6 (that follow-up gets its own review — this task ends at
+  migration authored + FQ filed).
+```
