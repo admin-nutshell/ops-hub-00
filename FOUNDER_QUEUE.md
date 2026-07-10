@@ -4,6 +4,30 @@
 
 ---
 
+## FQ-70 — litellm-prod's Anthropic fallback path is broken (customer-impacting risk: no fallback if the primary model fails)
+
+**Filed:** 2026-07-10 | **Filed by:** Production Manager, T-90 follow-up investigation.
+**Needs:** Information (which of 2 duplicate `ANTHROPIC_API_KEY` rows is/was valid, if either) + Authorization (top up / rotate the Anthropic API key litellm-prod uses).
+
+**Context:** T-90 (provisioning the LiteLLM eval virtual key) found litellm-**staging**'s `fallback-model` alias (anthropic/claude-haiku-4-5-20251001, T-46) is Anthropic-credit-exhausted (`HTTP 400`, `"Your credit balance is too low to access the Anthropic API"` — confirmed on 2 independent runs, [29065628215](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29065628215), [29066125110](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29066125110)). `configure-litellm-anthropic-fallback.yml`'s own header says it targets staging only, so I checked whether prod has a separate fallback path and whether it shares the same problem.
+
+**Read-only investigation** (`diagnose-litellm-prod-anthropic-fallback.yml`, [run 29066315771](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29066315771) + [run 29066486166](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29066486166)), no mutation:
+- litellm-**prod DOES** have its own, separately-configured `fallback-model` → `anthropic/claude-haiku-4-5-20251001` registration (independent of staging's — confirmed via `/model/info`).
+- A single minimal completion smoke test against it (master key, read-only) **failed**, but with a **different error class** than staging's billing shortfall: `HTTP 401`, `litellm.AuthenticationError: ... "invalid x-api-key"`. This is an authentication failure, not a credit/billing failure — the key litellm-prod is using is itself rejected by Anthropic, independent of account balance.
+- litellm-prod has **2 duplicate `ANTHROPIC_API_KEY` rows** in its Coolify env vars (count only checked, values never read/printed) — this matches the known Coolify "Save appends rows, not upsert; last row wins" footgun already on file for this project. It's possible an **earlier** row held a still-valid key that got shadowed when a later (bad) row was saved on top — I stopped short of reading/testing either raw value directly against Anthropic, since that crosses from "read a count" into "handle credential material outside its established use," which isn't a Production Manager unilateral call.
+- **Net effect:** if ops-hub-prod's primary model (triage-model / gpt-4o-mini) ever fails and falls back per `LITELLM_FALLBACK_MODEL=fallback-model`, that fallback call will currently also fail (401). Primary-model outages in production currently have **no working fallback**.
+
+**Options:**
+- **(A)** Founder (or Production Manager, once authorized) opens Coolify's litellm-prod env vars UI, inspects both `ANTHROPIC_API_KEY` rows' actual values, and either restores whichever is valid or replaces both with a fresh key + tops up the Anthropic account if the root cause is exhausted/revoked credit (same account as staging, or a separate one — worth confirming which). Also worth deduping the 2 rows while in there (cosmetic, but the same footgun class flagged elsewhere in this file for `LITELLM_URL`).
+- **(B)** Accept the risk for now — primary model (OpenAI gpt-4o-mini) has been reliable in practice; fallback stays broken until this is revisited. Document the residual risk in the runbook.
+- **(C)** Remove/disable the `fallback-model` routing on prod entirely until a valid key is in place, so a primary-model failure fails loudly (visible incident) instead of silently attempting a fallback that's guaranteed to also fail.
+
+**Recommendation:** (A) — this is a genuine gap in production's resilience (the whole point of a fallback model is to survive exactly the kind of primary-provider outage this key currently can't help with), and fixing it needs either a credential value or a billing/account decision only the founder has visibility into. Low urgency in practice (OpenAI primary has been stable), but should not sit indefinitely given it's a live customer-impacting gap if OpenAI ever has an outage.
+
+**Deadline:** non-blocking — does not gate T-90, T-93, or any Sprint 9 build task. Revisit at founder's convenience; flagging now per CLAUDE.md's customer-impacting-incident escalation criterion rather than waiting for an actual outage to discover it.
+
+---
+
 ## ✅ FQ-69 — RESOLVED: 70% of production tickets (14/20) were stuck un-triaged — root cause fixed, entire backlog drained on real data
 
 **Filed:** 2026-07-09 | **UPGRADED twice, ROOT-CAUSED (Tech Lead), then RESOLVED (user-authorized fix) — all same day.**

@@ -2321,4 +2321,52 @@ max_tokens, free-form) run 29065588894 also 100% (4/4), proving "parameterized f
 three" isn't aspirational. PR #356. Out of scope per T-89: calibration guards (T-91), per-test
 baseline store (T-92), CI auto-trigger (T-93, gated on T-90's virtual key). Agent-owned,
 no founder escalation.
+
+2026-07-10 [Production Manager] T-90 — provisioned the scoped, budget-capped LiteLLM
+virtual key (ADR-0007 §6 step 2 / Tech Lead C1). LITELLM_EVAL_KEY registered on
+litellm-staging: models=[triage-model, fallback-model], max_budget=$7.00 USD,
+soft_budget=$3.00 USD, budget_duration=30d, key_alias=eval-gate-t90 (PR #357).
+First verification attempt (run 29065628215) hard-aborted before the negative
+scope-boundary test ran: the judge-alias (fallback-model) positive test failed on
+an unrelated Anthropic billing error (HTTP 400, "Your credit balance is too low"),
+and the job's fail-fast default skipped everything after it. Fixed as a pure
+workflow control-flow change (PR #358, self-merged per the standing self-merge
+policy for this eval-gate build): continue-on-error on both model-specific
+positive-test steps, negative test runs unconditionally, a pre-check confirms the
+out-of-scope alias is itself healthy before relying on its rejection as proof, and
+an explicit final gate fails the job only on a real defect (target-alias or
+negative-test failure) — judge-alias/billing failures are reported as a separate,
+non-gating warning. Also made same-value re-runs idempotency-safe (delete-then-
+register, matching configure-litellm-anthropic-fallback.yml's pattern), since the
+already-provisioned key needed to be re-verified without a fresh secret value.
+Re-run (29066125110) produced the full proof: positive test (target, triage-model)
+PASS; positive test (judge, fallback-model) reported its real failure (same
+Anthropic billing error, non-gating); negative test PASS — HTTP 403 "key not
+allowed to access model. This key can only access models=['triage-model',
+'fallback-model']. Tried to access meta/llama-3.3-70b-instruct" — the dispositive
+scope-boundary proof T-90 needs. Master key was never exposed to the auto-
+triggered job's env at any point.
+
+Follow-up investigation (read-only, PRs #359/#360, no mutation): checked whether
+litellm-prod's Anthropic fallback path shares staging's credit exhaustion, since
+configure-litellm-anthropic-fallback.yml (T-46) targets staging only per its own
+header. Found prod DOES have its own, separately-configured fallback-model →
+anthropic/claude-haiku-4-5-20251001 registration, and it IS also broken, but with
+a different failure class: HTTP 401 "invalid x-api-key" (authentication_error),
+not a credit-balance 400. Also found 2 duplicate ANTHROPIC_API_KEY rows on
+litellm-prod (count only checked, values never read/printed) — matches the known
+Coolify "last row wins" footgun on file for this project. Stopped short of
+reading/testing either raw key value directly against Anthropic (crosses from
+"read a count" into handling credential material outside its established use,
+not a Production Manager unilateral call). Filed FQ-70 (non-blocking): prod
+currently has no working fallback if the primary model fails — a genuine
+customer-impacting gap, but remediation needs either a corrected key value or an
+Anthropic billing/account decision, both founder calls per CLAUDE.md's escalation
+criteria (customer-impacting incident + "an env var needs a value only the
+founder knows"). Does not gate T-90, T-93, or any Sprint 9 build task.
+
+T-90 exit criteria met; core scope/cap/negative-test proof is agent-owned and
+does not require founder input. Handing off to Security Lead for the sign-off
+recorded in WORK.md's T-90 exit criteria (ADR-0007 deciders list) — not closed
+out from within this task, per the original plan.
 ```
