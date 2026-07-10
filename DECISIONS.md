@@ -2298,4 +2298,27 @@ customer-impacting for 3.6 days. (2) DEFERRED / kept flagged — the broader
 synthetic downstream-triage E2E monitor (Sprint 6 §7): larger, and partly subsumed
 by T-97 + the FQ-69 real-data-drain evidence; revisit once T-97 lands. Judgment
 call, agent-owned, no founder input needed.
+
+2026-07-09 [Evals Lead] T-89 — generalized T-88's corrected KB Learn harness into a
+shared, parameterised live-run runner (ADR-0007 §6 step 1). Extracted the inline
+live-config generation out of run-kb-learn-eval.yml into scripts/eval/gen-live-config.py
+(generic generator, reads any evals/*.yaml unchanged) + scripts/eval/live-run.sh
+(orchestrator), parameterised by eval file + target alias + judge alias. Does the three
+things promptfoo's schema check doesn't: provider swap → openai:chat:<alias>; system
+prompt delivered as a REAL {role:'system'} message — the config.system-ignored-by-openai
+bug (T-84's 25%) fixed ONCE in the shared generator so no future per-eval override can
+reintroduce it; grader routed through LiteLLM on a SEPARATE judge-alias parameter (so a
+caller can set grader ≠ target — the parameter exists; enforcing it is T-91, not T-89).
+run-kb-learn-eval.yml refactored to call the shared runner (the refactor is itself the
+proof the extraction preserved behaviour). No change to the three evals/*.yaml
+reference-provider blocks (they stay for schema validation; the runner generates a
+separate self-contained live config). Verified: generator run against all three evals
+(system popped from config + re-delivered as {role:'system'}, 3398/479/1060 chars, 4
+tests + llm-rubric@0.8 preserved each); end-to-end CI dispatch reproduces T-88's 100%
+(4/4) — run 29065282245, prompt_tokens 829–875/call (≈853 expected, vs ~124/call of the
+25% no-instructions bug); and a second-eval spot-check on ticket-respond (temp 0.3, no
+max_tokens, free-form) run 29065588894 also 100% (4/4), proving "parameterized for all
+three" isn't aspirational. PR #356. Out of scope per T-89: calibration guards (T-91), per-test
+baseline store (T-92), CI auto-trigger (T-93, gated on T-90's virtual key). Agent-owned,
+no founder escalation.
 ```
