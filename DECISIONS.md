@@ -2414,6 +2414,6 @@ locally rather than via a flaky live grader run.
 Scope kept tight (mergeable alongside T-92, which owns the runner's baseline logic):
 additive new file + clearly-delimited live-run.sh additions; NO supabase/migrations
 touched, NO eval_gate_runs/baseline-relative logic (T-92), NO CI auto-trigger wiring (T-93,
-gated on T-90/C1). PR #TBD, self-merged per the standing eval-gate self-merge policy.
+gated on T-90/C1). PR #366, self-merged per the standing eval-gate self-merge policy.
 Agent-owned, no founder escalation.
 ```
