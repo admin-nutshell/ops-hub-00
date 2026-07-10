@@ -2750,3 +2750,170 @@ Process note: worked in a shared/reused Claude Code worktree
 Deploy record: docs/deploys/2026-07-10-t97-litellm-internal-auth-monitor.md
 PRs: #369 (feature), #371, #373, #374 (fixes found during live verification)
 ```
+
+### 2026-07-10 — T-93 CI DB persistence: security design review — REQUIRE a new INSERT-only credential (`EVAL_GATE_DB_URL`); `SUPABASE_STAGING_DB_URL` reuse REJECTED
+
+```
+2026-07-10 [Security Lead] T-93 follow-up — security design review of how the
+live eval gate (.github/workflows/eval-gate-live.yml, STEP 6 "Persist run to
+eval_gate_runs") gets a database credential. This is the review ADR-0007 Tech
+Lead Finding 3 / Condition C2 required BEFORE wiring ("the reporting path pulls
+MORE secrets into PR-triggered CI than §3 analyzes — analyze them too"), done
+to the same bar as the T-90 LITELLM_EVAL_KEY review (2026-07-10, above).
+Design review only: nothing wired, nothing provisioned, no workflow changed.
+
+VERDICT: REQUIRE A NEW, NARROWER CREDENTIAL. Do NOT reuse
+SUPABASE_STAGING_DB_URL (or any existing DB credential) in this workflow.
+Provision EVAL_GATE_DB_URL as a new Postgres login role scoped to INSERT-only
+on eval_gate_runs — full spec below. The workflow's current no-op stub already
+names EVAL_GATE_DB_URL as its target secret, so this verdict changes no code;
+it defines what that secret is allowed to be.
+
+WHY REUSE IS REJECTED — evidence, not assumption:
+
+1. SUPABASE_STAGING_DB_URL is NOT ops_hub_app. Verified against its own
+   history: it is the `postgres` login role — the project owner-class,
+   RLS-bypassing credential (t83-pg-policy-reconciliation.yml header: "the
+   `postgres` login role"; precheck-litellm-db-wall.yml: "(postgres role)";
+   T-85's own note declining to use it BECAUSE it is "a superuser/RLS-bypass
+   credential"). It is also currently a KNOWN-BAD value — not even a usable
+   DSN (T-60 2026-07-06 found a bare 38-char hostname; T-83's workflow calls
+   it "the known-bad SUPABASE_STAGING_DB_URL candidate" and falls back past
+   it). So "reuse" would actually mean REPAIRING an owner-level DSN and then
+   handing it to the first PR-auto-triggered job in the repo — strictly the
+   worst available option. Rejected outright.
+
+2. The softer reuse candidate (ops_hub_app, via an OPS_HUB_APP_LOGIN_URL-style
+   secret) also fails, on non-negotiable #10 ("CI does NOT have access to:
+   ... customer data"). T-83's live pg_policy dump (run 28991770926, 20
+   policies, 1:1 with migrations) establishes the actual grant surface:
+   ops_hub_app holds SELECT+INSERT+UPDATE on tickets, SELECT on
+   tenants/projects (+ column-scoped UPDATE on tenants.sla_config), INSERT+
+   SELECT on audit_log, write on kb_articles/feature_flags/agent_cost_events/
+   agent_model_routing, and full write on eval_gate_runs. Two facts turn that
+   into customer-data access from CI: (a) RLS tenant scoping for ops_hub_app
+   is a CLIENT-ASSERTED GUC — the connecting session calls set_config
+   ('app.current_tenant'/'app.current_project') itself, so a leaked credential
+   + the well-known prod UUIDs (…0003/…0030, recorded in this repo) = full
+   read/write of real production tickets; (b) staging and prod are the SAME
+   physical Supabase project (ADR-0005) — there is no "it's only staging" for
+   this DB. T-85 proved these are real customer tickets with real content.
+
+3. The T-90 comparison the ADR invites is exactly where the two cases
+   diverge. Same threat model (private single-team repo; same-repo PRs from
+   worktree branches; fork PRs get no secrets and neutral-skip) — different
+   consequence class:
+   - LITELLM_EVAL_KEY leak: bounded to $7 USD/30d of staging completions on
+     two aliases. An availability nuisance. That bound is WHY I approved it.
+   - A broad DB credential leak: NO dollar cap, no budget_duration reset. Read
+     of prod tenant/ticket data (PIPEDA-relevant customer PII), silent tamper
+     of tickets/feature_flags, and — worst for trust — write access to
+     audit_log, the thing incident forensics depends on. "Budget-cap as
+     backstop" has no DB analogue; the only equivalent bound is the grant set
+     itself. So the auto-trigger context that was acceptable for a
+     budget-capped LLM key is NOT acceptable for any credential whose grants
+     exceed the job's single need.
+
+4. The job is NOT the boundary; the credential is. It was proposed that
+   job-level discipline (parameterized INSERT, no dynamic SQL, no user input
+   in the query) could make a broader credential safe. Rejected as the
+   PRIMARY control: `pull_request` runs execute the PR HEAD's workflow and
+   scripts — in this threat model the job's code is attacker-controlled, so
+   any property of the job (its query shape, its env hygiene) evaporates
+   exactly when it matters. Job discipline is required hygiene (see
+   conditions), but only the role's grant set bounds a leak.
+
+5. Precedent is uniform and points one way: every prior use of
+   SUPABASE_STAGING_DB_URL is workflow_dispatch-ONLY (verified across all 7
+   referencing workflows — zero pull_request triggers) and read-only by
+   established convention (T-67/FQ-61 record that convention explicitly).
+   This job is the first credential-holding pull_request-auto-triggered job
+   in the repo. First-of-class gets the narrowest credential we can mint, not
+   the broadest one lying around. LiteLLM's own precedent here (litellm_db_user,
+   litellm_db_user_prod, FQ-53/FQ-57) is that per-consumer scoped DB roles are
+   this team's normal pattern, not an exotic ask.
+
+THE REQUIRED CREDENTIAL — EVAL_GATE_DB_URL, concrete spec (so the implementer
+does not re-derive it):
+
+- Role: eval_gate_ci_writer — LOGIN, NOSUPERUSER, NOCREATEDB, NOCREATEROLE,
+  NOBYPASSRLS, NOINHERIT, NOREPLICATION, CONNECTION LIMIT 3, and
+  ALTER ROLE eval_gate_ci_writer SET statement_timeout = '15s'.
+- Grants: GRANT USAGE ON SCHEMA public; GRANT INSERT ON eval_gate_runs.
+  NOTHING ELSE. Deliberately NO SELECT even on eval_gate_runs itself —
+  verified feasible: recordEvalGateRun (src/metrics/evalHealth.ts) is a plain
+  parameterized INSERT with no RETURNING, the PK is uuid DEFAULT
+  gen_random_uuid() (no sequence grant needed), pass_rate is GENERATED, and
+  the baseline the gate compares against comes from GitHub artifacts, never
+  from the DB. If the writer ever needs RETURNING, that is a scope change
+  requiring a fresh review (same rule as T-90's "widening = new key").
+- RLS (small migration, same founder-apply path as every migration): the
+  table has RLS enabled and its only write policy (eval_gate_runs_write) is
+  `to ops_hub_app` — so the new role FAIL-CLOSES today, correct default. Add:
+    create policy eval_gate_runs_insert_ci on eval_gate_runs
+      for insert to eval_gate_ci_writer
+      with check (project_id is null and run_type = 'llm_rubric');
+  CI gate rows are platform-level by the table's own design comment; this
+  pins the role to exactly the row shape the gate produces — it cannot
+  attribute rows to a project or backfill schema_validation rows.
+- Provisioning: founder SQL Editor session (CREATE ROLE + password + the
+  policy migration — can ride one founder cycle); password goes straight to
+  `gh secret set EVAL_GATE_DB_URL` as a full session-pooler DSN with an
+  EXPLICIT :5432 port (the known parsing footgun, DECISIONS.md 2026-06-21),
+  never in chat/repo/scratchpad-committed (standing rule). FQ to be filed by
+  the implementer at execution time — mechanical, same class as FQ-71.
+- Provisioning verification (mirror T-90's dispositive negative tests, in a
+  workflow_dispatch-only verify job, DSN masked): as eval_gate_ci_writer —
+  (a) SELECT on tickets → permission denied; (b) SELECT on eval_gate_runs →
+  permission denied; (c) UPDATE/DELETE on eval_gate_runs → permission denied;
+  (d) INSERT with a non-null project_id → RLS violation; (e) INSERT of a
+  well-formed platform llm_rubric row → success (then cleaned up/confirmed
+  via the ops_hub_app read path). (a)–(d) are the proof that matters; (e)
+  alone is not evidence of scoping.
+
+CONDITIONS ON THE WORKFLOW WIRING (Tech Lead implements; these are the
+"approve with conditions" half of this verdict):
+- W1: EVAL_GATE_DB_URL enters ONLY the persist step's env (step-level, not
+  job-level) — the current stub already has this shape; keep it.
+- W2: The step stays continue-on-error / non-gating (Tech Lead Finding 3:
+  merge decision never depends on the write) and keeps the fork neutral-skip
+  upstream of it.
+- W3: The INSERT is parameterized end-to-end (recordEvalGateRun as-is, or
+  psql with bound variables). Eval results contain LLM output = untrusted
+  input (non-negotiable #7); it must never be string-interpolated into SQL.
+- W4: SUPABASE_STAGING_DB_URL must NEVER be referenced by eval-gate-live.yml,
+  under any fallback branch. Same hard rule as C1's master-key rule.
+- W5: LangFuse persistence is explicitly NOT covered by this review — no
+  eval→LangFuse push exists today (T-92 finding). If/when one is built for
+  this workflow, LANGFUSE_SECRET_KEY entering PR-triggered context needs its
+  own pass under this same threat model. Do not add it silently.
+
+ALTERNATIVE CONSIDERED AND REJECTED: routing the write through an ops-hub app
+endpoint (app holds ops_hub_app server-side; CI holds an HTTP bearer token).
+Viable and credential-safe, but it adds a new authenticated public write
+endpoint + token lifecycle to defend, versus one INSERT-only role that
+Postgres enforces natively — more total surface for the same property. The
+scoped role also matches the existing litellm_db_user(_prod) pattern.
+
+NON-BLOCKING OBSERVATIONS (recorded, none gate this verdict):
+- O1: SUPABASE_STAGING_DB_URL is a broken value with an owner-role history,
+  still referenced by 7 dispatch-only workflows (all of which already carry
+  working fallbacks past it). Housekeeping recommendation to the founder:
+  delete it, or re-provision it as a genuinely read-only reporting role and
+  rename accordingly. Its current state (broken + owner-class + lying around)
+  is exactly how a future session "fixes" it into a live footgun.
+- O2: COOLIFY_API_TOKEN (a repo secret) can read Coolify env vars and thus
+  transitively reach app-held credentials (t83's own fallback fetches
+  OPS_HUB_APP_LOGIN_URL that way). Pre-existing, out of this review's scope,
+  and mitigated today by every consumer being workflow_dispatch-only — but it
+  is the same class of risk one workflow-trigger change away. Flagged for the
+  next quarterly compliance pass, not actioned here.
+
+Scope of this review: the CREDENTIAL DESIGN for eval-gate-live.yml's DB
+persistence step. The concrete provisioning + wiring is a Tech Lead /
+Production Manager follow-up implementing this spec; the provisioned role
+gets its verification evidence reviewed the same way T-90's key did. No
+FOUNDER_QUEUE escalation — agent-owned technical scoping; the founder touch
+(role-creation SQL + secret set) is mechanical and gets filed as its own FQ
+at implementation time.
+```
