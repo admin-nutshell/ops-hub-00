@@ -247,21 +247,28 @@ def cmd_capture(args) -> int:
         print("::error::no test cases captured -- refusing to call this a green baseline")
         return 1
 
-    # The exact payload recordEvalGateRun (src/metrics/evalHealth.ts) wants -- so
-    # capturing the DB baseline row is a copy-paste once the case_results column
-    # is applied (FQ-71). NOT written here: agents hold no ops_hub_app runtime DB
-    # credential, and the column isn't live yet.
+    # The exact payload recordEvalGateRun (src/metrics/evalHealth.ts) wants. As of
+    # T-93's DB-persistence wiring this is no longer just a preview: eval-gate-live.yml
+    # STEP 6 reads --payload-out (below) and feeds it to scripts/eval/persist-eval-run.sh,
+    # which performs the real INSERT via the scoped eval_gate_ci_writer role (once
+    # EVAL_GATE_DB_URL exists). This function itself still holds no secret and touches
+    # no network/DB (Finding 3's separation of concerns) -- it only shapes the row.
     payload = {
         "runType": "llm_rubric",
         "status": status,
         "totalCases": total,
         "passedCases": passed,
         "gitSha": baseline["git_sha"],
+        "workflowRunUrl": args.workflow_run_url,
         "ciRunAt": baseline["captured_at"],
         "caseResults": [c for cases in baseline["evals"].values() for c in cases],
     }
     print("=== recordEvalGateRun payload (for the eval_gate_runs baseline row) ===")
     print(json.dumps(payload, indent=2))
+    if args.payload_out:
+        with open(args.payload_out, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        print(f"Wrote recordEvalGateRun payload -> {args.payload_out}")
     return 0
 
 
@@ -371,10 +378,26 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="command", required=True)
 
+    _default_run_url = None
+    _server = os.environ.get("GITHUB_SERVER_URL")
+    _repo = os.environ.get("GITHUB_REPOSITORY")
+    _run_id = os.environ.get("GITHUB_RUN_ID")
+    if _server and _repo and _run_id:
+        _default_run_url = f"{_server}/{_repo}/actions/runs/{_run_id}"
+
     cap = sub.add_parser("capture", help="Normalize promptfoo results into a baseline document.")
     cap.add_argument("--results", nargs="+", required=True, help="One or more promptfoo results.json files.")
     cap.add_argument("--git-sha", default=os.environ.get("GITHUB_SHA"), help="Commit the baseline is captured at.")
     cap.add_argument("--out", help="Write the baseline JSON here (also printed).")
+    cap.add_argument(
+        "--payload-out",
+        help="Write ONLY the recordEvalGateRun payload (T-93 DB-persistence row shape) here, as compact JSON.",
+    )
+    cap.add_argument(
+        "--workflow-run-url",
+        default=_default_run_url,
+        help="workflow_run_url for the payload/DB row. Defaults to the current GitHub Actions run URL when GITHUB_SERVER_URL/GITHUB_REPOSITORY/GITHUB_RUN_ID are set.",
+    )
     cap.set_defaults(func=cmd_capture)
 
     cmp = sub.add_parser("compare", help="Compare current results against a captured baseline.")

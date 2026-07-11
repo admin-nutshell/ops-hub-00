@@ -2985,3 +2985,180 @@ NOT self-applied (non-negotiable #3): FQ-72 filed with plain-language summary + 
   eval-gate-live.yml STEP 6 (that follow-up gets its own review — this task ends at
   migration authored + FQ filed).
 ```
+
+### 2026-07-10 — T-93 `eval_gate_ci_writer` password provisioning: founder single-paste (Option B) APPROVED; CI-held owner DSN (Option A) REJECTED (Security Lead)
+
+```
+Ruling requested by the Production Manager (FQ-72 confirmed applied — role live,
+INSERT-only, still password-less/inert) before building anything for the last-mile
+task: set a password on eval_gate_ci_writer and land EVAL_GATE_DB_URL, per the Tech
+Lead's own handoff note ("password generated and gh secret set in the SAME motion —
+never a separate session").
+
+THE TRAP: `ALTER ROLE ... PASSWORD` needs service_role/owner privilege. No agent-held
+credential can do it (non-negotiable #3), and SUPABASE_STAGING_DB_URL is explicitly
+out of bounds for this too (same credential this review's own T-93 verdict rejected
+reusing — using it to set another role's password sidesteps the point of that
+rejection just as much as using it for the INSERT would have). That leaves exactly
+two candidate mechanisms:
+
+  Option A — a new GitHub Actions workflow (even workflow_dispatch-only) that does
+    generate-password + ALTER ROLE + gh-secret-set in one job.
+  Option B — a founder SQL Editor paste (same channel as every migration this
+    sprint, including this exact role's own creation, FQ-72) that generates +
+    applies the password, then a founder paste of the resulting DSN into GitHub's
+    secret UI.
+
+RULING: Option A REJECTED. Option B APPROVED (with 3 conditions below) — this is,
+  in fact, already the letter of this review's original provisioning line
+  ("founder SQL Editor session ... password goes straight to gh secret set").
+
+WHY A IS REJECTED, EXPLICITLY:
+  1. To run ALTER ROLE, the job needs a service_role/owner-class DSN. As a
+     PERSISTENT GitHub Actions secret, that is exactly the O1 footgun this
+     review's own entry flagged with SUPABASE_STAGING_DB_URL ("owner-level...
+     lying around... is exactly how a future session fixes it into a live
+     footgun") — recreated deliberately, on purpose, for convenience. The
+     workflow file that reads it would be agent-authored and (this session's
+     standing self-merge policy) agent-merged — no founder ever reviews the code
+     that holds a service_role secret. Non-negotiable #3 ("migrations ONLY — no
+     agent ever holds it at runtime") is categorical, not situational:
+     workflow_dispatch vs pull_request changes who PUSHES THE BUTTON, not who
+     HOLDS the secret in the interim.
+  2. Independently disqualifying: workflow_dispatch INPUT values are recorded
+     UNMASKED in the run's UI and REST API response. A founder pasting an owner
+     DSN into a dispatch input box is a plaintext credential in a retained,
+     readable log — worse than the SQL Editor path, not better.
+  3. "Scoped, one-time, delete-after-use" doesn't rescue it: the secret still
+     sits unattended between `gh secret set` and the run; deletion is a manual
+     promise with no enforcement; Actions has no per-workflow secret scoping at
+     the repo level without environments + required reviewers — more machinery
+     than the one-paste alternative, to protect a strictly worse posture.
+  There is no viable third option: Supabase's dashboard has no password-set UI
+  for a custom role, and Vault doesn't help set a role password without
+  service_role either.
+
+MECHANISM SPEC (Option B, as built — supabase/ops/t93_set_eval_gate_ci_writer_password.sql,
+  NOT a migration, no DDL on any table, kept only for provenance/re-run-to-rotate):
+  - R1 — the password is never a literal in the SQL text and never hits a logged
+    top-level DDL statement. Generated server-side inside a `pg_temp` plpgsql
+    function (`gen_random_bytes` via pgcrypto, base64 → URL-safe), applied via
+    `execute format('alter role eval_gate_ci_writer password %L', pw)` — dynamic
+    SQL, so (a) the SQL Editor's saved query TEXT contains no secret (only this
+    template does), and (b) no top-level `ALTER ROLE ... PASSWORD '...'` statement
+    exists for Postgres to log verbatim at higher log_statement levels. After this
+    runs, the plaintext exists nowhere server-side — only the SCRAM hash.
+  - R2 — the function assembles and returns the full DSN EXACTLY ONCE, via a plain
+    `select fn()` (a normal query result, not `raise notice`, which can mirror to
+    server logs depending on log_min_messages). All non-secret DSN parts (session
+    pooler host aws-1-ca-central-1.pooler.supabase.com, explicit :5432, pooler
+    username form `eval_gate_ci_writer.yocoljutbiizdbfraapx`, sslmode=require) are
+    hardcoded in the script so the founder assembles nothing — they copy ONE cell
+    into GitHub → repo Settings → Secrets and variables → Actions → New repository
+    secret → EVAL_GATE_DB_URL, via the web UI (not `gh` CLI — don't assume the
+    founder has it authed). The founder briefly seeing their own credential once,
+    to relay it into GitHub's own secret UI, is NOT a violation of #9 (which
+    forbids credentials IN CHAT) — the founder is the credential authority, same
+    trust path every existing repo secret took. GitHub's secret store is this
+    credential's ONLY home: not Vault, not Coolify, not a password manager, not
+    the FQ itself. Recovery from loss = re-run the same paste (ALTER ROLE PASSWORD
+    is a reset, safely re-runnable — ops/ file is not a one-shot migration).
+  - R3 — provisioning isn't DONE until the negative tests pass. Before treating
+    the persist step as trustworthy, run the workflow_dispatch-only verify job
+    (DSN masked, step-level env) proving as eval_gate_ci_writer: (a) SELECT on
+    tickets denied; (b) SELECT on eval_gate_runs denied; (c) UPDATE/DELETE denied;
+    (d) INSERT with non-null project_id → RLS violation; (e) well-formed platform
+    llm_rubric INSERT succeeds. (a)–(d) are the proof; (e) alone is not. That
+    evidence gets a T-90-style Security Lead sign-off before eval-gate-live.yml's
+    persist step is trusted in production, per this review's original provisioning-
+    verification spec.
+
+"SAME MOTION" INTERPRETATION: satisfied by one founder sitting (SQL paste → copy →
+  GitHub paste) with ZERO intermediate persistence — no disk, no chat, no
+  scratchpad copy at any point. If interrupted between the two steps: RE-RUN the
+  SQL paste from the top and get a fresh value; never attempt to retrieve/recall
+  the old one. This is the recovery path, not an edge case to special-case around.
+
+Standing conditions from the original review, unchanged: EVAL_GATE_DB_URL uses the
+  explicit :5432 port (the known DSN-parsing footgun, DECISIONS.md 2026-06-21);
+  enters ONLY the persist step's step-level env (W1), never job-level;
+  SUPABASE_STAGING_DB_URL never referenced by eval-gate-live.yml under any branch
+  (W4).
+
+Filed alongside FQ-73 (Production Manager) — the founder's one-sitting action per
+  this spec.
+```
+
+### 2026-07-10 — T-93 DB-persistence wiring landed; blocked on FQ-73 (Production Manager)
+
+```
+Last-mile task: get eval_gate_ci_writer's password set and the real INSERT wired
+into eval-gate-live.yml. Split cleanly per the advisor's read: the password
+question blocks ONLY the end-to-end DB proof, not the code wiring — landed the
+wiring regardless (task explicitly authorized this), and resolved the password
+question via a Security Lead consult BEFORE building anything (see the ruling
+entry immediately above) rather than presuming either the "one-click workflow"
+suggestion or unilaterally rejecting it.
+
+CODE LANDED (this pass, PR pending on branch t93-eval-gate-db-persist):
+- scripts/eval/compare-baseline.py: `capture` gained --payload-out (writes the
+  exact recordEvalGateRun-shaped JSON to a file — the SAME dict previously only
+  printed) and --workflow-run-url (defaults from GITHUB_SERVER_URL/
+  GITHUB_REPOSITORY/GITHUB_RUN_ID when set). Two new stdlib tests
+  (CapturePayloadOutTests) confirm the written file matches recordEvalGateRun's
+  shape field-for-field and that omitting the flag leaves prior behavior
+  unchanged. Full suite: 11/11 passing (scripts/eval/test_compare_baseline.py).
+- scripts/eval/persist-eval-run.sh (new): reproduces recordEvalGateRun's INSERT
+  (src/metrics/evalHealth.ts) column-for-column via psql, not the TS function
+  directly — eval-gate-live.yml never runs `npm ci` (it's a Python-script-driven
+  workflow; adding the full Node dependency tree for one INSERT would be a
+  heavier footprint than the psql/jq this repo's other verify jobs already use,
+  e.g. t60-rls-probe.yml). Every value that can carry LLM-derived/untrusted
+  content (status, git_sha, workflow_run_url, ci_run_at, case_results) goes
+  through psql's quoted `:'var'` bind form — never string-interpolated (W3,
+  non-negotiable #7). `project_id` (NULL) and `run_type` ('llm_rubric') are
+  HARD-CODED SQL LITERALS, not read from the payload at all — defense-in-depth
+  beyond W3: no field in the payload can ever influence the two columns
+  eval_gate_runs_insert_ci's RLS predicate keys on, regardless of future payload
+  shape changes. Never prints EVAL_GATE_DB_URL; exits non-zero on any failure
+  without treating that as fatal to the caller (that's the caller's job).
+- .github/workflows/eval-gate-live.yml STEP 6: rewritten to always shape the
+  payload (compare-baseline.py capture --payload-out — no secret, no network,
+  Finding 3's separation of concerns preserved), then branch: EVAL_GATE_DB_URL
+  absent → same DEFERRED message as before (now honest about WHY: role exists
+  live per FQ-72, no password yet, FQ-73 pending) with the payload printed as
+  proof of what would be written; EVAL_GATE_DB_URL present → calls
+  persist-eval-run.sh for the real INSERT. continue-on-error: true unchanged
+  (W2); secret still enters ONLY this step's env, never job-level (W1); STEP 9's
+  gate decision untouched.
+- .github/workflows/verify-eval-gate-ci-writer-role.yml (new): the
+  workflow_dispatch-only dispositive negative-test job the credential review's
+  provisioning-verification list (a)-(e) specified, built now so it's ready the
+  moment FQ-73 resolves — (a) SELECT tickets denied, (b) SELECT eval_gate_runs
+  denied, (c) UPDATE/DELETE denied, (d) non-null project_id -> RLS violation,
+  (e) well-formed llm_rubric INSERT succeeds, then a read-back + cleanup of the
+  (e) test row via ops_hub_app (OPS_HUB_APP_LOGIN_URL, fetched from Coolify same
+  as t60-rls-probe.yml) — eval_gate_ci_writer itself has no SELECT/DELETE to
+  verify or clean up its own insert, which is exactly the security property
+  being proven, not a gap in the test.
+- supabase/ops/t93_set_eval_gate_ci_writer_password.sql (new): the founder
+  single-paste script per the ruling above (R1/R2). Not a migration (no table
+  DDL) — kept for provenance and so a re-run (rotation, or "closed the tab
+  before copying") is a copy-paste of this exact file.
+
+FQ-73 filed (Production Manager) per the ruling's mechanism: one founder sitting,
+  two actions — run the SQL script once, paste the one resulting value into
+  GitHub's own secret UI as EVAL_GATE_DB_URL.
+
+STATE: code fully wired and degrades gracefully with EVAL_GATE_DB_URL absent
+  (verified: capture --payload-out produces the correct payload shape locally;
+  persist-eval-run.sh's guard clauses verified against missing-DSN and
+  missing-payload-file cases — psql/jq happy-path not locally exercised, no
+  local Postgres server available in this environment; CI/the founder's real
+  run is the first live exercise). NOT yet proven end-to-end (no row has been
+  written to eval_gate_runs by this role) — genuinely blocked on FQ-73, a
+  founder-only action per non-negotiable #3, not a gap in this session's work.
+  Once FQ-73 resolves: run verify-eval-gate-ci-writer-role.yml, get Security
+  Lead sign-off on that evidence (T-90-style), then trigger eval-gate-live.yml
+  and confirm a real row via the ops_hub_app read path.
+```

@@ -189,5 +189,62 @@ class EmptyBaselineFailClosedTests(unittest.TestCase):
         self.assertEqual(rc, 1, out)
 
 
+class CapturePayloadOutTests(unittest.TestCase):
+    """T-93 DB-persistence wiring: `capture --payload-out` must write EXACTLY the
+    recordEvalGateRun payload shape (src/metrics/evalHealth.ts) to a file, since
+    scripts/eval/persist-eval-run.sh reads that file verbatim for the real INSERT."""
+
+    def _write_results(self, d, eval_name, cases):
+        path = os.path.join(d, f"{eval_name}-results.json")
+        rows = [
+            {"description": c["description"], "success": c["passed"], "score": c["score"]}
+            for c in cases
+        ]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"results": {"results": rows}}, f)
+        return path
+
+    def test_payload_out_matches_recordEvalGateRun_shape(self):
+        with tempfile.TemporaryDirectory() as d:
+            rpath = self._write_results(d, "kb-learn", GREEN_CASES[2:])
+            payload_path = os.path.join(d, "payload.json")
+            args = SimpleNamespace(
+                results=[rpath],
+                git_sha="deadbee",
+                out=None,
+                payload_out=payload_path,
+                workflow_run_url="https://example.test/actions/runs/1",
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = cb.cmd_capture(args)
+            self.assertEqual(rc, 0, buf.getvalue())
+
+            with open(payload_path, encoding="utf-8") as f:
+                payload = json.load(f)
+            self.assertEqual(payload["runType"], "llm_rubric")
+            self.assertEqual(payload["status"], "pass")
+            self.assertEqual(payload["totalCases"], 2)
+            self.assertEqual(payload["passedCases"], 2)
+            self.assertEqual(payload["gitSha"], "deadbee")
+            self.assertEqual(payload["workflowRunUrl"], "https://example.test/actions/runs/1")
+            self.assertIn("ciRunAt", payload)
+            self.assertEqual(len(payload["caseResults"]), 2)
+
+    def test_payload_out_not_written_when_flag_absent(self):
+        # Default behaviour (no --payload-out) must be unchanged: still prints
+        # the payload, but no file materializes -- existing callers unaffected.
+        with tempfile.TemporaryDirectory() as d:
+            rpath = self._write_results(d, "kb-learn", GREEN_CASES[2:])
+            args = SimpleNamespace(
+                results=[rpath], git_sha="deadbee", out=None, payload_out=None, workflow_run_url=None
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = cb.cmd_capture(args)
+            self.assertEqual(rc, 0, buf.getvalue())
+            self.assertIn("recordEvalGateRun payload", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

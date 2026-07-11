@@ -1,0 +1,187 @@
+name: T-93 verify — eval_gate_ci_writer scope (dispositive negative tests)
+
+# Provisioning-verification job the Security Lead's T-93 credential review specified
+# (DECISIONS.md, "T-93 CI DB persistence: security design review" — provisioning
+# verification list a-e) and the Tech Lead's migration entry deferred to "the
+# follow-up" — this workflow IS that follow-up. Mirrors T-90's dispositive
+# negative-test pattern (provision-litellm-eval-key.yml) for the DB credential
+# instead of the LiteLLM key: assume the connection string can leak, and PROVE —
+# don't just assert — that a leak's blast radius is exactly what the migration
+# promises (INSERT one row shape, nothing else).
+#
+# workflow_dispatch-ONLY, never pull_request (same posture as every other
+# credential-holding verify job in this repo — t60-rls-probe.yml, T-90's
+# provision-litellm-eval-key.yml). Run this ONCE after a founder completes the
+# EVAL_GATE_DB_URL provisioning FQ, before treating eval-gate-live.yml's
+# persist step as trustworthy. DSN is masked; never printed.
+#
+# Checks (Security Lead review, verbatim):
+#   (a) SELECT on tickets            -> permission denied
+#   (b) SELECT on eval_gate_runs     -> permission denied (no SELECT grant at all)
+#   (c) UPDATE / DELETE on eval_gate_runs -> permission denied
+#   (d) INSERT with a non-null project_id -> RLS policy violation
+#   (e) INSERT of a well-formed platform llm_rubric row -> success
+# (a)-(d) are the proof that matters; (e) alone is not evidence of scoping.
+# The (e) test row is tagged with a unique marker and cleaned up via the
+# ops_hub_app read/delete path (eval_gate_ci_writer itself has no SELECT/DELETE
+# to verify or clean up its own insert — that asymmetry IS the security property).
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+
+jobs:
+  verify:
+    name: Dispositive negative tests — eval_gate_ci_writer
+    runs-on: ubuntu-latest
+    env:
+      EVAL_GATE_DB_URL: ${{ secrets.EVAL_GATE_DB_URL }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Guard — EVAL_GATE_DB_URL present
+        run: |
+          echo "::add-mask::$EVAL_GATE_DB_URL"
+          if [ -z "${EVAL_GATE_DB_URL:-}" ]; then
+            echo "::error::EVAL_GATE_DB_URL is not set. This is expected until the founder completes the one-sitting provisioning action (supabase/ops/t93_set_eval_gate_ci_writer_password.sql + gh secret). See FOUNDER_QUEUE.md. Nothing to verify yet — not a defect."
+            exit 1
+          fi
+          echo "EVAL_GATE_DB_URL present."
+
+      - name: (a) SELECT on tickets -> must be DENIED
+        id: check_a
+        continue-on-error: true
+        run: |
+          echo "::add-mask::$EVAL_GATE_DB_URL"
+          OUT=$(psql "$EVAL_GATE_DB_URL" -tAc "select count(*) from tickets" 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::(a) FAILED — eval_gate_ci_writer could SELECT from tickets (expected permission denied)."
+            exit 1
+          fi
+          echo "$OUT" | grep -qi "permission denied" || { echo "::error::(a) FAILED — non-zero exit but not a permission-denied error; inspect output above."; exit 1; }
+          echo "(a) PASS: SELECT on tickets denied."
+
+      - name: (b) SELECT on eval_gate_runs -> must be DENIED
+        id: check_b
+        continue-on-error: true
+        run: |
+          echo "::add-mask::$EVAL_GATE_DB_URL"
+          OUT=$(psql "$EVAL_GATE_DB_URL" -tAc "select count(*) from eval_gate_runs" 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::(b) FAILED — eval_gate_ci_writer could SELECT from eval_gate_runs (expected permission denied — this role has NO SELECT grant, by design)."
+            exit 1
+          fi
+          echo "$OUT" | grep -qi "permission denied" || { echo "::error::(b) FAILED — non-zero exit but not a permission-denied error; inspect output above."; exit 1; }
+          echo "(b) PASS: SELECT on eval_gate_runs denied."
+
+      - name: (c) UPDATE / DELETE on eval_gate_runs -> must be DENIED
+        id: check_c
+        continue-on-error: true
+        run: |
+          echo "::add-mask::$EVAL_GATE_DB_URL"
+          UOUT=$(psql "$EVAL_GATE_DB_URL" -tAc "update eval_gate_runs set status='fail' where false" 2>&1) && URC=0 || URC=$?
+          echo "$UOUT"
+          DOUT=$(psql "$EVAL_GATE_DB_URL" -tAc "delete from eval_gate_runs where false" 2>&1) && DRC=0 || DRC=$?
+          echo "$DOUT"
+          FAIL=false
+          if [ "$URC" -eq 0 ] || ! echo "$UOUT" | grep -qi "permission denied"; then
+            echo "::error::(c) FAILED — UPDATE on eval_gate_runs was not cleanly denied."
+            FAIL=true
+          fi
+          if [ "$DRC" -eq 0 ] || ! echo "$DOUT" | grep -qi "permission denied"; then
+            echo "::error::(c) FAILED — DELETE on eval_gate_runs was not cleanly denied."
+            FAIL=true
+          fi
+          [ "$FAIL" = "false" ] || exit 1
+          echo "(c) PASS: UPDATE and DELETE on eval_gate_runs both denied."
+
+      - name: (d) INSERT with non-null project_id -> must be an RLS violation
+        id: check_d
+        continue-on-error: true
+        run: |
+          echo "::add-mask::$EVAL_GATE_DB_URL"
+          OUT=$(psql "$EVAL_GATE_DB_URL" -tAc "insert into eval_gate_runs (project_id, run_type, status, ci_run_at) values ('00000000-0000-0000-0000-000000000000'::uuid, 'llm_rubric', 'pass', now())" 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::(d) FAILED — a non-null project_id INSERT SUCCEEDED (should have been an RLS policy violation)."
+            exit 1
+          fi
+          echo "$OUT" | grep -qi "row-level security\|violates row-level" || { echo "::error::(d) FAILED — non-zero exit but not an RLS-violation error; inspect output above (could be a different failure masking the real test)."; exit 1; }
+          echo "(d) PASS: non-null project_id INSERT rejected by RLS."
+
+      - name: (e) INSERT a well-formed platform llm_rubric row -> must SUCCEED
+        id: check_e
+        continue-on-error: true
+        env:
+          MARKER: "T-93-VERIFY-${{ github.run_id }}"
+        run: |
+          echo "::add-mask::$EVAL_GATE_DB_URL"
+          OUT=$(psql "$EVAL_GATE_DB_URL" -v ON_ERROR_STOP=1 -v marker="$MARKER" -tAc \
+            "insert into eval_gate_runs (project_id, run_type, status, total_cases, passed_cases, git_sha, workflow_run_url, ci_run_at) values (null, 'llm_rubric', 'pass', 1, 1, 'verify-test', :'marker', now())" 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::(e) FAILED — a well-formed platform llm_rubric INSERT was rejected. Re-check the migration's grant/policy (something the (a)-(d) tests didn't anticipate)."
+            exit 1
+          fi
+          echo "marker=$MARKER" >> "$GITHUB_OUTPUT"
+          echo "(e) PASS: well-formed platform llm_rubric INSERT succeeded (marker=$MARKER)."
+
+      - name: Cleanup test row via ops_hub_app (read-back proof + delete)
+        if: steps.check_e.outcome == 'success'
+        env:
+          MARKER: "T-93-VERIFY-${{ github.run_id }}"
+        run: |
+          set -euo pipefail
+          [ -n "${COOLIFY_TOKEN:-}" ] || { echo "::warning::COOLIFY_API_TOKEN not set — cannot fetch OPS_HUB_APP_LOGIN_URL to read back/clean up the (e) test row. The row is harmless (platform-scope, marker-tagged) but will need manual cleanup."; exit 0; }
+          HTTP=$(curl -s --max-time 30 -o /tmp/staging_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$STAGING_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::warning::could not fetch staging envs (HTTP $HTTP) — skipping cleanup, row is harmless."; exit 0; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/staging_envs.json | head -1)
+          if [ -z "$LOGIN" ] || [ "$LOGIN" = "null" ]; then
+            echo "::warning::OPS_HUB_APP_LOGIN_URL not found on staging app — skipping cleanup, row is harmless."; exit 0
+          fi
+          echo "::add-mask::$LOGIN"
+          FOUND=$(psql "$LOGIN" -v ON_ERROR_STOP=1 -v marker="$MARKER" -tAc "select count(*) from eval_gate_runs where workflow_run_url = :'marker'")
+          echo "Read-back via ops_hub_app: found $FOUND row(s) tagged marker=$MARKER (proves the (e) INSERT is really persisted, not just a claimed success)."
+          if [ "$FOUND" != "1" ]; then
+            echo "::warning::expected exactly 1 tagged row, found $FOUND — inspect before assuming cleanup is safe. Skipping delete."
+            exit 0
+          fi
+          psql "$LOGIN" -v ON_ERROR_STOP=1 -v marker="$MARKER" -c "delete from eval_gate_runs where workflow_run_url = :'marker'"
+          echo "Cleanup: deleted the tagged verify row via ops_hub_app."
+
+      - name: Summary + exit-criteria gate
+        if: always()
+        env:
+          A: ${{ steps.check_a.outcome }}
+          B: ${{ steps.check_b.outcome }}
+          C: ${{ steps.check_c.outcome }}
+          D: ${{ steps.check_d.outcome }}
+          E: ${{ steps.check_e.outcome }}
+        run: |
+          echo "============================================================"
+          echo " T-93 — eval_gate_ci_writer scope verification"
+          echo "============================================================"
+          echo " (a) SELECT tickets denied          : $A"
+          echo " (b) SELECT eval_gate_runs denied    : $B"
+          echo " (c) UPDATE/DELETE denied            : $C"
+          echo " (d) non-null project_id RLS-blocked : $D"
+          echo " (e) well-formed INSERT succeeds     : $E"
+          echo ""
+          FAIL=false
+          for outcome in "$A" "$B" "$C" "$D" "$E"; do
+            [ "$outcome" = "success" ] || FAIL=true
+          done
+          if [ "$FAIL" = "true" ]; then
+            echo "::error::One or more checks did not pass. (a)-(d) are the security proof — do NOT treat eval-gate-live.yml's persist step as trustworthy until all five are green. Needs Security Lead re-review before relying on this role."
+            exit 1
+          fi
+          echo "All five checks PASS. eval_gate_ci_writer's scope matches the design exactly: one INSERT shape, nothing else — ready for Security Lead sign-off (T-90-style) on the persist step going live."
