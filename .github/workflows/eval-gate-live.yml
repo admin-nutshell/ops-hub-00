@@ -296,13 +296,16 @@ jobs:
           } > "$OUT_DIR/gate-comment.md"
 
       # --- STEP 6: DB persistence (Finding 3 — structurally wired, NON-FATAL, secret-gated).
-      #     Deferred/untested pending BOTH (a) a scoped CI DB credential (Security-Lead-gated,
-      #     not yet provisioned) and (b) eval_gate_runs.case_results (migration 20260709020000,
-      #     pending FQ-71). We produce the EXACT recordEvalGateRun payload (via compare-baseline
-      #     capture, mirroring capture-eval-baseline.yml) so the write is a copy-paste once both
-      #     land — but the INSERT itself is not attempted here, and NOTHING about the gate
-      #     decision depends on this step (it cannot fail the job).
-      - name: Persist run to eval_gate_runs (best-effort, non-blocking — deferred)
+      #     LIVE as of this pass: eval_gate_runs.case_results is applied (FQ-71) and the
+      #     scoped eval_gate_ci_writer role exists (FQ-72). The ONLY remaining gap is the
+      #     role's password — it was deliberately created with none (agents never hold
+      #     service_role to set it; see the migration header) — so EVAL_GATE_DB_URL is
+      #     absent until a founder completes the one-sitting provisioning action (FQ
+      #     filed at that point; see FOUNDER_QUEUE.md). Until then this step degrades to
+      #     the same DEFERRED message it has always shown — same shape, real writer behind
+      #     it. NOTHING about the gate decision (STEP 9) depends on this step; it cannot
+      #     fail the job (continue-on-error, step-level secret per Condition W1/W2).
+      - name: Persist run to eval_gate_runs (best-effort, non-blocking)
         if: steps.preflight.outputs.judge_ok == 'true'
         continue-on-error: true
         env:
@@ -311,19 +314,31 @@ jobs:
           set -uo pipefail
           shopt -s nullglob
           RESULTS=("$OUT_DIR"/*-results.json)
-          if [ -z "${EVAL_GATE_DB_URL:-}" ]; then
-            echo "DB persistence DEFERRED: no scoped CI DB credential (EVAL_GATE_DB_URL) is provisioned."
-            echo "  - recordEvalGateRun (src/metrics/evalHealth.ts) is the wiring target."
-            echo "  - Also blocked on eval_gate_runs.case_results (migration 20260709020000, pending FQ-71)."
-            echo "  - Finding 3: the gate's merge decision does NOT depend on this write."
-            if [ "${#RESULTS[@]}" -gt 0 ]; then
-              echo "--- recordEvalGateRun payload the write WOULD use (copy-paste once the cred + column land) ---"
-              python3 scripts/eval/compare-baseline.py capture --results "${RESULTS[@]}" --git-sha "${GITHUB_SHA:-}" || true
-            fi
+          PAYLOAD_PATH="$OUT_DIR/db-payload.json"
+
+          if [ "${#RESULTS[@]}" -eq 0 ]; then
+            echo "No *-results.json produced this run — nothing to persist."
             exit 0
           fi
-          echo "EVAL_GATE_DB_URL present, but the DB writer is not yet wired into CI (needs FQ-71's case_results column applied and a small invoker). Skipping the INSERT; non-fatal by design."
-          exit 0
+
+          # Always shape the payload (holds no secret, touches no network — Finding 3's
+          # separation of concerns) so both branches below use the exact same artifact.
+          python3 scripts/eval/compare-baseline.py capture \
+            --results "${RESULTS[@]}" --git-sha "${GITHUB_SHA:-}" \
+            --payload-out "$PAYLOAD_PATH"
+
+          if [ -z "${EVAL_GATE_DB_URL:-}" ]; then
+            echo "DB persistence DEFERRED: no scoped CI DB credential (EVAL_GATE_DB_URL) is provisioned yet."
+            echo "  - Role eval_gate_ci_writer exists (FQ-72) but has no password — a founder-only action"
+            echo "    (ALTER ROLE ... PASSWORD needs service_role/owner; agents never hold it — CLAUDE.md #3)."
+            echo "  - See FOUNDER_QUEUE.md for the pending one-sitting provisioning FQ."
+            echo "  - Finding 3: the gate's merge decision does NOT depend on this write."
+            echo "--- recordEvalGateRun payload the write WOULD use (identical shape once the secret lands) ---"
+            cat "$PAYLOAD_PATH"
+            exit 0
+          fi
+
+          bash scripts/eval/persist-eval-run.sh "$PAYLOAD_PATH"
 
       # --- STEP 7: PR-comment reporter. Runs for pull_request events (not workflow_dispatch,
       #     which has no PR), non-fork, whenever a comment body exists — pass, fail, or skip.

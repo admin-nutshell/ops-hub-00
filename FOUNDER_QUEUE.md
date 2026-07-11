@@ -4,6 +4,36 @@
 
 ---
 
+## 🔲 FQ-73 — One-sitting action: turn on the eval gate's database saving (password + one GitHub secret)
+
+**Filed:** 2026-07-10 | **Status:** OPEN
+**Filed by:** Production Manager (Sprint 9, T-93 last mile; mechanism ruled on by Security Lead)
+**Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-45/61/62/67/68/71/72).
+**Deadline:** Non-blocking. The eval gate itself already works today without this — it still catches a regression and blocks a bad pull request either way. This only turns on saving a *history* of each run to the database (so the dashboard/team can look back at past runs later).
+
+**In plain language:** Two weeks ago you created a brand-new, deliberately near-powerless database login (`eval_gate_ci_writer`, FQ-72) that can do exactly one thing — add a row to one results table — and nothing else. It's created but it has no password yet, so right now it can't actually be used at all (like a key blank with no cuts). This request is the very last step: give it a password, and hand that password to our automated checks (GitHub) so they can use it.
+
+**Why this is two small copy-pastes, not one click:** Setting a database password requires the same "owner" access level you already use in the Supabase SQL Editor for every migration so far — it can't be done from an automated robot/workflow safely. (We looked hard for a one-click way to do this from GitHub directly; it turns out GitHub would have to keep a copy of an all-powerful database key sitting around waiting to be used, which is exactly the kind of risk this whole project has been trying to eliminate. The two-copy-paste way below keeps that key out of GitHub's hands entirely — it's the safer path, not a shortcut we settled for.)
+
+**What's needed (2 steps, one sitting — don't do step 1 today and step 2 tomorrow; do them back to back):**
+
+1. **Run one script in Supabase SQL Editor** (Dashboard → project `yocoljutbiizdbfraapx` → SQL Editor, same place you've run every migration this sprint): open `supabase/ops/t93_set_eval_gate_ci_writer_password.sql`, paste its **entire contents**, click **Run**. A result grid appears with exactly one column/one row — a long value starting with `postgresql://`. That's the only output; nothing else needs copying.
+2. **Copy that ENTIRE value** and paste it into GitHub: this repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret** → Name: `EVAL_GATE_DB_URL` → Value: (paste) → **Add secret**.
+
+That's it — two pastes, one sitting. If you get interrupted between step 1 and step 2 (close the tab, browser crashes, whatever) — don't hunt for the value again. Just **re-run step 1** to get a fresh one and continue from there; running the script again is completely safe (it's designed to be re-run).
+
+**What this does NOT do:** it does not touch any customer data, tickets, or any other table — the login this password unlocks can only ever add one kind of row to one results table, and can't read, change, or delete anything, anywhere (that's the whole design of FQ-72, unchanged). Declining this (Option B below) leaves the eval gate exactly as capable as it is today — it just keeps skipping the "also save a copy of this run to the database" step, the same way it has been.
+
+**Options:**
+- **(A)** Run the two steps above (recommended).
+- **(B)** Do nothing — the eval gate keeps working (still catches regressions, still blocks bad pull requests) but keeps skipping the database-history step, same as today.
+
+**Recommendation:** (A) — this is the last remaining piece of a feature the team has been building carefully over several sessions (FQ-71, FQ-72, and now this), it was reviewed by the Security Lead specifically to make sure this exact request is the safest possible way to do it, and it takes about two minutes.
+
+**Notify:** Production Manager / Tech Lead / Security Lead once done — the team then runs one verification check (`verify-eval-gate-ci-writer-role.yml`, already built and waiting) to prove the new password only allows the one narrow action it's supposed to, before relying on it.
+
+---
+
 ## ✅ FQ-72 — RESOLVED: scoped CI role `eval_gate_ci_writer` created via Supabase SQL Editor
 
 **Filed:** 2026-07-10 | **Resolved:** 2026-07-10
