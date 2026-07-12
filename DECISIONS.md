@@ -5256,3 +5256,91 @@ every healthy run. Fold this check into SC9/FQ-75's first-live-run
 observation (WORK.md's existing "first real scheduled run is the first
 genuine end-to-end proof" step), not a separate task.
 ```
+
+### 2026-07-12 — Sprint 10 retro authored + Sprint 10 CLOSED + Sprint 11 planned (PM)
+
+```
+2026-07-12 [PM] Sprint 10 retro authored: docs/retros/sprint-10.md (7-section
+house format). Headline: DEFENSE IN DEPTH working exactly as designed. T-98
+(the synthetic-ticket downstream E2E monitor anchor) went live, but its path
+there is the lesson — FIVE verification layers each caught a distinct real
+problem, in sequence, all pre-production: (1) the harness safety classifier
+blocked the first build attempt (touching prod creds/data a new way without
+authorization); (2) a Security Lead design review — before code — killed a
+FALSE premise (a claimed "T-51 FreeScout REST-API precedent" that doesn't
+exist; ADR-0003 Option C rejected FreeScout's REST API) AND a real cleanup
+flaw (the original insert-then-FK-null cleanup could have let a real
+customer's action mint a DUPLICATE production ticket), reshaping the build
+(Amendments A1 sentinel pattern / A2 narrow role, SC1-SC10); (3) the SC1-SC10
+negative-test suite found TWO HARNESS bugs (missing ON_ERROR_STOP; command-tag
+captured instead of RETURNING UUID) — NOT security bugs, RLS was correct all
+along; (4) a final Security Lead sign-off caught BC1 (the incident-alert
+step's `if:` had no failure()/always(), so it was DEAD CODE that never fired
+on a real failure — SC8's paging path); (5) a mid-fix re-verification of BC1
+caught a SECOND real bug (the reset-step's row-count check was a false-pass
+that could have fired a real Inngest event during a side-effect-free run).
+Both real monitor bugs (BC1 + reset false-pass) were caught ONLY by a
+`mode=simulate-failure` dispatch, not YAML review — the basis for the sprint's
+NEW standing norm (retro §5.1). T-98 went live after FQ-75 landed (founder
+migration + Inngest key) + SC9 (FreeScout conv #34 + a NEW sentinel-insert
+workflow built mid-session): first genuine `mode=live` run 29209542703 GREEN
+end-to-end (reset -> real Inngest dispatch -> state='responded' -> LangFuse
+trace). Second headline: FQ-76 proves the Sprint 9/10 MONITORING INVESTMENT
+pays for itself on its first firing — T-97's monitor caught a live prod
+`LITELLM_URL` staleness (FQ-70's redeploy rotated litellm-prod's container
+suffix; the T-71 URL class, 3rd instance) BEFORE any customer ticket was
+affected (20 resolved + 1 responded, 0 stuck — the exact INVERSE of FQ-69's
+3.6-day / 70%-stuck signature). Track B clean: T-99 grew each product eval
+N=4->N=9 (real prompt-gap coverage, GATE PASS, baseline re-captured, row
+persisted); T-100 vetted meta/llama-3.3-70b-instruct into BOTH triage+respond
+allowlists at 9/9, no re-scope needed. Also logged: subagent "response stalled
+mid-stream" transient failures recurred (now across Sprints 9 AND 10; no work
+lost; NOT root-caused, NOT actionable — a 2-sprint watch item).
+
+2026-07-12 [PM] Sprint 10 CLOSED. WORK.md header 🟢 ACTIVE → ✅ COMPLETE
+(2026-07-12), matching the Sprint 8/9 completion pattern. All three tasks
+(T-98/T-99/T-100) ✅ DONE. Reconciled ONE stale record before stamping: the
+FOUNDER_QUEUE still headed FQ-75 as OPEN, but WORK.md's T-98 row + the live
+run 29209542703 confirm both FQ-75 actions landed and the monitor is live —
+flipped FQ-75 to ✅ RESOLVED (matching FQ-70/71/72/73/74), closing a
+done-but-OPEN record-vs-reality drift (exactly the class this team hunts) as
+part of the PM "FOUNDER_QUEUE empty/resolved before next sprint" checklist.
+FQ-76 already correctly marked RESOLVED. No new FQ filed — nothing this sprint
+requires a founder business/pricing/SLA/security-incident decision;
+FQ-75/76 both resolved in-sprint. CRITICAL CORRECTION preserved into the
+carry-forward: FQ-76 was initially mis-tagged as the "provider-credential
+divergence" carry's third instance, but the Tech Lead's read-only diagnosis
+established it is the URL-SUFFIX class (T-71; fetch throws -> 503 "unreachable"),
+NOT the master-key-rejection class (401 token_not_found, FQ-69's signature).
+Consequence: the "3rd instance / band-aid ceiling" count is T-71 -> FQ-69-URL
+-> FQ-76 (URL class), AND the provider-credential-divergence carry stays OPEN
+and UNCOMMITTED — its trigger did NOT fire.
+
+2026-07-12 [PM] Sprint 11 planned: Aug 20 – Sep 3, 2026 (nominal) — "Durable
+Internal-URL Fix (ADR) + Eval Coverage Depth" (capability/hardening). ANCHOR
+(Track A) is the disciplined turn-forward of FQ-76's loudest thread — NOT a
+fourth manual re-align. T-101 (Tech Lead): author an ADR (docs/adr/0008-*)
+selecting a design of record among the three candidates the Tech Lead named
+(stable internal address / post-redeploy re-sync hook / app-side service-name
+resolution), provider-neutral + survives Project #2, build DEFERRED to Sprint
+12 (the Sprint 8->9 ADR-then-build precedent). T-102 (Production Manager): the
+cheap in-sprint mitigation FQ-76's follow-up named — a 2–3-consecutive-fail
+threshold on monitor-litellm-internal-auth.yml so transient blips (07-10/07-11)
+stop crying wolf while sustained breaks still page; HARD exit gate = proven on
+its FAILURE path via a mode=simulate-failure dispatch (the NEW Sprint 10 §5.1
+norm — the exact mechanism that caught T-98's two real monitor bugs). PARALLEL
+(Track B, Evals Lead) T-103: continue the eval-depth arc T-99 opened, N=9 ->
+toward ADR §5.4's ≥20/eval target, additive-only real prompt-gap coverage,
+each set proven through the live gate + baseline re-captured. Overcommit
+discipline held: anchor (2 tightly-coupled URL-class tasks) + ONE parallel
+eval track. DEFERRED as flagged carries (scheduled-scoped-named): provider-
+CREDENTIAL-divergence root-cause (trigger NOT fired, do NOT fold into T-101);
+T-90 O1–O3 obs; LITELLM_URL dedup (superseded by T-101 if it lands); further
+triage/respond alias vetting (both now 2-vetted); the 2-sprint subagent-stall
+watch item; plus the standing founder-gated carries (T-77 Option A, FQ-63,
+FQ-47 4b, DNC/FQ-43). No milestone (capability-building); Milestone numbering
+note still stands (do NOT label M7). CLAUDE.md "Active sprint" block AND the
+"Critical path:" line both updated 10->11 (Sprint 10 moved to the completed
+parentheticals with its retro link) — keeping the compass file from going
+stale, the anti-pattern prior retros flagged.
+```
