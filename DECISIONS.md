@@ -3271,3 +3271,66 @@ password-provisioning ruling (2026-07-10), and this provisioning verification.
 No FOUNDER_QUEUE escalation: nothing here is a business decision; FQ-70 is
 already filed and owns the only open external dependency.
 ```
+
+### 2026-07-11 — T-96 BLOCKED on the sanctioned path: no eval-reachable candidate second alias for KB Learn (Evals Lead)
+
+```
+2026-07-11 [Evals Lead] T-96 — KB Learn allowlist unpin CANNOT be completed on the
+sanctioned scoped-key path right now. Not a forced pass, not a partial: recording the
+structural blocker so the next agent doesn't re-hit the wall. NO change to
+src/config/model-allowlist.ts (kb_learn stays [triage-model]); no eval was run because no
+runnable candidate exists on the allowed path.
+
+WHAT T-96 NEEDS: a SECOND alias for kb_learn that (a) is distinct from the current pin
+triage-model, (b) clears KB Learn's eval (evals/kb-learn.yaml) >95% as the TARGET, and
+(c) is reachable by the scoped LITELLM_EVAL_KEY (T-90 — the master key is forbidden, per
+the T-96 brief + ADR-0007 C1).
+
+THE CANDIDATE SPACE IS EMPTY ON THAT PATH. Only three aliases are registered on
+litellm-staging (grep of DECISIONS.md + every .github/workflows/*.yml: triage-model,
+fallback-model, meta/llama-3.3-70b-instruct — no fourth):
+  - triage-model — the EXISTING pin. Adds no second distinct alias. REJECTED.
+  - fallback-model — in the eval key's scope, BUT broken (FQ-70 Anthropic credit
+    exhaustion, 400s; T-92's green baseline records "only healthy scoped config is
+    triage-model"). Cannot clear an eval today. It is also the designated JUDGE alias and
+    KB Learn is primary-only; the T-96 brief explicitly excludes it. REJECTED.
+  - meta/llama-3.3-70b-instruct — the ONLY structurally-sound candidate (70B instruct
+    model; provider-diverse from the OpenAI-backed pin; fits KB Learn's summarize/extract
+    task). BUT it is deliberately OUT of the scoped eval key's model list. Dispositively
+    proven, not inferred: T-90 run 29066125110's NEGATIVE test returned HTTP 403
+    key_model_access_denied — "This key can only access models=['triage-model',
+    'fallback-model']. Tried to access meta/llama-3.3-70b-instruct" (Security Lead
+    verified, DECISIONS.md 2026-07-10). Reaching it needs the master key = forbidden.
+    REJECTED.
+
+ROOT CAUSE: the T-90 eval key was scoped [triage-model (target), fallback-model (judge)]
+for the THREE EXISTING product evals whose production target is triage-model. It was never
+provisioned with a candidate SECOND target for KB Learn — so T-96's "clean path"
+credential does not yet exist. This is a scope-alignment gap, not an eval failure: KB
+Learn's prompt itself passes 100% twice (T-84/T-88); the missing piece is a vetted,
+in-scope model to widen TO.
+
+UNBLOCK (any one):
+  1. Re-provision the scoped eval key to add a candidate target (meta/llama-3.3-70b-
+     instruct) to its models list — Production Manager action + fresh Security Lead
+     sign-off (T-90's own rule: widening scope = a NEW key value + fresh review, not a
+     silent re-run). Then dispatch KB Learn's eval TARGET=meta/llama-3.3-70b-instruct,
+     JUDGE=triage-model (grader != target satisfied, ADR-0007 §5.3), >95% required,
+     recorded here per T-79 before adding the alias to model-allowlist.ts. NB: adding
+     meta/llama also requires rewriting that file's invariant ("an alias is listed iff it
+     is the model the function ALREADY RUNS") to the PROCESS block's already-authorized
+     "...OR has cleared a dedicated per-target eval", and updating the meta/llama
+     "intentionally EXCLUDED from every list" paragraph — a silent append would leave the
+     file self-contradictory.
+  2. OR resolve FQ-70 so fallback-model is fundable AND accept it as KB Learn's second
+     alias — weaker: it is the judge alias and KB Learn is primary-only, a semantic
+     stretch, not the intended provider-diversity win.
+  3. OR wait for the T-93/T-94 live gate to land with an admission path whose credential
+     includes the candidate (the ADR §8 "preferred" path the T-96 row already names).
+
+NO master-key workaround was taken (it would defeat the entire ADR-0007 scoped-key design
+this sprint is building). NO FOUNDER_QUEUE escalation: the unblock is an inter-agent
+technical dependency (eval-key scope), not a business decision; FQ-70 is already filed and
+owns the external billing dependency. Handoff: PM + Production Manager for option 1.
+T-96 stays OPEN.
+```
