@@ -207,8 +207,17 @@ jobs:
           OUT=$(printf '%s\n' "update tickets set state = 'new' where id = :'id'::uuid returning id" \
             | psql "$E2E_MONITOR_DB_URL" -v id="$TARGET_ID" -v ON_ERROR_STOP=1 -tA -f - 2>&1) && RC=0 || RC=$?
           echo "$OUT"
-          if [ "$RC" -ne 0 ] || [ -z "$(echo "$OUT" | tail -1 | tr -d '[:space:]')" ]; then
-            echo "::error::Could not reset the sentinel ticket ($TARGET_ID) to state='new'. Either the row doesn't exist yet (SC9 provisioning incomplete, or this is a deliberate simulate-failure run) or the RLS-hardcoded scope rejected it (E2E_SENTINEL_TICKET_ID pointing at the wrong tenant/project?)."
+          # Check for the literal "UPDATE 1" command tag (the same
+          # distinguishing-string technique verify-e2e-monitor-role.yml check
+          # (d) already uses) -- NOT emptiness. psql -tA still prints the
+          # command tag even on a 0-row match ("UPDATE 0" is non-empty text),
+          # so an emptiness check alone silently false-passes a no-op update.
+          # This matters beyond correctness: simulate-failure mode relies on
+          # this exact detection to fail HERE (not cascade into a real
+          # Inngest dispatch with the real sentinel id once fully
+          # provisioned) -- see the header's mode=simulate-failure note.
+          if [ "$RC" -ne 0 ] || ! printf '%s\n' "$OUT" | grep -qx 'UPDATE 1'; then
+            echo "::error::Could not reset the sentinel ticket ($TARGET_ID) to state='new' (expected exactly one 'UPDATE 1'). Either the row doesn't exist yet (SC9 provisioning incomplete, or this is a deliberate simulate-failure run) or the RLS-hardcoded scope rejected it (E2E_SENTINEL_TICKET_ID pointing at the wrong tenant/project?)."
             exit 1
           fi
           echo "Sentinel ticket $TARGET_ID reset to state='new'."
