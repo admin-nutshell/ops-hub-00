@@ -5180,3 +5180,63 @@ credentials (see above). 5) first live run observed end-to-end — blocked on
 No FOUNDER_QUEUE escalation beyond FQ-75's existing entries — this is
 confirmation of already-named, already-tracked gaps, not a new decision.
 ```
+
+### 2026-07-12 — T-98: corrected the reset-step false-pass BC1's own proof surfaced; simulate-failure re-verified failing at the RIGHT stage, real incident opened + resolved a second time (Production Manager)
+
+```
+2026-07-12 [Production Manager] T-98 — a self-caught correction to the entry
+immediately above, not a new bug report from outside. The "honest finding,
+not fixed here" I filed in that entry (the reset step's 0-rows-matched check
+false-passing on psql's `UPDATE 0` tag) does NOT deserve the "narrow, doesn't
+block anything" framing I gave it. On reflection: it undermines the
+simulate-failure mechanism BC1's fix (PR #413) shipped as its own proof
+vehicle. Traced forward from provisioning-complete: simulate-failure's fake
+ticket id would false-pass reset → `dispatch`'s `if: steps.reset.outcome ==
+'success'` opens → a REAL Inngest event, with the REAL sentinel ticket id,
+fires against the REAL production pipeline, off-schedule, during what is
+supposed to be a side-effect-free verification run. That is a live footgun
+in a required deliverable, not a cosmetic nit — fixed now, not left as a
+carry.
+
+FIX (PR #415, commit merged to main): reset step's detection now checks for
+the literal `UPDATE 1` command-tag line (`grep -qx 'UPDATE 1'`) instead of
+checking for empty output — the same distinguishing-string technique
+`verify-e2e-monitor-role.yml` check (d) already established as this
+project's pattern for this exact class of problem. All 6 required PR checks
+green; self-merged per this session's policy.
+
+RE-PROOF against the corrected main (superseding, not replacing, the BC1
+proof in the entry above — that proof's incident-wiring conclusion stands;
+only the failure STAGE was wrong):
+1. `mode=simulate-failure`, run 29206984708, conclusion=failure. This time
+   the discriminator is right: **reset** step conclusion=`failure` (genuinely
+   failed on the fake ticket id, `UPDATE 0` correctly detected as not
+   `UPDATE 1`); dispatch/poll/langfuse all `skipped` — **critically, this
+   means no real Inngest POST happened**, closing the footgun described
+   above. Incident step conclusion=`failure` (ran, same as before) →
+   dispatched `status-incident.yml` (run 29206991859, success) → real
+   incident file on `status-content` (commit 1c5defd), `resolved: false`.
+2. Resolved immediately after: `status-incident.yml` action=resolve
+   (run 29207012061, success) → `status-content` commit 57d3a11, same file
+   now `resolved: true` / `resolvedWhen: 2026-07-12T20:04:13Z`. No synthetic
+   incident left open.
+3. `mode=live`, run 29207028077, conclusion=success — dormancy re-confirmed
+   unaffected by this second fix: guard exits clean, every step `skipped`,
+   job `success`.
+
+STATE NOW: BC1 is fixed and proven at the correct failure stage; the
+verification mechanism itself (simulate-failure mode) is now safe to use in
+every provisioning state, including fully-provisioned, without risking an
+unintended real dispatch. GO-LIVE CHECKLIST item 1 stands as DONE, now on
+firmer footing. No other outstanding findings from this pass. Provisioning
+gaps unchanged from the entry above (FQ-75 Action 2, SC9) — not re-verified
+again here, no new information since that check an hour earlier.
+
+Lesson for the log (self-applied, not waiting for a retro): when a
+verification run's mechanism relies on a specific step failing for a
+specific reason, confirm the run failed AT that step for THAT reason before
+calling it proof — a same-conclusion, wrong-stage pass can hide a defect in
+the test harness itself, exactly the class of mistake this project's own
+T-98/PR#407→#408 "correct overstated verification claim" precedent already
+warned about.
+```
