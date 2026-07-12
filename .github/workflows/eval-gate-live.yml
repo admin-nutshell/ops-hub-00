@@ -413,7 +413,9 @@ jobs:
         run: |
           set -uo pipefail
           if [ -f "$OUT_DIR/gate-comment.md" ]; then
-            gh pr comment "${{ github.event.pull_request.number }}" --body-file "$OUT_DIR/gate-comment.md" \
+            # --repo is REQUIRED: on the neutral-skip path checkout is skipped, so gh has
+            # no local git remote to infer the repo from (same reason STEP 0.5 needs it).
+            gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file "$OUT_DIR/gate-comment.md" \
               && echo "Posted PR comment." \
               || echo "::warning::PR comment post failed (non-fatal — reporting is decoupled from gating)."
           else
