@@ -123,8 +123,12 @@ jobs:
           MARKER: "T-93-VERIFY-${{ github.run_id }}"
         run: |
           echo "::add-mask::$EVAL_GATE_DB_URL"
-          OUT=$(psql "$EVAL_GATE_DB_URL" -v ON_ERROR_STOP=1 -v marker="$MARKER" -tAc \
-            "insert into eval_gate_runs (project_id, run_type, status, total_cases, passed_cases, git_sha, workflow_run_url, ci_run_at) values (null, 'llm_rubric', 'pass', 1, 1, 'verify-test', :'marker', now())" 2>&1) && RC=0 || RC=$?
+          # psql -c does NOT interpolate :'var' psql variables — binding only applies
+          # to stdin/-f input (proven live: run 29173981113's (e) sent the literal
+          # :'marker' to the server -> `syntax error at or near ":"`). Feed via -f -.
+          OUT=$(printf '%s\n' \
+            "insert into eval_gate_runs (project_id, run_type, status, total_cases, passed_cases, git_sha, workflow_run_url, ci_run_at) values (null, 'llm_rubric', 'pass', 1, 1, 'verify-test', :'marker', now())" \
+            | psql "$EVAL_GATE_DB_URL" -v ON_ERROR_STOP=1 -v marker="$MARKER" -tA -f - 2>&1) && RC=0 || RC=$?
           echo "$OUT"
           if [ "$RC" -ne 0 ]; then
             echo "::error::(e) FAILED — a well-formed platform llm_rubric INSERT was rejected. Re-check the migration's grant/policy (something the (a)-(d) tests didn't anticipate)."
@@ -149,13 +153,16 @@ jobs:
             echo "::warning::OPS_HUB_APP_LOGIN_URL not found on staging app — skipping cleanup, row is harmless."; exit 0
           fi
           echo "::add-mask::$LOGIN"
-          FOUND=$(psql "$LOGIN" -v ON_ERROR_STOP=1 -v marker="$MARKER" -tAc "select count(*) from eval_gate_runs where workflow_run_url = :'marker'")
+          # Same -f - form as step (e): -c never interpolates :'var'.
+          FOUND=$(printf '%s\n' "select count(*) from eval_gate_runs where workflow_run_url = :'marker'" \
+            | psql "$LOGIN" -v ON_ERROR_STOP=1 -v marker="$MARKER" -tA -f -)
           echo "Read-back via ops_hub_app: found $FOUND row(s) tagged marker=$MARKER (proves the (e) INSERT is really persisted, not just a claimed success)."
           if [ "$FOUND" != "1" ]; then
             echo "::warning::expected exactly 1 tagged row, found $FOUND — inspect before assuming cleanup is safe. Skipping delete."
             exit 0
           fi
-          psql "$LOGIN" -v ON_ERROR_STOP=1 -v marker="$MARKER" -c "delete from eval_gate_runs where workflow_run_url = :'marker'"
+          printf '%s\n' "delete from eval_gate_runs where workflow_run_url = :'marker'" \
+            | psql "$LOGIN" -v ON_ERROR_STOP=1 -v marker="$MARKER" -f -
           echo "Cleanup: deleted the tagged verify row via ops_hub_app."
 
       - name: Summary + exit-criteria gate

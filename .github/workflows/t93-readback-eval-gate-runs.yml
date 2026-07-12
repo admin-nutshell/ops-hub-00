@@ -1,0 +1,89 @@
+name: T-93 read-back — recent eval_gate_runs rows (read-only, ops_hub_app)
+
+# End-to-end proof reader for T-93's DB persistence: after eval-gate-live.yml's
+# persist step writes a real row via eval_gate_ci_writer, THIS workflow reads it
+# back via the ops_hub_app SELECT path (the writer role deliberately has no
+# SELECT — that asymmetry is the T-93 security property, so verification reads
+# use the app role, same pattern as verify-eval-gate-ci-writer-role.yml's
+# cleanup step and diagnose-feature-flags-rls.yml).
+#
+# READ-ONLY: one SELECT, no mutation, no ticket/tenant data touched —
+# eval_gate_runs project_id-IS-NULL rows are platform CI health data by the
+# table's own design comment (T-58). Prints row metadata + case_results shape
+# (jsonb type / array length / per-case keys), never full LLM output bodies.
+#
+# workflow_dispatch-ONLY, same posture as every credential-holding verify job.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'How many most-recent llm_rubric rows to show'
+        required: false
+        default: '5'
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+
+jobs:
+  readback:
+    name: Read recent llm_rubric rows via ops_hub_app
+    runs-on: ubuntu-latest
+    env:
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      ROW_LIMIT: ${{ github.event.inputs.limit || '5' }}
+    steps:
+      - name: Fetch OPS_HUB_APP_LOGIN_URL from Coolify (masked)
+        id: login
+        run: |
+          set -euo pipefail
+          [ -n "${COOLIFY_TOKEN:-}" ] || { echo "::error::COOLIFY_API_TOKEN not set."; exit 1; }
+          HTTP=$(curl -s --max-time 30 -o /tmp/staging_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $COOLIFY_TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$STAGING_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::could not fetch staging envs (HTTP $HTTP)."; exit 1; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/staging_envs.json | head -1)
+          if [ -z "$LOGIN" ] || [ "$LOGIN" = "null" ]; then
+            echo "::error::OPS_HUB_APP_LOGIN_URL not found on staging app."; exit 1
+          fi
+          echo "::add-mask::$LOGIN"
+          echo "login_url=$LOGIN" >> "$GITHUB_OUTPUT"
+
+      - name: SELECT recent llm_rubric rows (metadata + case_results shape only)
+        env:
+          LOGIN: ${{ steps.login.outputs.login_url }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$LOGIN"
+          # Sanitize the limit input to digits only (untrusted dispatch input,
+          # non-negotiable #7) — then it is safe to place as a bare LIMIT literal.
+          LIM=$(printf '%s' "$ROW_LIMIT" | tr -cd '0-9'); LIM=${LIM:-5}; [ "$LIM" -ge 1 ] || LIM=5
+          echo "current_user + row count first:"
+          psql "$LOGIN" -tA -c "select current_user || ' | llm_rubric rows: ' || count(*) from eval_gate_runs where run_type='llm_rubric'"
+          echo ""
+          psql "$LOGIN" -P pager=off -c "
+            select id, status, total_cases, passed_cases, pass_rate, git_sha,
+                   workflow_run_url, ci_run_at, recorded_at,
+                   project_id is null as platform_scope,
+                   jsonb_typeof(case_results) as case_results_type,
+                   case when jsonb_typeof(case_results)='array'
+                        then jsonb_array_length(case_results) end as case_count
+              from eval_gate_runs
+             where run_type = 'llm_rubric'
+             order by ci_run_at desc
+             limit $LIM"
+          echo ""
+          echo "Distinct keys present across the newest row's case_results elements (shape proof, no bodies):"
+          psql "$LOGIN" -tA -P pager=off -c "
+            with newest as (
+              select case_results from eval_gate_runs
+               where run_type='llm_rubric' and jsonb_typeof(case_results)='array'
+               order by ci_run_at desc limit 1
+            )
+            select coalesce(string_agg(distinct k, ', ' order by k), '<no case_results array found>')
+              from newest, jsonb_array_elements(newest.case_results) e,
+                   jsonb_object_keys(e) k"
