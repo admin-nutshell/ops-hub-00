@@ -5438,3 +5438,78 @@ for an unrelated infra reason" (e.g. a `gh workflow run status-incident.yml`
 transient error). Considered rare; flagged so it isn't a silent trap for a
 future reader, not worth a dedicated fix here.
 ```
+
+### 2026-07-12 — T-101: ADR-0008 authored + ACCEPTED — durable fix for the `LITELLM_URL` redeploy-orphan class (build deferred to Sprint 12) (Tech Lead)
+
+```
+2026-07-12 [Tech Lead] ADR-0008 (docs/adr/0008-litellm-url-durable-fix.md) —
+design-of-record for the LITELLM_URL suffix-rotation / redeploy-orphan failure
+class (T-71 -> FQ-69-URL -> FQ-76, 3 instances, band-aid ceiling reached). Root
+cause each time: a litellm-prod redeploy rotates its internal Docker container
+suffix; ops-hub-prod's pinned LITELLM_URL isn't re-synced; the app's internal
+LiteLLM hop throws -> /health/litellm-internal 503 "unreachable". Follows the
+ADR-0007 ADR-then-build precedent: authorship only this sprint, BUILD DEFERRED
+to Sprint 12.
+
+DECISION = Option 1: give litellm-prod a persistent Coolify network alias /
+fixed internal hostname and pin LITELLM_URL once to it, so suffix rotation
+stops orphaning the pointer. Chosen because it kills the class AT THE SOURCE
+(not merely detects it faster), adds ZERO moving parts and ZERO new credential
+surface, and is provider-neutral as a one-paragraph recipe (no app change —
+resolveLitellmTarget still reads LITELLM_URL, only the value changes).
+CONTINGENT on a feasibility spike (build-task #1): the one load-bearing fact —
+does THIS Coolify instance support a redeploy-surviving alias — is unverified
+(Docker DNS resolves full container names/aliases, NOT the stable UUID prefix;
+3 incidents + CLAUDE.md's still-standing "check docker ps after each deploy"
+are weak evidence it's not a trivial checkbox). Option 2 (automated
+post-redeploy re-sync hook, i.e. T-45's update-litellm-suffix.yml promoted to
+prod+auto) is the PRE-COMMITTED FALLBACK if the spike fails — rejected as
+primary because it automates the band-aid (reactive break-then-resync window),
+holds a standing SSH-key + Coolify-token surface, and is a monitor-the-monitor
+moving part. Option 3 (app-side service-name resolution) REJECTED: collapses
+into Option 1 (still needs a stable name) or requires docker.sock in the app
+container (container-escape-equivalent privilege escalation) / Coolify-API in
+runtime (breaks app-agnostic) — which is why Option 2, not Option 3, is the
+fallback.
+
+HARD CONSTRAINTS met as exit criteria, not prose: (a) provider-neutral /
+Project-#2 (§5); (b) verification is /health/litellm-internal -> 200 AND the
+T-97 monitor auto-resolving its own incident, NEVER generic /health (§3) —
+and the ADR flags a latent second bug: BOTH existing re-align workflows
+(fix-ops-hub-prod-litellm-url.yml, update-litellm-suffix.yml) verify the WRONG
+endpoint (/health), which the Sprint 12 build must correct; (c) credential gate
+named (§4) — Option 1 touches no secret (a point in its favor), the Option 2
+fallback triggers the Sprint 9 §5.1 Security Lead review of the concrete
+SSH/token scope BEFORE implementation. Scoped to the URL-suffix class ONLY —
+the provider-CREDENTIAL-divergence class (FQ-69's 401 master-key signature)
+stays a distinct, still-open, uncommitted carry; explicitly NOT folded in.
+
+STATUS ACCEPTED via independent review (ADR-0007 author+reviewer precedent):
+Tech Lead author + Production Manager review appended in-doc (Coolify
+feasibility + deployability). PM verdict = approved as design-of-record, no
+change to Decision/ranking; PM confirmed the feasibility fact is genuinely
+unconfirmable from static evidence (grounded in fix-litellm-network.yml's prior
+staging alias experiment, which the team wrapped in a 5-candidate probe and
+never carried to prod), validating the contingency shape. PM build conditions
+folded into ADR §6.1: prove the spike on litellm-STAGING first (free canary),
+shared-network pre-check, explicit written rollback (fall back to the break-
+glass re-align), re-check §3 against T-102's shipped resolve-threshold, size the
+T-97 wait as up to one 15-min poll cycle, and note the alias-apply likely needs
+a redeploy not a restart. SPRINT 12 BUILD sized S-M (§6): feasibility spike
+(build-task #1) -> alias config -> re-pin (delete-all-dup-rows first) -> restart
+-> deliberate-redeploy verification -> correct the break-glass verify endpoint +
+CLAUDE.md doc. No new schema, no new service, no new paid tier anticipated
+(a paid-Coolify-tier requirement would be a founder FQ, not a silent commit).
+
+Landed via PR #425 (docs-only -> live-eval-gate neutral-skips). No FOUNDER_QUEUE
+escalation: agent-owned technical design, relaxes no standing constraint,
+forces no provider switch, commits to no vendor > 12 months (the Coolify
+dependency is pre-existing and the app only ever sees a hostname). WORK.md T-101
+row updated NOT-STARTED -> DONE. PROCESS NOTE (honest): the initial ADR commit
+briefly landed on the concurrently-active t102-litellm-monitor-fail-threshold
+branch due to a shared-main-tree HEAD collision (the exact hazard the worktree-
+isolation norm exists to prevent); recovered cleanly — T-102's commit 8d6bb45
+restored intact via compare-and-swap, the ADR cherry-picked onto its own branch
+(ADR-only diff), and the rest of the work moved to an isolated worktree.
+-> ADR-0008
+```
