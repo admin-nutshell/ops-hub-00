@@ -4,10 +4,11 @@
 
 ---
 
-## 🟠 FQ-76 — OPEN: the internal-auth monitor (T-97) fired for real — it caught a broken internal link to the AI service, BEFORE any customer was affected. One pre-built fix needs your go-ahead.
+## ✅ FQ-76 — RESOLVED: internal AI-service address realigned before any customer was affected
 
-**Filed:** 2026-07-12
+**Filed:** 2026-07-12 | **Resolved:** 2026-07-12
 **Filed by:** Tech Lead (URGENT-class diagnosis — chasing down the T-97 monitor's "third-day trigger" that T-98/PR #407 correctly flagged but left un-investigated; **diagnosis only, nothing mutated**).
+**Status:** RESOLVED — founder authorized the fix. Dispatched `fix-ops-hub-prod-litellm-url.yml` with the freshly-reconfirmed container name (`hlik1d96uvkkjzpbxa3azhcv-140935289661`, success). Verified with the real check (not just generic `/health`): `GET /health/litellm-internal` → `{"status":"ok","litellm_internal":"reachable_and_authenticated"}`. No customer tickets were ever affected — this was caught and closed before the "protective margin" ran out.
 **Needs:** Authorization to run one pre-built fix workflow that changes a production setting (agents don't self-authorize prod mutations — same discipline as FQ-69's fix).
 **Deadline:** Time-sensitive but **not an active emergency**. Nothing is broken for a customer *right now* (verified below). But the protective margin lasts only until the **next real support email arrives** — at which point this becomes a live FQ-69-style stuck-ticket incident. Recommend authorizing **today**.
 
