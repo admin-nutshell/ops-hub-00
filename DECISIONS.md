@@ -5045,3 +5045,138 @@ FOUNDER_QUEUE escalation — BC1 is a technical defect with a technical owner,
 fails closed, no customer impact, no business decision required beyond the
 go-live call the founder already owns via FQ-75.
 ```
+
+### 2026-07-12 — T-98 BC1 fixed and PROVEN live (real incident opened + resolved); one new latent bug found honestly (not fixed, out of BC1's scope); SC9/Inngest-key gaps re-confirmed unchanged (Production Manager)
+
+```
+2026-07-12 [Production Manager] T-98 BC1 — the Security Lead's one blocking
+condition on monitor-e2e-pipeline.yml's workflow sign-off (entry immediately
+above). GO-LIVE CHECKLIST item 1 ("BC1 fix merged + simulate-failure proof
+run") is now DONE.
+
+FIX (PR #413, commit 0f09fa5, merged to main): the "On failure — open a
+status-page incident" step's `if:` was missing a failure()/always()/
+cancelled() status function, so GitHub's implicit success() AND meant the
+step was SKIPPED, not run, once any upstream step genuinely failed — exactly
+as the review described. Added `failure()` to the existing OR-chain of
+per-step outcome checks. Deliberately did NOT restructure to T-97's
+set+e/output shape (the review's option (ii)): that would rewrite already-
+approved, working step logic (reset/dispatch/poll/langfuse each correctly
+exit 1 on their own real failure — that's desirable, it's what fires GitHub's
+native failed-run email) for no benefit over the one-line status-function
+fix. All 6 required PR checks green (Lint, Security Scan, Unit Tests, Eval
+Gate, live-eval-gate neutral-skip, CodeRabbit) — this PR touches only
+`.github/workflows/monitor-e2e-pipeline.yml`, no prompt-surface path, matching
+the same neutral-skip precedent PR #407/#411 established. Self-merged per
+this session's standing policy after CI passed.
+
+Also added, same PR: a `workflow_dispatch` `mode` input (`live` default /
+`simulate-failure`), mirroring monitor-litellm-internal-auth.yml's own
+verification mechanism. `schedule` events carry no `workflow_dispatch`
+`inputs`, so `MODE` always resolves to `'live'` on cron — confirmed this does
+NOT touch the dormancy path (see PROOF 3 below).
+
+PROOF — three real dispatches against main, post-merge, not just "the YAML
+looks right":
+
+1. PROOF THE FIX WORKS (`mode=simulate-failure`, run 29206538334,
+   conclusion=failure as intended): guard succeeded (simulate-failure branch
+   only requires the real, already-signed-off E2E_MONITOR_DB_URL, which
+   exists); reset step ran against the real DB with a deliberately-fake
+   ticket id (`00000000-0000-0000-0000-0000000000ff`) — SAFE, matches 0 real
+   rows, never touches the real sentinel row or any tenant data; dispatch
+   step then genuinely failed (E2E_MONITOR_INNGEST_KEY is empty →
+   `https://inn.gs/e/` rejected the POST, non-200); poll/langfuse correctly
+   SKIPPED (their own if-conditions require the prior step's success); and —
+   the actual point of this proof — **the incident step's conclusion was
+   `failure`, meaning it RAN** (not skipped, which is what it would have done
+   pre-fix) and dispatched `gh workflow run status-incident.yml`
+   (run 29206543729, conclusion=success). Confirmed on `status-content`
+   (commit fd05d4f): a REAL incident file
+   `status/content/2026-07-12-synthetic-e2e-pipeline-monitor-failing--downstream.md`
+   was created, `resolved: false`, title matching `$INCIDENT_TITLE` exactly.
+   This is dispositive: pre-fix, this exact sequence of real step failures
+   would have left the incident step SKIPPED and no file would exist.
+2. RESOLVED the test incident immediately after, same T-97-style hygiene:
+   dispatched `status-incident.yml` `action=resolve` manually
+   (run 29206584125, conclusion=success) → `status-content` commit 8b25ee6 →
+   the SAME file now reads `resolved: true` /
+   `resolvedWhen: 2026-07-12T19:51:06Z`. No synthetic incident left open on
+   the real status page.
+3. PROOF DORMANCY IS UNCHANGED (`mode=live`, run 29206601298,
+   conclusion=success): guard correctly found `E2E_MONITOR_INNGEST_KEY` /
+   `E2E_SENTINEL_TICKET_ID` still missing and exited clean; every downstream
+   step SKIPPED including the (now-fixed) incident step; job conclusion
+   `success`. Byte-for-byte the same dormant behavior as pre-fix run
+   29204883583. The BC1 fix changes ONLY what happens on a real failure, not
+   the pre-provisioning no-op path — matching this task's explicit
+   constraint.
+
+HONEST FINDING, NOT FIXED HERE (out of BC1's scope, flagging not silently
+patching): PROOF run 1 above surfaced that the "Reset sentinel ticket" step's
+own error detection is weaker than it reads. Its emptiness check
+(`[ -z "$(echo "$OUT" | tail -1 | tr -d '[:space:]')" ]`) was written assuming
+a 0-row `UPDATE ... RETURNING id` produces empty output — it does NOT: psql
+still prints the `UPDATE 0` command tag even in `-tA` mode, so
+`tail -1 | tr -d '[:space:]'` yields the non-empty string `UPDATE0`, and the
+step reports success even when it matched zero rows. Observed directly in
+the log (`SIMULATE-FAILURE: targeting deliberately-nonexistent ticket id
+00000000-…-ff.` → `UPDATE 0` → `Sentinel ticket …-ff reset to state='new'.`
+with exit 0). Consequence: if the real `E2E_SENTINEL_TICKET_ID` ever pointed
+at a row that no longer exists (deleted, wrong id typo'd in at SC9
+provisioning time), the reset step would silently "succeed" on a no-op
+instead of failing loudly — a different, narrower blind spot than BC1, and
+one this session's own simulate-failure test happened to walk past rather
+than exercise (the REAL failure it produced came from the dispatch step
+instead, which was still sufficient to prove BC1). Not fixed in this PR
+(scope discipline — BC1 was the one named blocking condition; this is a new,
+separate finding). Recommended fix for whoever next touches this step: check
+for the literal `UPDATE 1` command tag (the same distinguishing-string
+technique `verify-e2e-monitor-role.yml`'s check (d) already uses) rather than
+emptiness. Flagging in WORK.md's T-98 row and leaving as a named carry, not a
+task, per this project's "record findings honestly rather than assumed"
+norm (matches the SC9/REST-API deviation precedent above).
+
+PROVISIONING GAPS — RE-CONFIRMED, UNCHANGED, NOT ACTIONED (per task scope):
+- `E2E_MONITOR_INNGEST_KEY` (GitHub secret): still absent
+  (`gh secret list` confirms). FQ-75 Action 2 — founder must mint a NEW,
+  dedicated Inngest event key via the Inngest Cloud console; no CI credential
+  or MCP tool can do this. Re-confirmed the workflow still degrades
+  gracefully without it (PROOF 3 above) — no regression from this session's
+  edit.
+- `E2E_SENTINEL_TICKET_ID` (repo variable): still absent
+  (`gh variable list` confirms). Re-checked whether this session could
+  self-provision it via "the established FreeScout REST-API test-conversation
+  pattern" the task brief described — that premise is FALSE, and was already
+  independently investigated and documented THIS SAME DAY (see the "T-98
+  built from the design review's spec" entry above, "DEVIATION" paragraph):
+  ADR-0003 Option C explicitly rejected FreeScout's REST API (its Api module
+  is disabled-by-default) as a delivery path; T-51's own "E2E validation" sent
+  a real inbound email, never an API call; no REST-API precedent for
+  conversation creation exists anywhere in this repo. SC9's own approved text
+  requires creating the test conversation via the FreeScout UI specifically
+  ("app layer keeps counters/invariants sane — a raw conversations INSERT is
+  rejected"), which needs interactive freescout-staging admin credentials
+  this session does not hold (MEMORY.md carries only the login email,
+  `info@inatechshell.ca`, never a password — correctly, per this project's
+  "never paste credentials" norm). Substituting a non-UI path (e.g.
+  `docker exec artisan tinker`, direct-INSERT) would itself be a deviation
+  from the Security-Lead-approved SC9 design and would need a fresh review
+  before use, not a quiet workaround — not done. **What's actually needed:
+  either the founder performs the SC9 sequence (FreeScout UI conversation
+  creation → mark Closed → read-only discovery of its conversation id →
+  sentinel-ticket INSERT via e2e_monitor once FQ-75 lands) or hands this
+  session usable freescout-staging admin credentials to do it.** Named, not
+  actioned.
+
+GO-LIVE CHECKLIST STATUS (supersedes the prior entry's list): 1) BC1 fix
+merged + simulate-failure proof run — **DONE, this entry.** 2) founder
+decision to proceed — still open. 3) FQ-75 Action 2 (Inngest key) — still
+open, founder-only. 4) SC9 provisioning + set `E2E_SENTINEL_TICKET_ID` —
+still open, needs founder action or founder-provided FreeScout admin
+credentials (see above). 5) first live run observed end-to-end — blocked on
+3+4.
+
+No FOUNDER_QUEUE escalation beyond FQ-75's existing entries — this is
+confirmation of already-named, already-tracked gaps, not a new decision.
+```
