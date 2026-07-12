@@ -3290,10 +3290,16 @@ THE CANDIDATE SPACE IS EMPTY ON THAT PATH. Only three aliases are registered on
 litellm-staging (grep of DECISIONS.md + every .github/workflows/*.yml: triage-model,
 fallback-model, meta/llama-3.3-70b-instruct — no fourth):
   - triage-model — the EXISTING pin. Adds no second distinct alias. REJECTED.
-  - fallback-model — in the eval key's scope, BUT broken (FQ-70 Anthropic credit
-    exhaustion, 400s; T-92's green baseline records "only healthy scoped config is
-    triage-model"). Cannot clear an eval today. It is also the designated JUDGE alias and
-    KB Learn is primary-only; the T-96 brief explicitly excludes it. REJECTED.
+  - fallback-model — IN the eval key's scope AND targetable by it: the key's block on
+    it is a 400 credit-exhaustion, NOT a 403 scope denial (T-90's pos_judge step), so the
+    key CAN target it. Distinct from the pin, and itself provider-diverse
+    (anthropic/claude-haiku-4-5 vs the pin's OpenAI gpt-4o-mini). Its ONLY blocker is
+    FQ-70 (Anthropic billing) — so it cannot clear an eval TODAY, but it is not
+    structurally disqualified. Caveat: it is the designated JUDGE alias, so an eval run
+    would need a DIFFERENT judge to keep grader != target. (NB: KB Learn being
+    "primary-only" is NOT a reason to exclude it — that only means there is no separate
+    fallback picker, not a cap on how many models the PRIMARY picker may choose among;
+    T-96 explicitly wants >=2 selectable primaries.) BLOCKED BY FQ-70, not disqualified.
   - meta/llama-3.3-70b-instruct — the ONLY structurally-sound candidate (70B instruct
     model; provider-diverse from the OpenAI-backed pin; fits KB Learn's summarize/extract
     task). BUT it is deliberately OUT of the scoped eval key's model list. Dispositively
@@ -3310,6 +3316,14 @@ credential does not yet exist. This is a scope-alignment gap, not an eval failur
 Learn's prompt itself passes 100% twice (T-84/T-88); the missing piece is a vetted,
 in-scope model to widen TO.
 
+PREMISE RECONCILIATION (the T-96 brief called this "independent of FQ-70"): that holds
+ONLY under a key re-provision (option 1 below). On the eval key AS PROVISIONED, the only
+in-scope candidate distinct from the pin is fallback-model — whose sole blocker IS FQ-70.
+So T-96-as-scoped is actually coupled to FQ-70; the way to keep it FQ-70-independent is to
+widen the key to a non-Anthropic candidate (meta/llama, via NVIDIA), which is heavier than
+the brief's "just run the manual eval" fallback implied — that fallback assumed the scoped
+key could already reach a candidate, which it cannot.
+
 UNBLOCK (any one):
   1. Re-provision the scoped eval key to add a candidate target (meta/llama-3.3-70b-
      instruct) to its models list — Production Manager action + fresh Security Lead
@@ -3322,9 +3336,11 @@ UNBLOCK (any one):
      "...OR has cleared a dedicated per-target eval", and updating the meta/llama
      "intentionally EXCLUDED from every list" paragraph — a silent append would leave the
      file self-contradictory.
-  2. OR resolve FQ-70 so fallback-model is fundable AND accept it as KB Learn's second
-     alias — weaker: it is the judge alias and KB Learn is primary-only, a semantic
-     stretch, not the intended provider-diversity win.
+  2. OR resolve FQ-70 so fallback-model is fundable, then eval-vet it as KB Learn's second
+     alias (TARGET=fallback-model, JUDGE=triage-model to keep grader != target). This is
+     the LIGHTEST path — no key change, no fresh Security Lead sign-off — and fallback-model
+     is itself provider-diverse from the pin (Anthropic vs OpenAI). The cost: it re-couples
+     T-96 to FQ-70, and the T-96 brief steered away from fallback-model.
   3. OR wait for the T-93/T-94 live gate to land with an admission path whose credential
      includes the candidate (the ADR §8 "preferred" path the T-96 row already names).
 
