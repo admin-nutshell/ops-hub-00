@@ -19,28 +19,42 @@
 //
 // WHAT "ALLOWED" ACTUALLY MEANS (read this before adding to the list)
 // -------------------------------------------------------------------
-// An alias is in a function's list iff BOTH hold, verified 2026-07-08:
+// An alias is in a function's list iff (1) holds AND at least one of (2a)/(2b):
 //   (1) it is a currently-registered LiteLLM alias (DECISIONS.md 2026-07-04:
 //       `triage-model`, `fallback-model`, `meta/llama-3.3-70b-instruct` persist
-//       across restart with a working completion), AND
-//   (2) it is the model that function ALREADY RUNS in production today
+//       across restart with a working completion), AND EITHER
+//   (2a) it is the model that function ALREADY RUNS in production today
 //       (verified call sites: ticket-triage.ts uses `triage-model` primary +
 //       `fallback-model` fallback; ticket-respond.ts and kb-learn.ts both run
-//       `triage-model`).
-// This is deliberately NOT a claim that each alias "passed a live eval." The
-// eval suite (evals/ticket-triage.yaml, evals/ticket-respond.yaml) pins the
-// PROMPT CONTRACT against one reference model (anthropic:claude-sonnet-4-6),
-// while these aliases route elsewhere inside LiteLLM (e.g. `triage-model`
-// currently resolves to gpt-4o-mini). No alias has a live per-target-model
-// quality pass — the CI gate is schema-only. So the honest guarantee here is
-// narrower and truer: the allowlist freezes the production-accepted choice-set
-// so the dashboard cannot EXPAND it. That is what T-B1 asks for.
+//       `triage-model`), OR
+//   (2b) it has CLEARED a recorded >95% live per-target-model vetting eval for
+//       THAT function — the PROCESS path below, recorded in DECISIONS.md. This is
+//       the admission route T-79 always specified for widening a list beyond the
+//       single current-production model; the live eval IS the vetting.
+// Most entries qualify via (2a) ONLY, and for those this is deliberately NOT a
+// claim that the alias "passed a live eval": the eval suite
+// (evals/ticket-triage.yaml, evals/ticket-respond.yaml) pins the PROMPT CONTRACT
+// against one reference model (anthropic:claude-sonnet-4-6), while these aliases
+// route elsewhere inside LiteLLM (e.g. `triage-model` currently resolves to
+// gpt-4o-mini). For (2a) entries the honest guarantee is narrower and truer: the
+// allowlist freezes the production-accepted choice-set so the dashboard cannot
+// EXPAND it to an un-vetted model. That is what T-B1 asks for.
+// The ONE (2b) entry so far is `meta/llama-3.3-70b-instruct` on `kb_learn`: it
+// does NOT run kb_learn in production, but it cleared evals/kb-learn.yaml LIVE at
+// 4/4 (100%) against its real NVIDIA-backed target, judge=triage-model
+// (grader != target, ADR-0007 §5.3), all T-91 calibration guards green — T-96 C7,
+// DECISIONS.md 2026-07-12, run 29180466358. So the blanket "no alias has a live
+// per-target-model pass" that used to sit here is now false for exactly that one
+// (function, alias) pair, by design.
 //
-// `meta/llama-3.3-70b-instruct` is intentionally EXCLUDED from every list: it
-// is registered, but it is the legacy standalone NVIDIA-NIM alias and is not
-// the current production model of any of the three functions. Exposing it in
-// the dropdown would be precisely the un-vetted runtime swap this file exists
-// to prevent.
+// `meta/llama-3.3-70b-instruct` is a registered standalone NVIDIA-NIM alias that
+// runs NONE of the three functions in production. It stays EXCLUDED from `triage`
+// and `respond`: no vetting eval has been run for it on those prompts, so exposing
+// it there would be precisely the un-vetted runtime swap this file exists to
+// prevent. It is INCLUDED for `kb_learn` ONLY, admitted via path (2b) above
+// (T-96 C7 vetting, run 29180466358). Vetting is PER-FUNCTION and does not
+// transfer — a separate recorded >95% eval is required before this alias may be
+// added to `triage` or `respond`.
 //
 // PROCESS — ADDING A NEW SELECTABLE ALIAS REQUIRES AN EVAL PASS FIRST
 // -------------------------------------------------------------------
@@ -101,14 +115,16 @@ export const MODEL_ROUTING_ALLOWLIST: Readonly<Record<RoutingFunctionKey, readon
   // is offered.
   respond: ["triage-model"],
 
-  // KB Learn runs `triage-model` today (kb-learn.ts). NOTE: KB Learn has NO
-  // dedicated prompt eval yet (coverage gap logged as an Evals Lead follow-up).
-  // Pinning the list to its single current production model is deliberately the
-  // SAFEST option — a choice-set of one eliminates runtime-swap risk entirely
-  // (it does not relax any constraint, so it is not an escalation). Expanding
-  // this list requires authoring evals/kb-learn.yaml and an eval pass first,
-  // per the PROCESS section above.
-  kb_learn: ["triage-model"],
+  // KB Learn runs `triage-model` today (kb-learn.ts) — the (2a) entry.
+  // `meta/llama-3.3-70b-instruct` is the (2b) entry: the coverage gap that once
+  // forced this list to a single pin is closed. evals/kb-learn.yaml now exists
+  // (T-84/T-88, 100% twice on the prompt-contract reference) AND the candidate
+  // cleared it LIVE against its own NVIDIA-backed target at 4/4 (100%),
+  // judge=triage-model (grader != target), all T-91 guards green — T-96 C7,
+  // DECISIONS.md 2026-07-12, run 29180466358. Two vetted aliases now; the
+  // dashboard may select either for kb_learn. Any THIRD alias needs its own
+  // recorded >95% run first, per the PROCESS section above.
+  kb_learn: ["triage-model", "meta/llama-3.3-70b-instruct"],
 } as const;
 
 /**
