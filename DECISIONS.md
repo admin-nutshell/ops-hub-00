@@ -3500,3 +3500,153 @@ as the T-93 DB credential. Evals Lead owns C7's vetting run afterward. No
 FOUNDER_QUEUE escalation — technical scoping decision, no business call; spend
 posture is unchanged-or-lower and staging-only.
 ```
+
+### 2026-07-12 — T-96: LITELLM_EVAL_KEY re-issued + widened, C1-C6 implemented and verified live (Production Manager)
+
+```
+2026-07-12 [Production Manager] T-96 — implemented the 2026-07-11 Security Lead
+review's conditions C1-C6 verbatim (PR #<this branch's PR>, t96-widen-eval-key-
+scope). C7 (model-allowlist.ts) untouched — Evals Lead's follow-up. No
+FOUNDER_QUEUE escalation needed (matches the review's own call: technical scoping,
+spend posture unchanged-or-lower, staging-only).
+
+PRE-WORK (read-only, before editing anything): dispatched the pre-edit
+provision-litellm-eval-key.yml as-is (run 29179483074) purely to enumerate
+litellm-staging's registered aliases. Confirmed only 3 exist: triage-model,
+fallback-model, meta/llama-3.3-70b-instruct — no fourth alias survives as a
+"registered but out of this key's new scope" candidate once meta/llama moves
+in-scope, which is exactly the gap C5's negative-test redesign (and the review's
+own "no such alias naturally exists" contingency clause) anticipated. Also
+reconfirmed FQ-70 still live (fallback-model 400, Anthropic credit exhaustion)
+as a baseline. This run made no key/scope changes — same old key, same old
+tests, informational only.
+
+MECHANISM (per spec, not /key/update): generated a new key value locally
+(openssl rand, "sk-t96-" prefix), written ONLY to a local scratchpad file, never
+echoed to any terminal/chat output at any point (a fragment-print attempt was
+blocked by the harness's own credential-materialization guard, and the value
+was regenerated without ever printing even a prefix). `gh secret set
+LITELLM_EVAL_KEY` from the authenticated local session. Edited
+provision-litellm-eval-key.yml (not a new file — same reviewed artifact,
+re-dispatched) with the widened scope, then dispatched it with an explicit
+--ref against the feature branch (not main) — main still has the old T-90
+version of this workflow, and workflow_dispatch resolves to whatever ref you
+target, so dispatching without --ref would have silently run the STALE
+workflow against the NEW secret value and reported a false pass. Confirmed via
+the run log that KEY_ALIAS/models/rpm_limit all showed the NEW values before
+trusting any result.
+
+C1 — MECHANISM: satisfied. New key registered via POST /key/generate with a
+caller-supplied `key` (never printed/logged), key_alias=eval-gate-t96, models=
+[triage-model, fallback-model, meta/llama-3.3-70b-instruct]. No /key/update
+call anywhere in the workflow or by hand. Master key used only inside this
+workflow_dispatch-only job (permissions: contents:read unchanged).
+
+C2 — OLD-KEY REVOCATION + GENUINE VERIFY: satisfied, with a real check, not a
+trust-the-delete-call check. Sequenced deliberately AFTER the new key's core
+functional proof (fail-safe ordering: a broken new key would leave the old one
+intact rather than stranding the standing eval gate with zero working
+credentials) — the workflow gates the revoke step on
+`pos_target.outcome == success && neg_final.outcome == pass`. First full run
+(29179864123): revoke call (POST /key/delete {key_aliases:["eval-gate-t90"]})
+returned HTTP 200, but the follow-up verify step failed on an unrelated API
+validation error (GET /key/list?size=200 → HTTP 422, "size must be <= 100" —
+own bug, not a scoping/revocation defect). Fixed size=100 + made the revoke
+call's own status check tolerant of 404/400 on idempotent re-runs (PR
+follow-up commit, same branch). Re-dispatch (29179933873): GET
+/key/list?size=100 → HTTP 200; filtered client-side by key_alias — confirmed
+`eval-gate-t90` count=0 (genuinely gone) AND `eval-gate-t96` count=1 (present
+exactly once, no stranded duplicate from the partial first run). Exactly one
+eval key exists after this run.
+
+C3 — RPM CAP: satisfied. rpm_limit=60 set on /key/generate; stored value
+read back via self /key/info and hard-gated (not a soft warning) equal to 60
+before the job proceeds to any functional test.
+
+C4 — METERING PROBE: satisfied, recorded (non-gating, as specified). Read key
+spend via self /key/info immediately before the meta/llama positive test
+(spend_before=0.0), then again ~12s after (spend_after=0.0000054 USD) — a
+short settle delay was added deliberately because LiteLLM's spend accounting
+runs via an async background logger, so an immediate read-back could show $0
+purely from lag rather than true zero-cost pricing. Result: the alias IS
+metered by LiteLLM's cost map, just at a very small nonzero value for this
+tiny (max_tokens=10) probe call — not the "$0/unmetered" case the review
+flagged as the risk, but the review's own framing holds either way: rpm_limit
+(C3) remains the effective backstop regardless of which metering outcome
+obtained, and is not relied on being the ONLY backstop given this reading.
+
+C5 — VERIFICATION BATTERY: satisfied, all sub-parts, one workflow run
+(29179933873), no canary needed (see C5e note below):
+  a. Stored-config readback (self /key/info, Bearer auth): models sorted =
+     fallback-model,meta/llama-3.3-70b-instruct,triage-model (exact match,
+     hard-gated); max_budget stored=7.0 vs expected 7.00 compared NUMERICALLY
+     (awk, not string-equal — T-90 saw this exact cosmetic mismatch) = MATCH;
+     rpm_limit=60 (hard-gated); soft_budget/budget_duration unchanged.
+  b. POSITIVE, triage-model: HTTP 200, content "ok".
+  c. POSITIVE, meta/llama-3.3-70b-instruct: HTTP 200, content "ok" — the
+     widening actually took, proven live against the real NVIDIA-backed alias,
+     not just the stored-config readback.
+  d. SCOPE-POSITIVE, fallback-model: HTTP 400, body =
+     "litellm.BadRequestError: AnthropicException - ... Your credit balance is
+     too low to access the Anthropic API ..." — the exact known FQ-70 signature,
+     not a 403. Gate logic: only a 403 would have hard-failed as a scope
+     regression; this 400 is the expected-and-accepted outcome, proving the key
+     still reaches this alias in-scope while the alias's own upstream remains
+     broken (unrelated, tracked separately, founder billing decision).
+  e. NEGATIVE/scope-boundary: the review's own C5e note anticipated that no
+     registered-but-out-of-scope alias would survive the widening (T-90 used
+     meta/llama for this; it's now in-scope). Attempt 1 — plainly unregistered
+     alias name (gpt-4o-t96-unregistered-probe) — was DISPOSITIVE on the first
+     try: HTTP 403, error.type == key_model_access_denied (checked the TYPE
+     field, not just the status code, exactly per the review's instruction that
+     a 404 here would NOT satisfy this condition). Echoed body: "key not
+     allowed to access model. This key can only access models=
+     ['triage-model', 'fallback-model', 'meta/llama-3.3-70b-instruct']. Tried
+     to access gpt-4o-t96-unregistered-probe". Echoed allowlist extracted and
+     SET-compared (not string/order-compared, since the review flagged the
+     403 body's Python-list repr may not be sorted) against the 3 expected
+     aliases — exact match. Because attempt 1 was dispositive, the canary-alias
+     contingency (register a throwaway dead-upstream alias, probe it, delete
+     it) never triggered — the workflow has that path built and gated on
+     `neg_unregistered.outputs.dispositive != 'true'`, but it did not run this
+     time, so no cleanup step to report.
+
+C6 — /key/info SELF-BEARER FORM (O1 carryover): satisfied. Every /key/info-
+equivalent lookup in the rewritten workflow (initial stored-config verify,
+both spend-before/spend-after C4 reads) uses
+`Authorization: Bearer $LITELLM_EVAL_KEY` with NO `key=` query parameter —
+confirmed by inspecting the actual curl invocations in the committed workflow
+and the run log's rendered commands (`GET /key/info (self, Bearer auth)`).
+The raw key value cannot appear in a URL query string for any lookup this
+workflow performs.
+
+C7 — explicitly NOT touched. src/config/model-allowlist.ts untouched by this
+PR; Evals Lead's >95% vetting eval (TARGET=meta/llama-3.3-70b-instruct,
+JUDGE=triage-model, grader != target per ADR-0007 §5.3) is the remaining step
+before kb_learn can actually use the new alias. T-96's WORK.md row updated to
+UNBLOCKED-for-vetting, not DONE.
+
+Evidence (all runs on branch t96-widen-eval-key-scope, dispatched with
+--ref so the correct workflow version ran against the new secret):
+  - 29179483074 — pre-edit read-only alias enumeration (confirms only 3
+    aliases exist in litellm-staging).
+  - 29179864123 — first full re-issue run: C1/C3/C4/C5 all green; C2's
+    revoke call succeeded but its OWN verify step 422'd on an unrelated
+    /key/list size-param bug (own bug, fixed same branch, not a scoping
+    defect — the key itself was never mis-scoped at any point in this run).
+  - 29179933873 — full green run after the size-param fix: all of
+    C1-C6 pass, explicit "T-96 exit criteria met" gate at the end.
+
+Budget cap: confirmed unchanged at max_budget=$7.00 USD / soft_budget=$3.00
+USD / budget_duration=30d, per the review's explicit instruction not to
+change it.
+
+WORK.md updated: T-90's row marked SUPERSEDED (key rotated, zero consumer
+changes needed — eval-gate-live.yml / capture-eval-baseline.yml reference the
+secret by name); T-96's row moved from BLOCKED to UNBLOCKED-for-Evals-Lead's-
+vetting-run, with C7 called out explicitly as the still-open remaining work.
+
+Handoff: Evals Lead owns C7 (the >95% vetting eval + model-allowlist.ts
+invariant rewrite) next. No further Production Manager action pending on this
+key unless C7's vetting run surfaces a new finding.
+```
