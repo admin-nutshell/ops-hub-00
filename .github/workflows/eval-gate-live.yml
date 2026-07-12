@@ -143,11 +143,14 @@ jobs:
             echo "Event '${{ github.event_name }}' runs the FULL suite (nightly drift / manual dispatch) — not path-gated."
             exit 0
           fi
-          FILES="$(gh pr diff "${{ github.event.pull_request.number }}" --name-only 2>/dev/null)"
-          GHRC=$?
-          if [ "$GHRC" -ne 0 ]; then
+          # --repo is REQUIRED: this step runs BEFORE checkout, so gh has no local git
+          # remote to infer the repo from. The `if ASSIGN` form keeps GitHub's default
+          # `bash -e` errexit from aborting on a gh failure before the fail-safe below.
+          if FILES="$(gh pr diff "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --name-only 2>/dev/null)"; then
+            :
+          else
             echo "should_run=true" >> "$GITHUB_OUTPUT"
-            echo "::warning title=Eval Gate fail-safe (diff unreadable)::Could not read the PR diff (gh exit ${GHRC}). Running the full gate as a fail-safe rather than skipping a possibly prompt-touching PR."
+            echo "::warning title=Eval Gate fail-safe (diff unreadable)::Could not read the PR diff. Running the full gate as a fail-safe rather than skipping a possibly prompt-touching PR."
             exit 0
           fi
           echo "Changed files in this PR:"; printf '%s\n' "${FILES:-<none>}"
