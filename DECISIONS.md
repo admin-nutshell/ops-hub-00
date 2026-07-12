@@ -3839,6 +3839,33 @@ Three coupled deliverables:
    (`INSERT 0 1`, status=pass total=12 passed=12 run_type=llm_rubric project_id=NULL
    — T-93 condition V1: no fabricated row, lands automatically now FQ-70 is fixed).
 
+4. DETECTION-PATH PROOF (the `should_run=true` branch, verified BEFORE registration).
+   The wedge fix (2) and the graded green (3) between them exercised the neutral-skip
+   branch (PR #394, non-prompt path → should_run=false) and the metered-grade branch
+   via workflow_dispatch (run 29196855171 — but dispatch FORCE-PASSES STEP 0.5 and
+   never runs the grep). Neither exercised the one branch that matters most on a real
+   PR: a `pull_request` that TOUCHES a prompt surface → STEP 0.5's grep matches →
+   should_run=true → full metered gate. That grep is new code this session (it yielded
+   two real bugs the moment the adjacent skip-path was run for real), and its failure
+   mode is the worst possible: if it failed to match a real prompt change, the gate
+   would neutral-skip GREEN on a prompt PR, and once `live-eval-gate` is a required
+   check that false-green would SATISFY branch protection → a prompt regression merges
+   unevaluated (the exact drift this gate exists to close, silently re-introduced at
+   the detection layer). It also patches an ambiguity in FQ-74/WORK.md's own planned
+   verification ("open a throwaway prompt PR, confirm it blocks until green") — a
+   detection false-skip produces GREEN, which reads as success under that wording, so
+   the post-registration check alone could MISS this bug. Proven now, zero-risk (gate
+   not required yet): throwaway PR #396 made a no-op comment edit to evals/kb-learn.yaml
+   (a prompt surface). live-eval-gate run 29197282219 ran EVERY step to `success`
+   (Checkout → Node → keyguard → judge preflight → 3 evals graded live → baseline
+   fetch → compare → enforce) — none skipped, which only happens when should_run=true;
+   compare = GATE PASS 12/12 stable, grader!=target (target triage-model, judge
+   fallback-model, baseline run 29196767764), and the full per-test breakdown posted as
+   the PR comment (NOT the neutral-skip note). PR #396 closed WITHOUT merging (throwaway;
+   the no-op comment must not land on main) + branch deleted. Detection + the full
+   pull_request metered path are now both proven; regression-catching itself was already
+   proven (T-92 synthetic suite), so a degrade-a-prompt run was unnecessary.
+
 FQ-74 FILED (founder branch-protection registration — plain language, 8 literal
   click steps). Tech Lead does NOT self-register even with API access: flipping a
   branch-protection rule is a repo-admin action deliberately kept above the agents
