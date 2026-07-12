@@ -107,7 +107,12 @@ SQL_EOF
 
 echo "Persisting eval_gate_runs row: status=$STATUS total_cases=${TOTAL_CASES:-<none>} passed_cases=${PASSED_CASES:-<none>} git_sha=${GIT_SHA:-<none>}"
 
-psql "$EVAL_GATE_DB_URL" \
+# The SQL is fed via stdin (-f -), NOT -c: psql performs :'var' variable
+# interpolation only on stdin/-f input — `-c` sends the string verbatim, so the
+# server would see the literal text :'v_status' and fail with a syntax error
+# (caught live by the T-93 verify workflow, run 29173981113, before this path
+# ever ran in production). Client-side quoting/binding semantics are identical.
+printf '%s\n' "$SQL" | psql "$EVAL_GATE_DB_URL" \
   -v ON_ERROR_STOP=1 \
   -v v_status="$STATUS" \
   -v v_total_cases="$TOTAL_CASES" \
@@ -116,7 +121,7 @@ psql "$EVAL_GATE_DB_URL" \
   -v v_workflow_run_url="$WORKFLOW_RUN_URL" \
   -v v_ci_run_at="$CI_RUN_AT" \
   -v v_case_results="$CASE_RESULTS" \
-  -c "$SQL"
+  -f -
 RC=$?
 
 if [ "$RC" -eq 0 ]; then
