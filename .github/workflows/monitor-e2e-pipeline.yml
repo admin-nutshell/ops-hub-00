@@ -95,11 +95,42 @@ name: Monitor — Synthetic-ticket downstream E2E pipeline (T-98)
 # workflow_dispatch path (the free channel that already works; UptimeRobot's
 # webhook integration needs a paid tier the founder declined, FQ-47 action
 # 4b). DISTINCT incident title from T-97's so the two are never confused.
+#
+# BC1 FIX (Security Lead sign-off, DECISIONS.md 2026-07-12, "T-98 Security
+# Lead sign-off... APPROVED WITH ONE BLOCKING CONDITION"): the "On failure —
+# open a status-page incident" step's `if:` used to be a bare
+# `steps.<x>.outcome == 'failure'` OR-chain with NO failure()/always()/
+# cancelled() status function. GitHub Actions implicitly ANDs a bare `if:`
+# with success(), so once reset/dispatch/poll/langfuse actually failed, the
+# job's own success() went false and the incident step was SKIPPED, not run
+# — the status-page paging half of SC8 was dead code. Fixed by adding
+# `failure()` to the condition (the review's "more standard" option;
+# rejected restructuring to T-97's set+e/output shape as unnecessary
+# rewrite-risk on already-approved logic — see PART 2/BC1 discussion).
+#
+# mode=live (default, used by the schedule): real behavior, unchanged.
+# mode=simulate-failure (manual verification only — never on the schedule;
+#   `schedule` events carry no workflow_dispatch inputs, so MODE always
+#   resolves to 'live' on cron): forces the "Reset sentinel ticket" step to
+#   target a deliberately-nonexistent ticket id against the REAL,
+#   already-signed-off, RLS-scoped E2E_MONITOR_DB_URL — a genuine 0-row
+#   UPDATE failure — WITHOUT touching the real sentinel row, the real
+#   Inngest key, or requiring SC9/FQ-75 to be fully provisioned. Proves the
+#   BC1-fixed incident-opening wiring the same way T-97 proved its own
+#   failure path (a deliberately-wrong value in a manual test invocation,
+#   never the real credential's real scope). See DECISIONS.md for the run
+#   that used this to verify.
 
 on:
   schedule:
     - cron: "0 */6 * * *" # every 6 hours (SC5) — do not shorten without a fresh review.
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [live, simulate-failure]
+        description: "live = real scheduled behavior; simulate-failure = verification-only, forces the 'reset' step to fail via a guaranteed-nonexistent ticket id against the real (already-signed-off) DB credential, without touching the real sentinel row or the real Inngest key"
+        default: live
 
 permissions:
   contents: read
@@ -123,6 +154,7 @@ jobs:
     name: Inject synthetic ticket + assert downstream chain
     runs-on: ubuntu-latest
     env:
+      MODE: ${{ inputs.mode || 'live' }}
       E2E_MONITOR_DB_URL: ${{ secrets.E2E_MONITOR_DB_URL }}
       E2E_MONITOR_INNGEST_KEY: ${{ secrets.E2E_MONITOR_INNGEST_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
@@ -135,6 +167,16 @@ jobs:
       - name: Guard — required credentials + sentinel ticket id all present
         id: guard
         run: |
+          if [ "$MODE" = "simulate-failure" ]; then
+            echo "::notice title=T-98 monitor SIMULATE-FAILURE mode::Manual verification-only run (never scheduled). Forces the 'reset' step to fail for real against the already-signed-off, RLS-scoped E2E_MONITOR_DB_URL by targeting a guaranteed-nonexistent ticket id — proving the BC1-fixed incident-opening wiring without touching the real sentinel row, the real Inngest key, or requiring E2E_SENTINEL_TICKET_ID/FQ-75 to be fully provisioned."
+            if [ -z "${E2E_MONITOR_DB_URL:-}" ]; then
+              echo "::error::simulate-failure mode still requires E2E_MONITOR_DB_URL (the real, RLS-scoped, already-signed-off credential) so the forced failure is a genuine DB round-trip, not a mock."
+              exit 1
+            fi
+            echo "::add-mask::$E2E_MONITOR_DB_URL"
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           MISSING=""
           [ -n "${E2E_MONITOR_DB_URL:-}" ]      || MISSING="$MISSING E2E_MONITOR_DB_URL"
           [ -n "${E2E_MONITOR_INNGEST_KEY:-}" ]  || MISSING="$MISSING E2E_MONITOR_INNGEST_KEY"
@@ -153,14 +195,23 @@ jobs:
         id: reset
         run: |
           echo "::add-mask::$E2E_MONITOR_DB_URL"
+          if [ "$MODE" = "simulate-failure" ]; then
+            # Guaranteed-nonexistent — never the real sentinel row. Matches 0
+            # rows against the real, RLS-scoped E2E_MONITOR_DB_URL, producing a
+            # genuine (safe) failure to prove the BC1-fixed incident wiring.
+            TARGET_ID="00000000-0000-0000-0000-0000000000ff"
+            echo "SIMULATE-FAILURE: targeting deliberately-nonexistent ticket id $TARGET_ID."
+          else
+            TARGET_ID="$SENTINEL_TICKET_ID"
+          fi
           OUT=$(printf '%s\n' "update tickets set state = 'new' where id = :'id'::uuid returning id" \
-            | psql "$E2E_MONITOR_DB_URL" -v id="$SENTINEL_TICKET_ID" -v ON_ERROR_STOP=1 -tA -f - 2>&1) && RC=0 || RC=$?
+            | psql "$E2E_MONITOR_DB_URL" -v id="$TARGET_ID" -v ON_ERROR_STOP=1 -tA -f - 2>&1) && RC=0 || RC=$?
           echo "$OUT"
           if [ "$RC" -ne 0 ] || [ -z "$(echo "$OUT" | tail -1 | tr -d '[:space:]')" ]; then
-            echo "::error::Could not reset the sentinel ticket ($SENTINEL_TICKET_ID) to state='new'. Either the row doesn't exist yet (SC9 provisioning incomplete) or the RLS-hardcoded scope rejected it (E2E_SENTINEL_TICKET_ID pointing at the wrong tenant/project?)."
+            echo "::error::Could not reset the sentinel ticket ($TARGET_ID) to state='new'. Either the row doesn't exist yet (SC9 provisioning incomplete, or this is a deliberate simulate-failure run) or the RLS-hardcoded scope rejected it (E2E_SENTINEL_TICKET_ID pointing at the wrong tenant/project?)."
             exit 1
           fi
-          echo "Sentinel ticket $SENTINEL_TICKET_ID reset to state='new'."
+          echo "Sentinel ticket $TARGET_ID reset to state='new'."
 
       - name: Dispatch ops-hub/ticket.triage via Inngest's Event API
         if: steps.guard.outputs.ready == 'true' && steps.reset.outcome == 'success'
@@ -262,7 +313,11 @@ jobs:
           PYEOF
 
       - name: On failure — open a status-page incident + fail the run
-        if: steps.guard.outputs.ready == 'true' && (steps.reset.outcome == 'failure' || steps.dispatch.outcome == 'failure' || steps.poll.outcome == 'failure' || steps.langfuse.outcome == 'failure')
+        # BC1 fix: `failure()` is required here. A bare if-expression is
+        # implicitly ANDed with success() by GitHub Actions, so without a
+        # status function this step was SKIPPED (not run) the moment any
+        # upstream step actually failed — see the BC1 header comment above.
+        if: failure() && steps.guard.outputs.ready == 'true' && (steps.reset.outcome == 'failure' || steps.dispatch.outcome == 'failure' || steps.poll.outcome == 'failure' || steps.langfuse.outcome == 'failure')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
