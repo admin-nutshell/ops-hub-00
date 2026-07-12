@@ -1,0 +1,72 @@
+name: T-98 — one-time provisioning of the sentinel ticket row (SC9)
+
+# ONE-TIME setup step for T-98's synthetic-ticket downstream E2E monitor
+# (monitor-e2e-pipeline.yml). That workflow's "reset" step only UPDATEs an
+# EXISTING row (Amendment A1 — never inserts a fresh row per run, so a
+# manual re-open of the linked FreeScout test conversation can never mint a
+# duplicate real ticket). This workflow creates that ONE row, ONCE, using the
+# already-Security-Lead-approved e2e_monitor credential (T-98 design review,
+# DECISIONS.md 2026-07-12) -- the same narrow role, exercised for exactly the
+# INSERT capability it was scoped to have (SELECT/INSERT/UPDATE on `tickets`,
+# hardcoded to the synthetic tenant/project only).
+#
+# Safe to run only once in the normal case: the freescout_conversation_id
+# column is UNIQUE, so a second run against the same conversation id fails
+# loudly (unique-violation) rather than silently creating a duplicate row.
+#
+# workflow_dispatch only -- a human runs this deliberately, once.
+
+on:
+  workflow_dispatch:
+    inputs:
+      freescout_conversation_id:
+        description: "The FreeScout conversation id created for SC9 (e.g. 34)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: Insert the one permanent sentinel ticket row
+    runs-on: ubuntu-latest
+    env:
+      E2E_MONITOR_DB_URL: ${{ secrets.E2E_MONITOR_DB_URL }}
+      SYN_PROJECT_ID: "00000000-0000-0000-0000-000000000001"
+      SYN_TENANT_ID: "00000000-0000-0000-0000-000000000010"
+      FC_ID: ${{ github.event.inputs.freescout_conversation_id }}
+    steps:
+      - name: Guard -- credential present
+        run: |
+          [ -n "${E2E_MONITOR_DB_URL:-}" ] || { echo "::error::E2E_MONITOR_DB_URL not set — run FQ-75 Action 1 first."; exit 1; }
+
+      - name: Sanitize the conversation id (digits only, untrusted dispatch input)
+        run: |
+          CLEAN=$(printf '%s' "$FC_ID" | tr -cd '0-9')
+          [ -n "$CLEAN" ] || { echo "::error::freescout_conversation_id must be a positive integer."; exit 1; }
+          echo "FC_ID=$CLEAN" >> "$GITHUB_ENV"
+
+      - name: Insert the sentinel ticket (idempotent -- unique violation if already provisioned)
+        id: insert
+        run: |
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          OUT=$(printf '%s\n' \
+            "insert into tickets (project_id, tenant_id, title, severity, state, freescout_conversation_id) values (:'pid'::uuid, :'tid'::uuid, 'T-98 E2E Monitor — Sentinel Ticket (DO NOT DELETE)', 'P3', 'new', :'fcid'::bigint) returning id" \
+            | psql "$E2E_MONITOR_DB_URL" -v pid="$SYN_PROJECT_ID" -v tid="$SYN_TENANT_ID" -v fcid="$FC_ID" -v ON_ERROR_STOP=1 -tA -f - 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -ne 0 ]; then
+            if echo "$OUT" | grep -qi "duplicate key value violates unique constraint"; then
+              echo "::error::A ticket row already exists for freescout_conversation_id=$FC_ID — this has likely already been provisioned. Look up its id manually rather than re-running this workflow."
+            fi
+            exit 1
+          fi
+          TICKET_ID=$(echo "$OUT" | grep -Eio '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+          [ -n "$TICKET_ID" ] || { echo "::error::Insert did not return a UUID — inspect output above."; exit 1; }
+          echo "Sentinel ticket provisioned: id=$TICKET_ID (freescout_conversation_id=$FC_ID)"
+          echo "### Sentinel ticket provisioned" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Set this as the \`E2E_SENTINEL_TICKET_ID\` repo VARIABLE (not secret):" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$TICKET_ID" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
