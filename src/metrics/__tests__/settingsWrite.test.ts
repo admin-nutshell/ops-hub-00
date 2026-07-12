@@ -245,13 +245,33 @@ describe("validateModelRoutingInput", () => {
     ).toThrow(ValidationError);
   });
 
-  it("ALLOWLIST — rejects the deliberately-excluded meta/llama alias, even though it is a registered LiteLLM alias", () => {
+  // T-100 note: `meta/llama-3.3-70b-instruct` is no longer a valid "excluded"
+  // example — it cleared a recorded >95% live vetting eval for triage AND respond
+  // (9/9 each vs the current N=9 evals, run 29200425687) and is now allowlisted for
+  // all three functions. The
+  // protective invariant this test guards — registration is NOT allowlist
+  // admission, and vetting is PER-FUNCTION — is now demonstrated with
+  // `fallback-model`: a registered alias that IS allowlisted for triage but was
+  // never vetted for respond, so it must still be rejected for respond.
+  it("ALLOWLIST — rejects a registered alias not vetted for THIS function (fallback-model is allowlisted for triage, NOT for respond) — per-function gating, T-79/T-100", () => {
+    expect(() =>
+      validateModelRoutingInput({
+        functionKey: "respond",
+        primaryModel: "fallback-model",
+      })
+    ).toThrow(ValidationError);
+  });
+
+  // Positive companion: meta/llama IS now accepted for respond (T-100 vetted it
+  // at 4/4 live). Pins the new post-T-100 behaviour so a future accidental
+  // removal from the allowlist is caught here too.
+  it("ALLOWLIST — accepts meta/llama for respond now that T-100 vetted it live (9/9, run 29200425687)", () => {
     expect(() =>
       validateModelRoutingInput({
         functionKey: "respond",
         primaryModel: "meta/llama-3.3-70b-instruct",
       })
-    ).toThrow(ValidationError);
+    ).not.toThrow();
   });
 
   it("FALLBACK SCOPE — rejects a fallbackModel for respond (primary-only this sprint)", () => {
@@ -274,12 +294,17 @@ describe("validateModelRoutingInput", () => {
     ).toThrow(ValidationError);
   });
 
+  // T-100 note: was `fallbackModel: "meta/llama-3.3-70b-instruct"`, which is now
+  // allowlisted for triage (vetted live, run 29199758667) and would no longer
+  // throw. Swapped to a plainly non-allowlisted alias so the intent — a
+  // fallbackModel not on triage's list is rejected even though triage HAS a
+  // fallback slot — is preserved.
   it("rejects a fallbackModel that is itself not allowlisted, even for triage", () => {
     expect(() =>
       validateModelRoutingInput({
         functionKey: "triage",
         primaryModel: "triage-model",
-        fallbackModel: "meta/llama-3.3-70b-instruct",
+        fallbackModel: "gpt-4-turbo-unvetted",
       })
     ).toThrow(ValidationError);
   });
