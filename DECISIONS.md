@@ -4830,3 +4830,69 @@ FQ-76 filed (founder-gated remediation, FQ-69 plain-language format). WORK.md
 line-18 carry updated from "TRIGGER FIRED / not investigated" to
 diagnosed+resolved-pending-FQ-76, with the misclassification corrected.
 ```
+
+### 2026-07-12 — T-98 SC1 verify (`e2e_monitor`) — two verification-HARNESS bugs found + fixed; role/RLS PROVEN correct on a real all-four-green run (Tech Lead)
+
+```
+2026-07-12 [Tech Lead] T-98 SC1 — verify-e2e-monitor-role.yml first ran for real
+(run 29205158065) after the founder applied the e2e_monitor role migration + set
+its password. It reported (b) FAIL and (c) FAIL, (d) skipped. Both FAILs were
+bugs in the VERIFICATION HARNESS, NOT in the DB security — same class as the
+T-84->T-88 harness-bug saga. Confirmed by the raw run log AND reproduced locally
+against a throwaway Postgres 16 before touching anything.
+
+SCOPE HELD: harness-only. The e2e_monitor role, its migration, and its RLS/
+WITH CHECK policies were NOT modified. Test (a) passed cleanly, and (b)'s raw log
+already showed the DB correctly rejecting the bad write ("new row violates
+row-level security policy for table tickets") — the security behaviour was right
+all along; the harness was mis-reading it.
+
+ROOT CAUSE — bug (b) and latent-identical bug (d): missing ON_ERROR_STOP.
+  psql reading a script from stdin via `-f -` prints an in-statement SQL error
+  but STILL exits 0 unless `-v ON_ERROR_STOP=1` is set (default: run to end of
+  script, exit on the LAST statement's status). So the RLS violation on the
+  prod-tenant INSERT left RC=0, which tripped the "INSERT SUCCEEDED" failure
+  branch BEFORE the `grep "row-level security"` confirmation could ever run.
+  Local repro: identical statement RC=0 without the flag, RC=3 with it. (d)
+  carried the exact same latent bug and had never executed (gated on check_c),
+  so the fixed run is the FIRST real exercise of both (b)'s and (d)'s RLS-string
+  assertion.
+
+ROOT CAUSE — bug (c): command-tag captured instead of the RETURNING UUID.
+  `INSERT ... RETURNING id` under `-tA -f -` emits the UUID line AND a trailing
+  "INSERT 0 1" command tag; `-tA` (tuples-only/unaligned) does NOT suppress that
+  tag. `tail -1` grabbed the tag -> stripped to "INSERT01" -> downstream read-back
+  died on `invalid input syntax for type uuid: "INSERT01"`. Reproduced locally.
+
+FIX (harness-only, PR on branch worktree-agent-a06b81b758c7649e8, self-merged):
+  - Add `-v ON_ERROR_STOP=1` to EVERY psql invocation (a/b/c/d), so an in-script
+    SQL error yields a non-zero exit the exit-code checks can trust.
+  - Extract TICKET_ID by matching the UUID shape (grep -Eio on the canonical
+    8-4-4-4-12 pattern) instead of blind `tail -1` — dispositive regardless of
+    command-tag or line ordering.
+
+PROOF — real, dispositive, all-four-green run, verified green-FOR-THE-RIGHT-REASON
+(not just four "success" outcomes), head SHA 260d866 matching the merged fix:
+  https://github.com/admin-nutshell/ops-hub-00/actions/runs/29205481086
+  - (a) PASS: SELECT scoped to real prod tenant -> 0 rows (RLS-blind).
+  - (b) PASS: log shows the literal "ERROR: new row violates row-level security
+        policy for table tickets" THEN "(b) PASS" — the grep assertion genuinely
+        ran and matched (first real execution of it).
+  - (c) PASS: real UUID fe883f75-1537-44ce-9060-ceec4fd54f5c round-tripped
+        (insert -> read-back count 1 -> UPDATE 1); no "INSERT01" anywhere.
+  - (d) PASS: same RLS-violation error THEN "(d) PASS: ... rejected by WITH
+        CHECK" — a genuine matched-then-rejected UPDATE, NOT a silent UPDATE 0
+        no-op (the false-pass the advisor flagged). First real execution of (d).
+
+CONCLUSION: e2e_monitor's scope matches the design exactly — structurally blind
+to the real prod tenant on SELECT, cannot INSERT into it, can fully read/write
+its own synthetic-tenant sentinel row, and cannot rewrite that row's tenant_id
+to escape scope (WITH CHECK enforced, not just USING). SC1 satisfied. Ready for
+T-90-style Security Lead sign-off before the credential is trusted.
+
+NOT DONE (deliberate, separate follow-ups): monitor-e2e-pipeline.yml's schedule
+is NOT enabled here — that is gated on the Security Lead sign-off above. Each
+verify run leaves one harmless marker-tagged synthetic-tenant sentinel row by
+design (no DELETE grant); the accumulation is expected and does not affect
+re-runs (every check keys off its own freshly-returned id/run_id).
+```
