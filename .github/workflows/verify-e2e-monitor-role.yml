@@ -62,7 +62,7 @@ jobs:
         continue-on-error: true
         run: |
           echo "::add-mask::$E2E_MONITOR_DB_URL"
-          OUT=$(psql "$E2E_MONITOR_DB_URL" -tAc "select count(*) from tickets where tenant_id = '${PROD_TENANT_ID}'::uuid" 2>&1) && RC=0 || RC=$?
+          OUT=$(psql "$E2E_MONITOR_DB_URL" -v ON_ERROR_STOP=1 -tAc "select count(*) from tickets where tenant_id = '${PROD_TENANT_ID}'::uuid" 2>&1) && RC=0 || RC=$?
           echo "$OUT"
           if [ "$RC" -ne 0 ]; then
             echo "::error::(a) FAILED — the query itself errored (expected a clean 0, not permission-denied — e2e_monitor DOES have a SELECT grant on tickets; RLS should silently filter, not reject the statement). Inspect output above."
@@ -82,7 +82,7 @@ jobs:
           echo "::add-mask::$E2E_MONITOR_DB_URL"
           OUT=$(printf '%s\n' \
             "insert into tickets (project_id, tenant_id, title, severity, state) values (:'pid'::uuid, :'tid'::uuid, 'T-98-VERIFY-prod-scope-probe (should be rejected)', 'P3', 'new')" \
-            | psql "$E2E_MONITOR_DB_URL" -v pid="$PROD_PROJECT_ID" -v tid="$PROD_TENANT_ID" -tA -f - 2>&1) && RC=0 || RC=$?
+            | psql "$E2E_MONITOR_DB_URL" -v ON_ERROR_STOP=1 -v pid="$PROD_PROJECT_ID" -v tid="$PROD_TENANT_ID" -tA -f - 2>&1) && RC=0 || RC=$?
           echo "$OUT"
           if [ "$RC" -eq 0 ]; then
             echo "::error::(b) FAILED — an INSERT scoped to the real prod tenant/project SUCCEEDED (should have been an RLS policy violation). STOP — this role can write real-tenant rows."
@@ -100,22 +100,31 @@ jobs:
           echo "::add-mask::$E2E_MONITOR_DB_URL"
           INS=$(printf '%s\n' \
             "insert into tickets (project_id, tenant_id, title, severity, state) values (:'pid'::uuid, :'tid'::uuid, :'marker', 'P3', 'new') returning id" \
-            | psql "$E2E_MONITOR_DB_URL" -v pid="$SYN_PROJECT_ID" -v tid="$SYN_TENANT_ID" -v marker="$MARKER" -tA -f - 2>&1) && RC=0 || RC=$?
+            | psql "$E2E_MONITOR_DB_URL" -v ON_ERROR_STOP=1 -v pid="$SYN_PROJECT_ID" -v tid="$SYN_TENANT_ID" -v marker="$MARKER" -tA -f - 2>&1) && RC=0 || RC=$?
           echo "$INS"
           if [ "$RC" -ne 0 ]; then
             echo "::error::(c) FAILED — the synthetic-tenant INSERT itself failed (RLS or grant issue on the ONE scope this role must be able to write). Inspect output above."
             exit 1
           fi
-          TICKET_ID=$(echo "$INS" | tail -1 | tr -d '[:space:]')
+          # Parse the RETURNING id by matching the UUID shape, NOT `tail -1`:
+          # `INSERT ... RETURNING` under `-tA -f -` still emits a trailing
+          # "INSERT 0 1" command tag that `-tA` does NOT suppress (proven in the
+          # 29205158065 run), so tail -1 grabbed "INSERT01". A UUID-shaped grep
+          # is dispositive regardless of tag/line ordering.
+          TICKET_ID=$(echo "$INS" | grep -Eio '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+          if [ -z "$TICKET_ID" ]; then
+            echo "::error::(c) FAILED — INSERT reported success but no UUID was returned to parse. Inspect output above."
+            exit 1
+          fi
           echo "ticket_id=$TICKET_ID" >> "$GITHUB_OUTPUT"
 
           SEL=$(printf '%s\n' "select count(*) from tickets where id = :'id'::uuid" \
-            | psql "$E2E_MONITOR_DB_URL" -v id="$TICKET_ID" -tA -f - 2>&1) && RC2=0 || RC2=$?
+            | psql "$E2E_MONITOR_DB_URL" -v ON_ERROR_STOP=1 -v id="$TICKET_ID" -tA -f - 2>&1) && RC2=0 || RC2=$?
           echo "$SEL"
           [ "$RC2" -eq 0 ] && [ "$(echo "$SEL" | tail -1 | tr -d '[:space:]')" = "1" ] || { echo "::error::(c) FAILED — could not read back the just-inserted synthetic row."; exit 1; }
 
           UPD=$(printf '%s\n' "update tickets set state = 'closed' where id = :'id'::uuid" \
-            | psql "$E2E_MONITOR_DB_URL" -v id="$TICKET_ID" -tA -f - 2>&1) && RC3=0 || RC3=$?
+            | psql "$E2E_MONITOR_DB_URL" -v ON_ERROR_STOP=1 -v id="$TICKET_ID" -tA -f - 2>&1) && RC3=0 || RC3=$?
           echo "$UPD"
           [ "$RC3" -eq 0 ] || { echo "::error::(c) FAILED — could not UPDATE the synthetic row's own state (the sentinel reset/advance pattern this role exists for)."; exit 1; }
           echo "(c) PASS: synthetic-tenant insert + read-back + update all succeeded (ticket_id=$TICKET_ID, left state=closed — a real, marker-tagged, harmless row; no DELETE grant exists to remove it, matching this schema's no-hard-delete convention)."
@@ -129,7 +138,7 @@ jobs:
         run: |
           echo "::add-mask::$E2E_MONITOR_DB_URL"
           OUT=$(printf '%s\n' "update tickets set tenant_id = :'tid'::uuid where id = :'id'::uuid" \
-            | psql "$E2E_MONITOR_DB_URL" -v tid="$PROD_TENANT_ID" -v id="$TICKET_ID" -tA -f - 2>&1) && RC=0 || RC=$?
+            | psql "$E2E_MONITOR_DB_URL" -v ON_ERROR_STOP=1 -v tid="$PROD_TENANT_ID" -v id="$TICKET_ID" -tA -f - 2>&1) && RC=0 || RC=$?
           echo "$OUT"
           if [ "$RC" -eq 0 ]; then
             echo "::error::(d) FAILED — UPDATE rewriting the synthetic row's tenant_id to the real prod tenant SUCCEEDED (should have been rejected by WITH CHECK). STOP — a leaked credential could relocate a row into prod scope."
