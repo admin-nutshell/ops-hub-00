@@ -4009,6 +4009,160 @@ still stands (do not label M7). CLAUDE.md "Active sprint" pointer updated 9→10
 sprint from going stale, the exact anti-pattern prior retros flagged.
 ```
 
+### 2026-07-12 — T-100 DONE: meta/llama-3.3-70b-instruct PASSED BOTH triage + respond live vetting evals (9/9 each vs T-99's N=9, 100%) → added to both allowlists, NO re-scope needed (Evals Lead)
+
+```
+2026-07-12 [Evals Lead] T-100 — vetted a candidate SECOND alias for the `triage`
+and `respond` functions via the sanctioned per-target-model vetting path (the
+T-96 pattern; model-allowlist.ts PROCESS block / T-79). RESULT: meta/llama-3.3-70b-instruct
+PASSED BOTH functions at 9/9 = 100% (> 95% gate) against the CURRENT N=9 eval
+suite. Both aliases are now added to their respective allowlists; T-100 is DONE at
+the MAXIMAL outcome (both functions, not just one). The exit criteria explicitly
+accepted "even one additional vetted alias on one function" as complete — both
+cleared cleanly, so both ship.
+
+N=9 RE-CONFIRMATION (why there are two runs). The first vetting pass ran against
+the N=4 eval version (SHA 67354c3) at 4/4 = 100% (run 29199758667). Mid-PR, T-99
+(PR #402) merged to main and grew every product eval from N=4 to N=9 (past the
+ADR-0007 §5.4 small-N caveat). Rather than ship a (2b) allowlist claim citing "4/4"
+against a file that now has 9 tests — which would be misleading in the source of
+truth — the branch was rebased onto that merge and the FULL vetting re-run against
+the N=9 files. DEFINITIVE RESULT: 9/9 = 100% on BOTH functions (run 29200425687,
+eval SHA 2bb7f2c). With N=9 the >95% bar is 9/9 (8/9 = 88.9% would FAIL); it cleared
+cleanly. All numbers in model-allowlist.ts / WORK.md / the settingsWrite tests cite
+the N=9 run. (The N=4 run stands as the corroborating first pass, not the record.)
+
+NO EVAL-KEY RE-SCOPE WAS NEEDED — the T-96 wall did NOT apply (this was the key
+finding that made T-100 a pure vetting task, not a security-review cycle):
+  - Candidate target `meta/llama-3.3-70b-instruct` and judge `fallback-model` are
+    BOTH already inside LITELLM_EVAL_KEY's existing scope (key_alias=eval-gate-t96,
+    scoped [triage-model, fallback-model, meta/llama-3.3-70b-instruct], Production
+    Manager 2026-07-12 / T-96 C1-C6). So neither call 403'd and no widening was
+    required. Per the exit criteria, a re-scope would have been a HARD prerequisite
+    (Production-Manager re-scope + FRESH Security Lead review, §5.1) — but since the
+    candidate was already in scope, that gate was simply not reached. The master key
+    was never touched at any point.
+
+RUNS (real, live, metered against litellm-staging):
+  DEFINITIVE (N=9, the record):  https://github.com/admin-nutshell/ops-hub-00/actions/runs/29200425687
+  First pass (N=4, corroborating): https://github.com/admin-nutshell/ops-hub-00/actions/runs/29199758667
+  (The detailed per-target/judge/mechanism notes below hold for BOTH runs — same
+  target, judge, credential, mechanism; only the eval N and pass counts differ:
+  4/4 on N=4, then 9/9 on the current N=9 files. Where a specific figure differs it
+  is called out inline.)
+  - TARGET_ALIAS = meta/llama-3.3-70b-instruct (the candidate; real NVIDIA-NIM-backed
+    alias — NOT the anthropic:claude-sonnet-4-6 prompt-contract reference the CI
+    schema check uses). Target reachability preflighted HTTP 200 before spend.
+  - JUDGE_ALIAS  = fallback-model. This is a DELIBERATE change from T-96's judge
+    (triage-model): fallback-model preflighted HTTP 200 this run — FQ-70 is CONFIRMED
+    RESOLVED (the credit-exhaustion 400 that forced T-96 onto triage-model is gone),
+    so T-100 used the ADR §5.3 INTENDED provider-diverse grader (fallback-model is
+    claude-class; target is a Llama NIM — genuinely different provider/family, a
+    stronger grader != target than T-96's same-gpt-4o-mini-class pairing). The runner
+    hard-errors exit 3 on judge==target; it did not (fallback-model != meta/llama).
+  - EVAL_FILEs  = evals/ticket-triage.yaml AND evals/ticket-respond.yaml, each via
+    the shared runner scripts/eval/live-run.sh (T-89) + T-91 calibration guards inline.
+    Eval files pinned at git SHA 2bb7f2c4c7a39528bda016c10a5147acdca571c1 for the
+    DEFINITIVE N=9 run (T-99/PR #402's grown suite) — this is the version the (2b)
+    claim rests on. The first pass used SHA 67354c3 (the N=4 version, before T-99
+    merged). The SHA was recorded precisely because T-99 was editing these YAMLs
+    concurrently; when it landed, the branch was rebased and the vetting re-run so
+    the claim matches what is actually on main.
+  - CREDENTIAL   = the SCOPED virtual key LITELLM_EVAL_KEY (eval-gate-t96; masked ***
+    throughout), NEVER the master key.
+  - MECHANISM: temporary branch-only override of run-kb-learn-eval.yml (an already-on-main
+    workflow_dispatch workflow) to swap key→LITELLM_EVAL_KEY, target→meta/llama,
+    judge→fallback-model, and run BOTH ticket-triage.yaml + ticket-respond.yaml as two
+    separate live-run.sh invocations. Dispatched with --ref against the feature branch
+    (the same proven pattern T-96 and the Production Manager's key re-issue used). That
+    override was REVERTED before this PR — run-kb-learn-eval.yml on main is untouched and
+    keeps its T-84 identity; the run link persists independently. This is the manual T-79
+    FALLBACK path (model-allowlist.ts PROCESS "coexist"), the same path T-96 used; the
+    live gate's AUTO trigger evaluates the DEFAULT target for regressions and does NOT by
+    itself vet a newly-added alias, which is why the targeted dispatch is required.
+
+REAL RESULT — both product evals AND both harness-integrity guard sets checked; all clean.
+  DEFINITIVE (N=9, run 29200425687): ticket-triage 9/9 = 100% (promptfoo exit 0,
+  successes 9 / failures 0); ticket-respond 9/9 = 100% (successes 9 / failures 0).
+  T-91 guards GREEN both: triage token-band [133,543], respond token-band [193,948],
+  canaries 2/2 each, grader != target. The N=9 suite added 5 cases per eval on top of
+  the 4 below (same rubric shapes, harder/edge coverage past ADR §5.4) — all 5 extra
+  also passed. The per-test breakdown below is the FIRST-PASS (N=4, run 29199758667)
+  detail, retained for provenance; the four original cases are a subset of the N=9 nine:
+  - ticket-triage: promptfoo exit 0, "successes": 4, "failures": 0 → 4/4 (100%).
+    All four llm-rubric tests (threshold 0.8) passed, graded by fallback-model:
+      (a) total outage → urgency=critical, valid JSON — PASS
+      (b) major degradation, no workaround → urgency=high (not critical/over-escalated) — PASS
+      (c) single-customer billing w/ workaround → urgency=normal (topic not auto-escalated) — PASS
+      (d) minor cosmetic single-user → urgency=low, valid JSON — PASS
+  - ticket-respond: promptfoo exit 0, "successes": 4, "failures": 0 → 4/4 (100%).
+    All four llm-rubric tests passed, graded by fallback-model:
+      (a) critical outage reply — acknowledges severity, actionable, promises NO specific ETA — PASS
+      (b) high-degradation reply — reassures without over-committing to "today" — PASS
+      (c) frustrated/angry customer — empathetic, no unilateral refund/compensation invented — PASS
+      (d) vague ticket — asks what to confirm rather than fabricating a cause/fix — PASS
+    (Unlike T-96's masked kb outputs, respond's raw target replies were visible in the
+    run log and independently read as genuinely urgency-matched and non-fabricating.)
+  - T-91 calibration guards ALL GREEN for BOTH evals (so each 4/4 is trustworthy, not a
+    broken-harness artifact — the T-84 lesson):
+      * grader != target — satisfied (fallback-model != meta/llama-3.3-70b-instruct);
+        distinct system_fingerprints in the log (target fp_8c62eb5aea/fp_8516364442 vs
+        judge fallback-model) confirm LiteLLM routed target→meta/llama and judge→fallback-model
+        with no silent fallback — grader != target is REAL, not just configured.
+      * token-count band — PASS both: triage 4 target calls' prompt_tokens (185/202/187/186)
+        inside its per-eval band [124,520]; respond (292/312/319/322) inside [191,943].
+        The FULL system prompt was delivered as a real {role:'system'} message in every case
+        — the T-84 user-only-collapse signature was specifically checked for and absent, even
+        for triage whose system prompt is far shorter than kb-learn's ~850-tok one (the band
+        is derived per-eval from THAT eval's own reference size, so a shorter prompt is not a
+        false collapse — it landed cleanly inside its own band).
+      * must-pass/must-fail canaries — PASS both (1 must-pass passed, 1 must-fail failed each),
+        proving each judge can DISCRIMINATE on that eval's rubric shape.
+
+ALLOWLIST CHANGE (src/config/model-allowlist.ts, this PR):
+  - triage:  ["triage-model","fallback-model"] → ["triage-model","fallback-model","meta/llama-3.3-70b-instruct"]
+  - respond: ["triage-model"] → ["triage-model","meta/llama-3.3-70b-instruct"]
+  - Both prior lists were (2a)-only (production-run models, zero live-vetted entries);
+    meta/llama is the FIRST (2b) live-vetted entry for each function. The header's (2b)
+    section + the per-function comments are rewritten to record all three meta/llama
+    listings (kb_learn from T-96 + triage/respond from T-100) each with its own run link,
+    and to reassert the per-function invariant explicitly: each listing is backed by its
+    OWN recorded eval, never auto-transferred (had it passed triage but not respond it
+    would be listed for triage only).
+  - No web/ mirror to update: web/ imports MODEL_ROUTING_ALLOWLIST directly from
+    src/config/model-allowlist (no copy), so the dashboard dropdown picks this up
+    automatically. No DB CHECK enumerates model strings (T-96 verified: agent_model_routing
+    primary/fallback are free text, app-validated via isAllowedModel()), so the DB accepts
+    the new values — no "offered then rejected at save" latent bug, no migration needed.
+
+CAVEATS / RESIDUALS (recorded for eval honesty; none re-open T-100):
+  - JUDGE-ADJUDICATED, SINGLE-RUN, SMALL-N (same class as T-96). 4/4 at N=4 is the ideal a
+    4-test eval can show but is still small-N (ADR-0007 §5.4); temp is low and a re-run
+    mostly risks a flake that muddies a clean record. NOT re-running to chase this. The
+    canary guards prove the judge discriminates; positive routing proof (distinct
+    fingerprints) is in the log. Respond's raw outputs WERE eyeballed (a strengthening over
+    T-96, where kb outputs were content-masked).
+  - QUALITY-VETTED ≠ PRODUCTION-FUNDED/RELIABLE. This vetted that meta/llama *produces good
+    triage classifications and respond drafts*, not that it is a funded, reliable production
+    target. It is the same free-credit NVIDIA-NIM class whose exhaustion is the failure mode
+    to watch; `triage-model` remains each function's default and is unaffected. An operator
+    who SELECTS meta/llama could hit NIM credit exhaustion — NIM funding/reliability is
+    tracked separately, not by this eval.
+  - FQ-70 RESOLUTION is now load-bearing for the standing live gate too: fallback-model
+    returning HTTP 200 here corroborates T-94's "FQ-70 resolved" — the eval-gate-live.yml
+    judge preflight should now pass and the gate evaluate for real (its stale in-file
+    "FQ-70-blocked" comments are now inaccurate but are docs-only; not touched by this PR to
+    keep the diff scoped to model-allowlist.ts + WORK.md + DECISIONS.md, per the T-99
+    concurrent-edit coordination).
+
+SCOPE: this closes T-100 at the maximal (both-function) outcome. It does NOT change the
+eval key (Production Manager's C1-C6 stand), does NOT modify any eval YAML (T-99's surface),
+and touches only src/config/model-allowlist.ts + WORK.md + DECISIONS.md. This PR's own CI
+WILL run the full metered live-eval-gate (model-allowlist.ts is a file-granular watched
+surface) — expected, not a skip. No FOUNDER_QUEUE escalation: a passing vetting result is a
+normal T-79 outcome, not a business decision (per the T-100 brief).
+```
+
 ### 2026-07-12 — T-99: product evals grown N=4 → N=9 (first pass past ADR-0007 §5.4 small-N caveat); live-gate-proven + baseline re-captured + persisted (Evals Lead)
 
 ```
