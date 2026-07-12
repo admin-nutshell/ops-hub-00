@@ -4,7 +4,7 @@
 
 ---
 
-## Sprint 10 — 🟢 ACTIVE — End-to-End Pipeline Monitoring + Eval Coverage Depth
+## Sprint 10 — ✅ COMPLETE (2026-07-12) — End-to-End Pipeline Monitoring + Eval Coverage Depth
 
 **Sprint:** Sprint 10 — End-to-End Pipeline Monitoring + Eval Coverage Depth (capability/hardening)
 **Sprint goal:** Cash in the two loudest forward-threads Sprint 9 left. **(Anchor, Track A)** Finally build the synthetic-ticket **downstream** end-to-end monitor that's been flagged-but-deferred since Sprint 6 §7 — the Sprint 8 revisit trigger ("once the internal-auth probe lands") has now fired: T-97 shipped and covers the internal-auth *hop*, so the remaining gap is the *downstream* chain (Inngest → triage → respond → DB `state='responded'` → LangFuse trace) that neither `/health` nor T-97 exercises end-to-end. The lesson stack behind this is now three deep — T-71, FQ-69, and FQ-70 were all "a green health signal while the real path was 100% broken." **(Track B)** Deepen eval coverage now that the live gate exists and blocks per-test regressions: grow each product eval past ADR-0007 §5.4's own small-N caveat, and vet additional model aliases for `triage`/`respond` the way T-96 did for `kb_learn` — both ride the now-live gate's admission path (ADR §8). Hardening/coverage sprint, not a feature sprint. Deliberately scoped small (anchor + one parallel eval track) — the same overcommit discipline Sprints 6–9 held.
