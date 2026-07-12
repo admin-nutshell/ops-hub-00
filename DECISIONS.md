@@ -3568,12 +3568,17 @@ spend via self /key/info immediately before the meta/llama positive test
 (spend_before=0.0), then again ~12s after (spend_after=0.0000054 USD) — a
 short settle delay was added deliberately because LiteLLM's spend accounting
 runs via an async background logger, so an immediate read-back could show $0
-purely from lag rather than true zero-cost pricing. Result: the alias IS
-metered by LiteLLM's cost map, just at a very small nonzero value for this
-tiny (max_tokens=10) probe call — not the "$0/unmetered" case the review
-flagged as the risk, but the review's own framing holds either way: rpm_limit
-(C3) remains the effective backstop regardless of which metering outcome
-obtained, and is not relied on being the ONLY backstop given this reading.
+purely from lag rather than true zero-cost pricing. PRECISION NOTE (caught on
+review): spend_before was itself read right after the EARLIER triage-model
+positive test, not before any calls at all — so the 0.0000054 delta may
+bundle both the triage-model and meta/llama calls' cost rather than isolating
+meta/llama's specifically. The answer C4 actually needs is unaffected either
+way: nonzero spend accrued across the probe calls, so LiteLLM's cost map is
+NOT pricing this custom openai/-prefixed NIM alias at a flat, un-tracked $0 —
+metering is active, so the $ cap is not silently bypassed for it. Not the
+"$0/unmetered" case the review flagged as the risk. rpm_limit (C3) remains
+the effective backstop regardless of which metering outcome obtained, and is
+not relied on as the ONLY backstop given this reading.
 
 C5 — VERIFICATION BATTERY: satisfied, all sub-parts, one workflow run
 (29179933873), no canary needed (see C5e note below):
