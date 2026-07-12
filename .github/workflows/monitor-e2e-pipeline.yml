@@ -1,0 +1,285 @@
+name: Monitor — Synthetic-ticket downstream E2E pipeline (T-98)
+
+# Sprint 10 anchor. Closes the gap T-97 (monitor-litellm-internal-auth.yml)
+# deliberately does NOT cover: T-97 proves the internal LiteLLM auth *hop* is
+# healthy; it says nothing about whether an actual ticket event, dispatched
+# through the REAL Inngest pipeline, makes it all the way through
+# classify -> triage DB update -> respond draft -> FreeScout delivery ->
+# DB state='responded' -> a LangFuse trace. Three prior incidents (T-71,
+# FQ-69, FQ-70) were all "a green health signal while the real path was 100%
+# broken" — this monitor exists to catch the fourth one before a founder
+# notices missing replies, not after.
+#
+# HONEST SCOPE NOTE (SC10 / Ruling 2e of the design review — read this before
+# assuming this monitor covers "the pipeline"): this monitor does NOT and
+# CANNOT exercise the FreeScout-polling/intake stage. freescout-poller.ts
+# stamps POLLING_TENANT_ID on every conversation it matches (status=1,
+# state=2) with no mailbox filter — so ANY poller-visible synthetic
+# conversation would land in the REAL prod tenant by construction, not the
+# synthetic one. Coverage here starts at Inngest event dispatch (the same
+# point sweepNewTickets/the poller would normally hand off to) and runs
+# through triage -> respond -> DB state -> LangFuse trace. Intake stays
+# covered by T-97 (the auth hop) + the FQ-69-era manual diagnostics. Do not
+# describe this monitor as "full pipeline coverage" — it is downstream-of-
+# intake coverage, which is the real gap T-98 was scoped to close.
+#
+# DESIGN OF RECORD: DECISIONS.md, "2026-07-12 — T-98 Security Lead design
+# review: synthetic-ticket downstream E2E monitor — APPROVED WITH CONDITIONS"
+# (2 amendments + SC1-SC10). This workflow implements that spec; deviate only
+# after a re-review.
+#
+# TEST SCOPE (Ruling 1, review-approved): project 00000000-0000-0000-0000-
+# 000000000001 / tenant 00000000-0000-0000-0000-000000000010 — the existing
+# "ops-hub"/"staging-support" placeholder, structurally invisible to every
+# prod sweep/cron/dashboard via RLS (fail-closed, tenant_id = current_tenant_id()).
+# NAMED OPERATING ASSUMPTION (SC7): this tenant is inert ONLY because
+# ops-hub-staging stays STOPPED (it is staging's own home scope — if staging
+# is ever restarted, its sweepNewTickets/sweepRespondedTickets/sla-monitor
+# crons run GUC'd to this same tenant and would double-process this monitor's
+# synthetic tickets). Restarting ops-hub-staging requires a T-98 re-review
+# FIRST. It also means this monitor's synthetic tickets WILL render on the
+# STAGING ops dashboard (provisioned onto this exact tenant/project pair) —
+# expected, documented, not a leak (Ruling 1b/SC6).
+#
+# SENTINEL-TICKET PATTERN (Amendment A1 — replaces the original "insert +
+# null-cleanup" design the review REJECTED as reopening a real hole, see
+# Ruling 2 below): ONE permanent ticket row (its id lives in the repo variable
+# E2E_SENTINEL_TICKET_ID, set once during SC9 provisioning) permanently holds
+# the FK to ONE permanent, Closed FreeScout test conversation. Every run of
+# this workflow UPDATEs that SAME row back to state='new' and re-dispatches —
+# it never INSERTs a new ticket row. Because the sentinel permanently holds
+# the conversation id, `tickets.freescout_conversation_id bigint UNIQUE` +
+# freescout-poller.ts's `ON CONFLICT (freescout_conversation_id) DO NOTHING`
+# make a manual reopen of the test conversation STRUCTURALLY HARMLESS forever
+# — the poller's insert simply no-ops. (Ruling 2 rejected the original
+# proposal's cleanup step — `UPDATE ... SET freescout_conversation_id = NULL`
+# — because nulling the FK re-opens exactly this hole: a reopened test
+# conversation would then mint a REAL prod-tenant ticket on the next poller
+# pass.)
+#
+# CREDENTIAL (SC1 / Amendment A2): E2E_MONITOR_DB_URL, a role
+# (`e2e_monitor`, supabase/migrations/20260712000000_t98_e2e_monitor_role.sql)
+# with SELECT/INSERT/UPDATE on `tickets` ONLY, gated by RLS policies that
+# HARDCODE this tenant/project pair — NOT `OPS_HUB_APP_LOGIN_URL` (REJECTED by
+# the review: that credential's tenant scoping is CLIENT-ASSERTED via a GUC,
+# which in this unattended 24/7 scheduled context means unbounded prod
+# customer-ticket access the moment it leaks — non-negotiable #10). Dormant
+# (job guards and exits clean) until a founder applies the migration + sets
+# the password — see FOUNDER_QUEUE.md FQ-75. A T-90-style dispositive
+# negative-test proof (verify-e2e-monitor-role.yml) must pass BEFORE this
+# schedule is trusted (SC1).
+#
+# CREDENTIAL (SC2): E2E_MONITOR_INNGEST_KEY, a NEW, dedicated Inngest event
+# key minted for this monitor only — never the production app's own event
+# key. Independently revocable (Inngest supports multiple named keys per
+# environment, each individually deletable — verified against Inngest's own
+# docs, not assumed; see DECISIONS.md). Also pending founder/console
+# provisioning — see FQ-75. Blast radius if leaked (accepted, per the review):
+# event injection into the prod Inngest env, bounded to legal state
+# transitions + LLM spend + FreeScout note spam on whatever tenant the event
+# payload names — NOT bounded by the key itself (Inngest's per-key event-name
+# filtering could not be confirmed as an access-control feature, only as a
+# dashboard search/monitoring filter — see DECISIONS.md; the REAL safety
+# boundary here is the DB-role-level tenant hardcoding above and the pipeline
+# functions' own state-machine idempotency guards, not the event key).
+#
+# CADENCE (SC5): every 6 hours. Per-run cost: ~2 prod LLM calls
+# (classifyTicket + the draft in ticket-respond) + 1 real FreeScout internal
+# note (raw INSERT into threads, type=3 — never emailed; Ruling 2d already
+# priced this at ~4 notes/day on ONE closed conversation, prune
+# opportunistically/quarterly via the existing founder/Production Manager
+# channel).
+#
+# FAILURE PATH (SC8): mirrors monitor-litellm-internal-auth.yml exactly —
+# opens/resolves a status-page incident via status-incident.yml's
+# workflow_dispatch path (the free channel that already works; UptimeRobot's
+# webhook integration needs a paid tier the founder declined, FQ-47 action
+# 4b). DISTINCT incident title from T-97's so the two are never confused.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # every 6 hours (SC5) — do not shorten without a fresh review.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: monitor-e2e-pipeline
+  cancel-in-progress: false
+
+env:
+  SYN_PROJECT_ID: "00000000-0000-0000-0000-000000000001"
+  SYN_TENANT_ID: "00000000-0000-0000-0000-000000000010"
+  INCIDENT_TITLE: "Synthetic E2E pipeline monitor failing — downstream chain broken (T-98)"
+  # 10-minute post-dispatch window (SC8's suggested default). QA Manager owns
+  # refining this threshold once real run-time data exists; not tuned here.
+  POLL_MAX_ATTEMPTS: "30"
+  POLL_INTERVAL_SECONDS: "20"
+
+jobs:
+  monitor:
+    name: Inject synthetic ticket + assert downstream chain
+    runs-on: ubuntu-latest
+    env:
+      E2E_MONITOR_DB_URL: ${{ secrets.E2E_MONITOR_DB_URL }}
+      E2E_MONITOR_INNGEST_KEY: ${{ secrets.E2E_MONITOR_INNGEST_KEY }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      SENTINEL_TICKET_ID: ${{ vars.E2E_SENTINEL_TICKET_ID }}
+    steps:
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client
+
+      - name: Guard — required credentials + sentinel ticket id all present
+        id: guard
+        run: |
+          MISSING=""
+          [ -n "${E2E_MONITOR_DB_URL:-}" ]      || MISSING="$MISSING E2E_MONITOR_DB_URL"
+          [ -n "${E2E_MONITOR_INNGEST_KEY:-}" ]  || MISSING="$MISSING E2E_MONITOR_INNGEST_KEY"
+          [ -n "${SENTINEL_TICKET_ID:-}" ]       || MISSING="$MISSING E2E_SENTINEL_TICKET_ID(vars)"
+          if [ -n "$MISSING" ]; then
+            echo "::notice title=T-98 monitor dormant::Missing:$MISSING. This is the expected pre-provisioning state (FQ-75 pending founder action + SC9 sentinel-ticket setup), not a failure. Exiting clean — no incident opened, nothing dispatched."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          echo "::add-mask::$E2E_MONITOR_INNGEST_KEY"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Reset sentinel ticket to state='new' (Amendment A1 — same row, every run)
+        if: steps.guard.outputs.ready == 'true'
+        id: reset
+        run: |
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          OUT=$(printf '%s\n' "update tickets set state = 'new' where id = :'id'::uuid returning id" \
+            | psql "$E2E_MONITOR_DB_URL" -v id="$SENTINEL_TICKET_ID" -v ON_ERROR_STOP=1 -tA -f - 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -ne 0 ] || [ -z "$(echo "$OUT" | tail -1 | tr -d '[:space:]')" ]; then
+            echo "::error::Could not reset the sentinel ticket ($SENTINEL_TICKET_ID) to state='new'. Either the row doesn't exist yet (SC9 provisioning incomplete) or the RLS-hardcoded scope rejected it (E2E_SENTINEL_TICKET_ID pointing at the wrong tenant/project?)."
+            exit 1
+          fi
+          echo "Sentinel ticket $SENTINEL_TICKET_ID reset to state='new'."
+
+      - name: Dispatch ops-hub/ticket.triage via Inngest's Event API
+        if: steps.guard.outputs.ready == 'true' && steps.reset.outcome == 'success'
+        id: dispatch
+        run: |
+          echo "::add-mask::$E2E_MONITOR_INNGEST_KEY"
+          PAYLOAD=$(jq -n \
+            --arg name "ops-hub/ticket.triage" \
+            --arg ticket_id "$SENTINEL_TICKET_ID" \
+            --arg project_id "$SYN_PROJECT_ID" \
+            --arg tenant_id "$SYN_TENANT_ID" \
+            '{name: $name, data: {ticket_id: $ticket_id, project_id: $project_id, tenant_id: $tenant_id}}')
+          HTTP=$(curl -s --max-time 20 -o /tmp/dispatch.json -w "%{http_code}" \
+            -X POST "https://inn.gs/e/${E2E_MONITOR_INNGEST_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+          echo "Inngest Event API -> HTTP $HTTP"
+          cat /tmp/dispatch.json 2>/dev/null || true
+          echo ""
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Inngest Event API rejected the dispatch (HTTP $HTTP). Never a downstream-pipeline symptom — this is the event-ingestion hop itself failing (bad/revoked key, or Inngest outage)."
+            exit 1
+          fi
+
+      - name: Poll for the downstream chain to complete (state='responded')
+        if: steps.guard.outputs.ready == 'true' && steps.dispatch.outcome == 'success'
+        id: poll
+        run: |
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          FINAL_STATE=""
+          for i in $(seq 1 "$POLL_MAX_ATTEMPTS"); do
+            STATE=$(printf '%s\n' "select state from tickets where id = :'id'::uuid" \
+              | psql "$E2E_MONITOR_DB_URL" -v id="$SENTINEL_TICKET_ID" -tA -f - 2>&1)
+            echo "Attempt $i/$POLL_MAX_ATTEMPTS: state=$STATE"
+            if [ "$STATE" = "responded" ]; then
+              FINAL_STATE="responded"
+              break
+            fi
+            sleep "$POLL_INTERVAL_SECONDS"
+          done
+          echo "final_state=$FINAL_STATE" >> "$GITHUB_OUTPUT"
+          if [ "$FINAL_STATE" != "responded" ]; then
+            echo "::error::Sentinel ticket did not reach state='responded' within $((POLL_MAX_ATTEMPTS * POLL_INTERVAL_SECONDS))s of dispatch. The downstream chain (triage -> respond -> DB state) is broken or degraded — this is exactly the class of failure T-71/FQ-69/FQ-70 all shared."
+            exit 1
+          fi
+          echo "Sentinel ticket reached state='responded' — triage + respond + DB-state hops all completed."
+
+      - name: Assert a LangFuse trace exists for this run
+        if: steps.guard.outputs.ready == 'true' && steps.poll.outcome == 'success'
+        id: langfuse
+        run: |
+          python3 - <<'PYEOF'
+          import base64, json, os, sys, urllib.request, urllib.error, urllib.parse
+          from datetime import datetime, timedelta, timezone
+
+          public_key = os.environ["LANGFUSE_PUBLIC_KEY"]
+          secret_key = os.environ["LANGFUSE_SECRET_KEY"]
+          tenant_id = os.environ["SYN_TENANT_ID"]
+          ticket_id = os.environ["SENTINEL_TICKET_ID"]
+
+          base_url = "https://us.cloud.langfuse.com"
+          # Reuses the exact auth/pagination/fields contract verify-agent-cost-feed.yml
+          # (T-58) already proved against real LangFuse Cloud data. Scoped to a tight
+          # lookback (this run's own dispatch) so a stale trace from a prior run can't
+          # produce a false pass.
+          from_ts = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+          auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+
+          found = None
+          for trace_name in ("ticket-triage", "ticket-respond"):
+              params = {"name": trace_name, "fromTimestamp": from_ts, "page": "1", "limit": "20", "fields": "core,io,metrics"}
+              url = f"{base_url}/api/public/traces?{urllib.parse.urlencode(params)}"
+              req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as resp:
+                      body = json.loads(resp.read().decode())
+              except urllib.error.HTTPError as e:
+                  print(f"::error::LangFuse API returned HTTP {e.code} for {trace_name}: {e.read().decode()[:300]}")
+                  sys.exit(1)
+              except Exception as e:
+                  print(f"::error::Request to LangFuse failed for {trace_name}: {e}")
+                  sys.exit(1)
+
+              for t in body.get("data", []):
+                  md = t.get("metadata") or {}
+                  if isinstance(md, dict) and md.get("tenant_id") == tenant_id and str(md.get("ticket_id")) == ticket_id:
+                      found = (trace_name, t.get("id"), t.get("timestamp"))
+                      break
+              if found:
+                  break
+
+          if not found:
+              print("::error::No ticket-triage/ticket-respond LangFuse trace found for this run's sentinel ticket in the last 20 minutes. The DB state advanced, but observability/tracing may be broken — investigate before treating this run as fully healthy.")
+              sys.exit(1)
+
+          name, trace_id, ts = found
+          # Print nothing but id/timestamps (R3c) — never ticket/draft content.
+          print(f"LangFuse trace confirmed: name={name} id={trace_id} timestamp={ts}")
+          PYEOF
+
+      - name: On failure — open a status-page incident + fail the run
+        if: steps.guard.outputs.ready == 'true' && (steps.reset.outcome == 'failure' || steps.dispatch.outcome == 'failure' || steps.poll.outcome == 'failure' || steps.langfuse.outcome == 'failure')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::error::T-98 downstream E2E monitor failed — opening a status-page incident."
+          gh workflow run status-incident.yml --repo "${{ github.repository }}" --ref main \
+            -f action=open \
+            -f title="$INCIDENT_TITLE" \
+            -f affected="Ops Hub Production,LiteLLM Production" \
+            -f severity=disrupted
+          exit 1
+
+      - name: On success — resolve any open incident from this monitor
+        if: steps.guard.outputs.ready == 'true' && steps.langfuse.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Downstream chain confirmed healthy end-to-end — resolving any open incident opened by this monitor."
+          gh workflow run status-incident.yml --repo "${{ github.repository }}" --ref main \
+            -f action=resolve \
+            -f title="$INCIDENT_TITLE"

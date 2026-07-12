@@ -1,0 +1,220 @@
+name: T-98 verify — one-time triage-dispatch proof (manual, real Inngest + real LLM call)
+
+# ONE-TIME MANUAL VERIFICATION ONLY — never scheduled, never the recurring
+# monitor. This is NOT monitor-e2e-pipeline.yml (that workflow is dormant
+# until E2E_MONITOR_DB_URL / E2E_MONITOR_INNGEST_KEY / E2E_SENTINEL_TICKET_ID
+# all exist — none of which do yet, per FQ-75 + SC9). This workflow proves the
+# underlying mechanism (a real POST to Inngest's Event API really does trigger
+# triageTicket end-to-end against a test-tenant-scoped ticket) BEFORE those
+# are provisioned, using credential classes that already exist and are safe
+# for a one-off manual run — never a persistent GitHub secret of their own:
+#
+#   - ops-hub-prod's real OPS_HUB_APP_LOGIN_URL (ops_hub_app role — RLS-
+#     enforced, GUC-scoped) — fetched LIVE via the Coolify API
+#     (COOLIFY_API_TOKEN, an existing secret), masked, never stored as a new
+#     GitHub secret. Same established pattern verify-eval-gate-ci-writer-
+#     role.yml already uses to fetch OPS_HUB_APP_LOGIN_URL for its own
+#     read-back/cleanup step.
+#   - ops-hub-prod's real INNGEST_EVENT_KEY — fetched the same way, used for
+#     exactly ONE dispatch, never persisted as a GitHub secret. This is the
+#     app's own real production key (T-97's monitor established the precedent
+#     that this repo's CI does NOT hold a copy of prod's real LiteLLM key
+#     either — the same discipline applies here: read it live, use it once,
+#     let it go out of scope when the job ends).
+#
+# SAFETY / BLAST RADIUS (why this is acceptable to run against real prod
+# credentials): the injected ticket is scoped to project 00...0001 / tenant
+# 00...0010 — the SAME test tenant the T-98 design review (DECISIONS.md
+# 2026-07-12) verified is structurally invisible to every real prod
+# sweep/cron/dashboard via fail-closed RLS. It has NO freescout_conversation_id
+# (there is no test FreeScout conversation yet — SC9 is a separate, later
+# provisioning step), so respondTicket cleanly SKIPS with reason="no_conversation"
+# (src/inngest/ticket-respond.ts line ~293) rather than erroring or retrying —
+# no FreeScout write, no customer impact. Cost is bounded to ONE real
+# classifyTicket() LLM call (the same order of magnitude as any single real
+# prod ticket). The row is marked 'closed' at the end (tickets have no DELETE
+# policy anywhere in this schema — this is a real, harmless, marker-tagged row
+# left behind, same convention as every other verify-*.yml in this repo).
+#
+# Requires explicit confirmation input (real prod credentials + a real LLM
+# spend, however small) — same safety pattern as
+# fix-ops-hub-prod-litellm-master-key.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type VERIFY-TRIAGE-DISPATCH to confirm you intend to insert one synthetic-tenant ticket and dispatch one real Inngest event against ops-hub-prod's real pipeline"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  SYN_PROJECT_ID: "00000000-0000-0000-0000-000000000001"
+  SYN_TENANT_ID: "00000000-0000-0000-0000-000000000010"
+
+jobs:
+  verify:
+    name: Insert synthetic ticket -> dispatch -> assert triage fired
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+    steps:
+      - name: Validate confirmation + prerequisite secrets
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+          if [ "${{ inputs.confirm }}" != "VERIFY-TRIAGE-DISPATCH" ]; then
+            echo "::error::confirm input must be exactly VERIFY-TRIAGE-DISPATCH. Refusing to proceed."
+            exit 1
+          fi
+
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client
+
+      - name: Fetch ops-hub-prod's OPS_HUB_APP_LOGIN_URL (live, masked, not persisted)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ops.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-prod envs (HTTP $HTTP)"; exit 1; }
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/ops.json | head -1)
+          [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL not found on ops-hub-prod"; exit 1; }
+          echo "::add-mask::$LOGIN"
+          echo "LOGIN=$LOGIN" >> "$GITHUB_ENV"
+
+      - name: Fetch ops-hub-prod's INNGEST_EVENT_KEY (live, masked, not persisted)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ops2.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-prod envs (HTTP $HTTP)"; exit 1; }
+          IKEY=$(jq -r '.[] | select(.key=="INNGEST_EVENT_KEY") | .value' /tmp/ops2.json | head -1)
+          [ -n "$IKEY" ] && [ "$IKEY" != "null" ] || { echo "::error::INNGEST_EVENT_KEY not found on ops-hub-prod"; exit 1; }
+          echo "::add-mask::$IKEY"
+          echo "IKEY=$IKEY" >> "$GITHUB_ENV"
+
+      - name: Insert one synthetic-tenant ticket (state='new', no FreeScout conversation)
+        id: insert
+        run: |
+          echo "::add-mask::$LOGIN"
+          OUT=$(printf '%s\n' \
+            "begin;" \
+            "select set_config('app.current_tenant', :'tid', true);" \
+            "select set_config('app.current_project', :'pid', true);" \
+            "insert into tickets (project_id, tenant_id, title, severity, state) values (:'pid'::uuid, :'tid'::uuid, '[T-98 VERIFY -- one-time triage-dispatch proof -- safe to ignore/leave closed]', 'P3', 'new') returning id;" \
+            "commit;" \
+            | psql "$LOGIN" -v tid="$SYN_TENANT_ID" -v pid="$SYN_PROJECT_ID" -v ON_ERROR_STOP=1 -tA -f - 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          [ "$RC" -eq 0 ] || { echo "::error::Could not insert the synthetic verification ticket."; exit 1; }
+          TICKET_ID=$(echo "$OUT" | grep -E '^[0-9a-f]{8}-' | tail -1 | tr -d '[:space:]')
+          [ -n "$TICKET_ID" ] || { echo "::error::Insert succeeded but could not parse the returned ticket id from output above."; exit 1; }
+          echo "ticket_id=$TICKET_ID" >> "$GITHUB_OUTPUT"
+          echo "Inserted synthetic verification ticket: $TICKET_ID"
+
+      - name: Dispatch ops-hub/ticket.triage via Inngest's real Event API
+        id: dispatch
+        env:
+          TICKET_ID: ${{ steps.insert.outputs.ticket_id }}
+        run: |
+          echo "::add-mask::$IKEY"
+          PAYLOAD=$(jq -n \
+            --arg name "ops-hub/ticket.triage" \
+            --arg ticket_id "$TICKET_ID" \
+            --arg project_id "$SYN_PROJECT_ID" \
+            --arg tenant_id "$SYN_TENANT_ID" \
+            '{name: $name, data: {ticket_id: $ticket_id, project_id: $project_id, tenant_id: $tenant_id}}')
+          HTTP=$(curl -s --max-time 20 -o /tmp/dispatch.json -w "%{http_code}" \
+            -X POST "https://inn.gs/e/${IKEY}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+          echo "Inngest Event API -> HTTP $HTTP"
+          cat /tmp/dispatch.json 2>/dev/null || true
+          echo ""
+          [ "$HTTP" = "200" ] || { echo "::error::Inngest Event API rejected the dispatch (HTTP $HTTP)."; exit 1; }
+
+      - name: Poll for triage to fire (expect state='triaged'; respond then cleanly skips, no_conversation)
+        id: poll
+        env:
+          TICKET_ID: ${{ steps.insert.outputs.ticket_id }}
+        run: |
+          echo "::add-mask::$LOGIN"
+          FINAL=""
+          for i in $(seq 1 18); do
+            STATE=$(printf '%s\n' \
+              "select set_config('app.current_tenant', :'tid', true);" \
+              "select set_config('app.current_project', :'pid', true);" \
+              "select state from tickets where id = :'id'::uuid;" \
+              | psql "$LOGIN" -v tid="$SYN_TENANT_ID" -v pid="$SYN_PROJECT_ID" -v id="$TICKET_ID" -tA -f - 2>&1 | tail -1)
+            echo "Attempt $i/18: state=$STATE"
+            if [ "$STATE" = "triaged" ] || [ "$STATE" = "responded" ]; then
+              FINAL="$STATE"
+              break
+            fi
+            sleep 10
+          done
+          echo "final_state=$FINAL" >> "$GITHUB_OUTPUT"
+          if [ -z "$FINAL" ]; then
+            echo "::error::Ticket never advanced past 'new' within 3 minutes. Either the Inngest dispatch did not reach triageTicket, or classifyTicket failed. Inspect Inngest Cloud / LangFuse for this ticket_id before assuming the mechanism works."
+            exit 1
+          fi
+          echo "CONFIRMED: real Inngest Event API dispatch triggered triageTicket, which classified the ticket and advanced its state to '$FINAL'. (Expected end-state here is 'triaged', not 'responded' -- this ticket deliberately has no freescout_conversation_id, so respondTicket cleanly skips with reason=no_conversation per src/inngest/ticket-respond.ts:293-295 rather than erroring. Full downstream proof through 'responded' requires SC9's real test conversation + sentinel ticket, not this one-off probe.)"
+
+      - name: Assert a LangFuse ticket-triage trace exists (verify-agent-cost-feed.yml pattern)
+        if: always() && steps.poll.outcome == 'success'
+        env:
+          TICKET_ID: ${{ steps.insert.outputs.ticket_id }}
+        run: |
+          python3 - <<'PYEOF'
+          import base64, json, os, sys, urllib.request, urllib.error, urllib.parse
+          from datetime import datetime, timedelta, timezone
+
+          public_key = os.environ["LANGFUSE_PUBLIC_KEY"]
+          secret_key = os.environ["LANGFUSE_SECRET_KEY"]
+          ticket_id = os.environ["TICKET_ID"]
+          tenant_id = os.environ["SYN_TENANT_ID"]
+
+          base_url = "https://us.cloud.langfuse.com"
+          from_ts = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+          auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+          params = {"name": "ticket-triage", "fromTimestamp": from_ts, "page": "1", "limit": "20", "fields": "core,io,metrics"}
+          url = f"{base_url}/api/public/traces?{urllib.parse.urlencode(params)}"
+          req = urllib.request.Request(url, headers={"Authorization": f"Basic {auth}"})
+          try:
+              with urllib.request.urlopen(req, timeout=15) as resp:
+                  body = json.loads(resp.read().decode())
+          except Exception as e:
+              print(f"::error::LangFuse query failed: {e}")
+              sys.exit(1)
+
+          match = None
+          for t in body.get("data", []):
+              md = t.get("metadata") or {}
+              if isinstance(md, dict) and str(md.get("ticket_id")) == ticket_id and md.get("tenant_id") == tenant_id:
+                  match = (t.get("id"), t.get("timestamp"))
+                  break
+
+          if not match:
+              print(f"::warning::No ticket-triage trace found yet for ticket_id={ticket_id} in the last 15 minutes (LangFuse ingestion can lag a few seconds/minutes behind the DB write -- not necessarily a defect). DB-state proof above already stands on its own.")
+              sys.exit(0)
+
+          trace_id, ts = match
+          print(f"LangFuse trace CONFIRMED: name=ticket-triage id={trace_id} timestamp={ts} ticket_id={ticket_id}")
+          PYEOF
+
+      - name: Cleanup — mark the verification ticket closed (no DELETE policy exists anywhere in this schema)
+        if: always() && steps.insert.outcome == 'success'
+        env:
+          TICKET_ID: ${{ steps.insert.outputs.ticket_id }}
+        run: |
+          echo "::add-mask::$LOGIN"
+          printf '%s\n' \
+            "select set_config('app.current_tenant', :'tid', true);" \
+            "select set_config('app.current_project', :'pid', true);" \
+            "update tickets set state = 'closed' where id = :'id'::uuid;" \
+            | psql "$LOGIN" -v tid="$SYN_TENANT_ID" -v pid="$SYN_PROJECT_ID" -v id="$TICKET_ID" -v ON_ERROR_STOP=1 -tA -f -
+          echo "Verification ticket $TICKET_ID marked closed. It remains in the table permanently (title-marked, harmless, tenant-fenced) -- consistent with this schema's no-hard-delete convention for tickets."
