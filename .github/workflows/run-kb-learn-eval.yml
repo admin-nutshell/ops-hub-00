@@ -1,18 +1,32 @@
 name: T-84/T-89 — run kb-learn eval against production model (triage-model via LiteLLM)
 
-# ============================================================================
-# !!! TEMPORARY T-100 OVERRIDE (re-vet vs T-99 N=9) — DO NOT MERGE. REVERTED BEFORE PR. !!!
-# ----------------------------------------------------------------------------
-# Branch-only override of the already-on-main run-kb-learn-eval.yml workflow_dispatch
-# vehicle (the T-96 mechanism). Re-runs the T-100 vetting of meta/llama-3.3-70b-instruct
-# for `triage` + `respond` against the CURRENT N=9 eval files (T-99 grew each eval from
-# N=4 to N=9, PR #402) so the (2b) allowlist claim matches what is actually on main —
-# not the superseded N=4 version the first run (29199758667) used.
+# T-84's exit criterion required a real pass-rate proof against KB Learn's actual
+# production model (the triage-model alias, routed through LiteLLM staging), not the
+# anthropic:claude-sonnet-4-6 prompt-contract reference evals/kb-learn.yaml's provider
+# block uses for CI schema validation.
 #
-# CREDENTIAL: scoped LITELLM_EVAL_KEY (eval-gate-t96, scoped
-# [triage-model, fallback-model, meta/llama-3.3-70b-instruct]) — NEVER the master key.
-# target + judge are both already in scope, so NO re-scope is needed.
-# ============================================================================
+# T-89 UPDATE: the live-config generation this workflow originally inlined has been
+# EXTRACTED into a shared, parameterised runner — scripts/eval/live-run.sh (which calls
+# scripts/eval/gen-live-config.py). That runner is generic across all three product evals
+# (kb-learn, ticket-triage, ticket-respond), parameterised by eval file + target alias +
+# judge alias. This workflow is now the KB Learn *invocation* of that shared runner — it
+# hardcodes KB Learn's args and is the manual-dispatch verification vehicle proving the
+# extraction preserved T-88's behaviour (100% / 4/4). The T-93 sibling CI workflow will
+# consume the SAME scripts/eval/live-run.sh; the generalized runner already lives there.
+#
+# No new credential: reuses the existing `LITELLM_MASTER_KEY` GitHub secret (same one
+# configure-litellm-openai-only.yml already uses for staging) as the OpenAI-compatible API
+# key against LiteLLM's own /v1 endpoint — both the target provider (triage-model) AND the
+# grader run through the SAME LiteLLM staging instance/key, so no separate Anthropic/OpenAI
+# key is needed. Key is never printed; only the pass/fail summary is surfaced.
+#
+# NB (ADR-0007 C1): keeping the master key here is acceptable because this is a
+# MANUAL workflow_dispatch a maintainer decides to fire. The master key must NOT enter the
+# T-93 AUTO `pull_request`-triggered gate — that job reads only the scoped LITELLM_EVAL_KEY
+# (T-90). This workflow is not that gate.
+#
+# READ-ONLY from an infra standpoint: no Coolify mutation, no schema change.
+# It DOES make real (metered) LLM calls against litellm-staging.
 
 on:
   workflow_dispatch: {}
@@ -20,23 +34,16 @@ on:
 permissions:
   contents: read
 
-env:
-  LITELLM_STAGING_ROOT: "https://litellm-staging.inatechshell.ca"
-  LITELLM_BASE: "https://litellm-staging.inatechshell.ca/v1"
-  TARGET_ALIAS: "meta/llama-3.3-70b-instruct"
-  OUT_DIR: "/tmp/eval-live"
-
 jobs:
   eval:
-    name: T-100 — vet meta/llama for triage + respond (live, scoped key, N=9)
+    name: Run evals/kb-learn.yaml against triage-model (live, real pass rate)
     runs-on: ubuntu-latest
     env:
-      LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+      LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
     steps:
-      - name: Guard — scoped eval key present (NEVER the master key)
+      - name: Guard — required secret present
         run: |
-          echo "::add-mask::$LITELLM_EVAL_KEY"
-          [ -n "$LITELLM_EVAL_KEY" ] || { echo "::error::LITELLM_EVAL_KEY not set — the scoped eval key must be provisioned as a repo secret"; exit 1; }
+          [ -n "$LITELLM_MASTER_KEY" ] || { echo "::error::LITELLM_MASTER_KEY not set"; exit 1; }
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -47,86 +54,48 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Health + enumerate key-visible aliases (read-only, scoped key)
+      - name: Sanity-check LITELLM_MASTER_KEY against /health before spending eval calls on it
         run: |
-          set -uo pipefail
-          echo "::add-mask::$LITELLM_EVAL_KEY"
-          HTTP=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 20 \
-            "$LITELLM_STAGING_ROOT/health/readiness" || echo "000")
-          echo "GET /health/readiness -> HTTP $HTTP"
-          if [ "$HTTP" != "200" ]; then
-            echo "::error::litellm-staging not healthy (HTTP $HTTP)"; cat /tmp/health.json 2>/dev/null || true; exit 1
-          fi
-          MHTTP=$(curl -s -o /tmp/models.json -w "%{http_code}" --max-time 20 \
-            -H "Authorization: Bearer $LITELLM_EVAL_KEY" "$LITELLM_BASE/models" || echo "000")
-          echo "GET /v1/models (scoped key) -> HTTP $MHTTP"
-          if [ "$MHTTP" = "200" ]; then
-            echo "Aliases visible to the scoped eval key:"
-            jq -r '.data[]?.id' /tmp/models.json 2>/dev/null | sort -u || cat /tmp/models.json
-          fi
-
-      - name: Preflight target + choose a healthy judge (fallback-model preferred, triage-model fallback)
-        id: judge
-        run: |
-          set -uo pipefail
-          echo "::add-mask::$LITELLM_EVAL_KEY"
-          probe() {
-            curl -s -o /tmp/probe.json -w "%{http_code}" --max-time 40 \
-              -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
-              "$LITELLM_BASE/chat/completions" || echo "000"
-          }
-          T=$(probe "$TARGET_ALIAS"); echo "target $TARGET_ALIAS -> HTTP $T"; head -c 300 /tmp/probe.json; echo
-          if [ "${T:0:1}" != "2" ]; then
-            echo "::error::target $TARGET_ALIAS not reachable (HTTP $T) — cannot vet. NVIDIA-NIM upstream may be down/out-of-credit."
-            exit 1
-          fi
-          FB=$(probe "fallback-model"); echo "fallback-model -> HTTP $FB"; head -c 300 /tmp/probe.json; echo
-          if [ "${FB:0:1}" = "2" ]; then
-            echo "judge=fallback-model" >> "$GITHUB_OUTPUT"
-            echo "Judge = fallback-model (healthy — ADR §5.3 intended grader, provider-diverse from target)."
+          set -euo pipefail
+          HTTP=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 15 \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            "https://litellm-staging.inatechshell.ca/health/readiness")
+          echo "GET /health/readiness with LITELLM_MASTER_KEY -> HTTP $HTTP"
+          cat /tmp/health.json 2>/dev/null || true
+          echo ""
+          MODELS_HTTP=$(curl -s -o /tmp/models.json -w "%{http_code}" --max-time 15 \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            "https://litellm-staging.inatechshell.ca/v1/models")
+          echo "GET /v1/models with LITELLM_MASTER_KEY -> HTTP $MODELS_HTTP"
+          if [ "$MODELS_HTTP" = "200" ]; then
+            echo "Registered model ids:"
+            jq -r '.data[]?.id' /tmp/models.json 2>/dev/null || cat /tmp/models.json
           else
-            TM=$(probe "triage-model"); echo "triage-model -> HTTP $TM"; head -c 300 /tmp/probe.json; echo
-            if [ "${TM:0:1}" != "2" ]; then
-              echo "::error::neither fallback-model (HTTP $FB) nor triage-model (HTTP $TM) reachable as a judge"; exit 1
-            fi
-            echo "judge=triage-model" >> "$GITHUB_OUTPUT"
-            echo "::warning::fallback-model unhealthy (HTTP $FB) — using triage-model as judge (T-96 precedent). grader != target still holds (target=meta/llama)."
+            echo "::warning::LITELLM_MASTER_KEY appears invalid/stale against litellm-staging (HTTP $MODELS_HTTP on /v1/models) — the eval step below will fail identically. This is a credential problem, not an eval-file problem."
           fi
 
-      - name: Vet meta/llama on ticket-triage (live, scoped key, N=9)
-        id: triage
-        continue-on-error: true
+      - name: Run KB Learn eval via the shared live-run runner (scripts/eval/live-run.sh)
+        # The runner generates a self-contained live config (provider swap ->
+        # openai:chat:triage-model, system prompt as a real {role:'system'} message,
+        # grader via LiteLLM on the judge alias), runs promptfoo eval --no-cache, and
+        # then runs the T-91 calibration guards (grader!=target fail-fast, per-eval
+        # token band, must-pass/must-fail canaries).
+        #
+        # T-91 UPDATE: JUDGE_ALIAS is now `fallback-model` (was `triage-model`) so this
+        # invocation SATISFIES the new grader!=target guard (ADR §5.3) — the runner now
+        # HARD-ERRORS (exit 3) on judge==target, so the old apples-to-apples config is
+        # deliberately no longer permitted. KNOWN ENV CAVEAT: `fallback-model` on
+        # litellm-staging currently 400s (Anthropic credit exhaustion — see T-90 /
+        # FQ-70, an external billing issue, NOT a harness defect), so a *fully-green*
+        # dispatch here is blocked until that alias is funded. The T-91 guard logic is
+        # verified independently against real promptfoo-0.121 output (DECISIONS.md T-91).
         env:
-          EVAL_FILE: evals/ticket-triage.yaml
-          JUDGE_ALIAS: ${{ steps.judge.outputs.judge }}
-          OPENAI_API_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+          EVAL_FILE: evals/kb-learn.yaml
+          TARGET_ALIAS: triage-model
+          JUDGE_ALIAS: fallback-model
+          LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
+          OUT_DIR: /tmp/eval-live
+          OPENAI_API_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
         run: |
           echo "::add-mask::$OPENAI_API_KEY"
           bash scripts/eval/live-run.sh
-
-      - name: Vet meta/llama on ticket-respond (live, scoped key, N=9)
-        id: respond
-        continue-on-error: true
-        env:
-          EVAL_FILE: evals/ticket-respond.yaml
-          JUDGE_ALIAS: ${{ steps.judge.outputs.judge }}
-          OPENAI_API_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
-        run: |
-          echo "::add-mask::$OPENAI_API_KEY"
-          bash scripts/eval/live-run.sh
-
-      - name: T-100 vetting summary (N=9)
-        if: always()
-        run: |
-          echo "============================================================"
-          echo " T-100 — vet meta/llama-3.3-70b-instruct for triage + respond (N=9)"
-          echo "============================================================"
-          echo " judge alias        : ${{ steps.judge.outputs.judge }}"
-          echo " ticket-triage step : ${{ steps.triage.outcome }}  (success = all 9 pass + guards green)"
-          echo " ticket-respond step: ${{ steps.respond.outcome }}  (success = all 9 pass + guards green)"
-          echo " NOTE: >95% with N=9 means 9/9 (8/9=88.9% is a FAIL). A step 'success'"
-          echo "       = live-run.sh exit 0 = all product tests passed AND all T-91"
-          echo "       guards green. Read each eval's .results.stats above for counts."
-          echo "============================================================"

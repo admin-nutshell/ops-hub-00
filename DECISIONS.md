@@ -4009,19 +4009,28 @@ still stands (do not label M7). CLAUDE.md "Active sprint" pointer updated 9→10
 sprint from going stale, the exact anti-pattern prior retros flagged.
 ```
 
-### 2026-07-12 — T-100 DONE: meta/llama-3.3-70b-instruct PASSED BOTH triage + respond live vetting evals (4/4 each, 100%) → added to both allowlists, NO re-scope needed (Evals Lead)
+### 2026-07-12 — T-100 DONE: meta/llama-3.3-70b-instruct PASSED BOTH triage + respond live vetting evals (9/9 each vs T-99's N=9, 100%) → added to both allowlists, NO re-scope needed (Evals Lead)
 
 ```
 2026-07-12 [Evals Lead] T-100 — vetted a candidate SECOND alias for the `triage`
 and `respond` functions via the sanctioned per-target-model vetting path (the
 T-96 pattern; model-allowlist.ts PROCESS block / T-79). RESULT: meta/llama-3.3-70b-instruct
-PASSED BOTH functions at 4/4 = 100% (> 95% gate; with N=4 the only achievable
-rates are 0/25/50/75/100%, so 4/4 is the pass bar — a 3/4 would have been a FAIL,
-not "close", and would have left that function unchanged). Both aliases are now
-added to their respective allowlists; T-100 is DONE at the MAXIMAL outcome (both
-functions, not just one). The exit criteria explicitly accepted "even one
-additional vetted alias on one function" as complete — both cleared cleanly, so
-both ship.
+PASSED BOTH functions at 9/9 = 100% (> 95% gate) against the CURRENT N=9 eval
+suite. Both aliases are now added to their respective allowlists; T-100 is DONE at
+the MAXIMAL outcome (both functions, not just one). The exit criteria explicitly
+accepted "even one additional vetted alias on one function" as complete — both
+cleared cleanly, so both ship.
+
+N=9 RE-CONFIRMATION (why there are two runs). The first vetting pass ran against
+the N=4 eval version (SHA 67354c3) at 4/4 = 100% (run 29199758667). Mid-PR, T-99
+(PR #402) merged to main and grew every product eval from N=4 to N=9 (past the
+ADR-0007 §5.4 small-N caveat). Rather than ship a (2b) allowlist claim citing "4/4"
+against a file that now has 9 tests — which would be misleading in the source of
+truth — the branch was rebased onto that merge and the FULL vetting re-run against
+the N=9 files. DEFINITIVE RESULT: 9/9 = 100% on BOTH functions (run 29200425687,
+eval SHA 2bb7f2c). With N=9 the >95% bar is 9/9 (8/9 = 88.9% would FAIL); it cleared
+cleanly. All numbers in model-allowlist.ts / WORK.md / the settingsWrite tests cite
+the N=9 run. (The N=4 run stands as the corroborating first pass, not the record.)
 
 NO EVAL-KEY RE-SCOPE WAS NEEDED — the T-96 wall did NOT apply (this was the key
 finding that made T-100 a pure vetting task, not a security-review cycle):
@@ -4034,8 +4043,13 @@ finding that made T-100 a pure vetting task, not a security-review cycle):
     candidate was already in scope, that gate was simply not reached. The master key
     was never touched at any point.
 
-RUN (real, live, metered against litellm-staging):
-  https://github.com/admin-nutshell/ops-hub-00/actions/runs/29199758667
+RUNS (real, live, metered against litellm-staging):
+  DEFINITIVE (N=9, the record):  https://github.com/admin-nutshell/ops-hub-00/actions/runs/29200425687
+  First pass (N=4, corroborating): https://github.com/admin-nutshell/ops-hub-00/actions/runs/29199758667
+  (The detailed per-target/judge/mechanism notes below hold for BOTH runs — same
+  target, judge, credential, mechanism; only the eval N and pass counts differ:
+  4/4 on N=4, then 9/9 on the current N=9 files. Where a specific figure differs it
+  is called out inline.)
   - TARGET_ALIAS = meta/llama-3.3-70b-instruct (the candidate; real NVIDIA-NIM-backed
     alias — NOT the anthropic:claude-sonnet-4-6 prompt-contract reference the CI
     schema check uses). Target reachability preflighted HTTP 200 before spend.
@@ -4048,9 +4062,12 @@ RUN (real, live, metered against litellm-staging):
     hard-errors exit 3 on judge==target; it did not (fallback-model != meta/llama).
   - EVAL_FILEs  = evals/ticket-triage.yaml AND evals/ticket-respond.yaml, each via
     the shared runner scripts/eval/live-run.sh (T-89) + T-91 calibration guards inline.
-    Eval files pinned at git SHA 67354c32c073c0d01a14cc30713854cf0a316bf7 (recorded
-    because T-99 may be editing these YAMLs concurrently — this (2b) claim is against
-    THAT exact eval version).
+    Eval files pinned at git SHA 2bb7f2c4c7a39528bda016c10a5147acdca571c1 for the
+    DEFINITIVE N=9 run (T-99/PR #402's grown suite) — this is the version the (2b)
+    claim rests on. The first pass used SHA 67354c3 (the N=4 version, before T-99
+    merged). The SHA was recorded precisely because T-99 was editing these YAMLs
+    concurrently; when it landed, the branch was rebased and the vetting re-run so
+    the claim matches what is actually on main.
   - CREDENTIAL   = the SCOPED virtual key LITELLM_EVAL_KEY (eval-gate-t96; masked ***
     throughout), NEVER the master key.
   - MECHANISM: temporary branch-only override of run-kb-learn-eval.yml (an already-on-main
@@ -4064,7 +4081,14 @@ RUN (real, live, metered against litellm-staging):
     live gate's AUTO trigger evaluates the DEFAULT target for regressions and does NOT by
     itself vet a newly-added alias, which is why the targeted dispatch is required.
 
-REAL RESULT — both product evals AND both harness-integrity guard sets checked; all clean:
+REAL RESULT — both product evals AND both harness-integrity guard sets checked; all clean.
+  DEFINITIVE (N=9, run 29200425687): ticket-triage 9/9 = 100% (promptfoo exit 0,
+  successes 9 / failures 0); ticket-respond 9/9 = 100% (successes 9 / failures 0).
+  T-91 guards GREEN both: triage token-band [133,543], respond token-band [193,948],
+  canaries 2/2 each, grader != target. The N=9 suite added 5 cases per eval on top of
+  the 4 below (same rubric shapes, harder/edge coverage past ADR §5.4) — all 5 extra
+  also passed. The per-test breakdown below is the FIRST-PASS (N=4, run 29199758667)
+  detail, retained for provenance; the four original cases are a subset of the N=9 nine:
   - ticket-triage: promptfoo exit 0, "successes": 4, "failures": 0 → 4/4 (100%).
     All four llm-rubric tests (threshold 0.8) passed, graded by fallback-model:
       (a) total outage → urgency=critical, valid JSON — PASS

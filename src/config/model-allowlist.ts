@@ -47,12 +47,14 @@
 //   - kb_learn : evals/kb-learn.yaml LIVE 4/4 (100%), judge=triage-model,
 //     grader != target (§5.3), T-91 guards green — T-96 C7, DECISIONS.md 2026-07-12,
 //     run 29180466358.
-//   - triage   : evals/ticket-triage.yaml LIVE 4/4 (100%), judge=fallback-model,
-//     grader != target (§5.3), T-91 guards green (token-band [124,520], canaries 2/2)
-//     — T-100, DECISIONS.md 2026-07-12, run 29199758667.
-//   - respond  : evals/ticket-respond.yaml LIVE 4/4 (100%), judge=fallback-model,
-//     grader != target (§5.3), T-91 guards green (token-band [191,943], canaries 2/2)
-//     — T-100, DECISIONS.md 2026-07-12, run 29199758667.
+//   - triage   : evals/ticket-triage.yaml LIVE 9/9 (100%), judge=fallback-model,
+//     grader != target (§5.3), T-91 guards green (token-band [133,543], canaries 2/2)
+//     — T-100, DECISIONS.md 2026-07-12, run 29200425687 (vs the current N=9 eval,
+//     T-99/PR #402; an earlier 4/4 pass on the N=4 version, run 29199758667, was
+//     re-confirmed against N=9 after T-99 grew the suite).
+//   - respond  : evals/ticket-respond.yaml LIVE 9/9 (100%), judge=fallback-model,
+//     grader != target (§5.3), T-91 guards green (token-band [193,948], canaries 2/2)
+//     — T-100, DECISIONS.md 2026-07-12, run 29200425687 (same N=9 re-confirmation).
 // So the blanket "no alias has a live per-target-model pass" that used to sit here is
 // now false for these (function, alias) pairs, by design.
 //
@@ -135,22 +137,23 @@ export const MODEL_ROUTING_ALLOWLIST: Readonly<Record<RoutingFunctionKey, readon
   // contract; ticket-triage.test.ts exercises the primary→fallback path). Both
   // production aliases are selectable for either the primary or the fallback
   // picker. `meta/llama-3.3-70b-instruct` is the (2b) entry: it runs NONE of
-  // triage in production, but cleared evals/ticket-triage.yaml LIVE at 4/4
+  // triage in production, but cleared evals/ticket-triage.yaml LIVE at 9/9
   // (100%) against its own NVIDIA-backed target, judge=fallback-model
-  // (grader != target, §5.3), all T-91 guards green (token-band [124,520],
-  // canaries 2/2) — T-100, DECISIONS.md 2026-07-12, run 29199758667. First
-  // live-vetted (2b) alias for triage.
+  // (grader != target, §5.3), all T-91 guards green (token-band [133,543],
+  // canaries 2/2) — T-100, DECISIONS.md 2026-07-12, run 29200425687 (vs the
+  // current N=9 eval, T-99/PR #402). First live-vetted (2b) alias for triage.
   triage: ["triage-model", "fallback-model", "meta/llama-3.3-70b-instruct"],
 
   // Respond runs `triage-model` today (ticket-respond.ts) — the (2a) entry.
   // Prompt-eval covered by evals/ticket-respond.yaml. Primary-only this sprint
   // (no fallback logic for Respond). `meta/llama-3.3-70b-instruct` is the (2b)
   // entry: it runs NONE of respond in production, but cleared
-  // evals/ticket-respond.yaml LIVE at 4/4 (100%) against its own NVIDIA-backed
+  // evals/ticket-respond.yaml LIVE at 9/9 (100%) against its own NVIDIA-backed
   // target, judge=fallback-model (grader != target, §5.3), all T-91 guards green
-  // (token-band [191,943], canaries 2/2) — T-100, DECISIONS.md 2026-07-12,
-  // run 29199758667. Its urgency-matched, non-fabricating draft replies passed
-  // the behavioural rubric; the dashboard may now select either alias for respond.
+  // (token-band [193,948], canaries 2/2) — T-100, DECISIONS.md 2026-07-12,
+  // run 29200425687 (vs the current N=9 eval, T-99/PR #402). Its urgency-matched,
+  // non-fabricating draft replies passed the behavioural rubric; the dashboard
+  // may now select either alias for respond.
   respond: ["triage-model", "meta/llama-3.3-70b-instruct"],
 
   // KB Learn runs `triage-model` today (kb-learn.ts) — the (2a) entry.
