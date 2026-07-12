@@ -7,15 +7,16 @@
 // WHY THIS FILE EXISTS
 // --------------------
 // Letting a human pick any model from the dashboard is a *runtime capability
-// change that bypasses CI* — exactly what CLAUDE.md's standing "no capability
-// change ships without passing the Promptfoo eval suite" constraint governs.
-// Today that CI gate is schema-validation-only (WORK.md T-58), so there is no
-// live model-quality gate to catch a bad runtime swap. ADR-0006 T-B1 resolves
-// this WITHOUT waiting on a real live eval gate (option (a)): restrict the
-// dropdown to a fixed allowlist, so a dashboard click can only ever *choose
-// among* aliases already accepted in production — it can never *introduce* a
-// new, unvetted model. The gate is enforced by freezing the choice-set, not by
-// running evals live on every click.
+// change that bypasses CI* — exactly what CLAUDE.md's standing "no prompt or
+// capability change ships without passing the eval gate" constraint governs.
+// A live LLM-rubric eval gate now EXISTS (ADR-0007, `live-eval-gate`, live
+// 2026-07-12) — but it is a PR-time check, so a runtime dashboard model-routing
+// change never passes through it at all. This allowlist is therefore still
+// load-bearing: ADR-0006 T-B1 restricts the dropdown to a fixed allowlist so a
+// dashboard click can only ever *choose among* aliases already accepted in
+// production — it can never *introduce* a new, unvetted model at runtime. The
+// live gate is what ADMITS an alias to this list (see PROCESS below); the
+// allowlist is what constrains selection between CI runs. Two layers, not one.
 //
 // WHAT "ALLOWED" ACTUALLY MEANS (read this before adding to the list)
 // -------------------------------------------------------------------
@@ -58,22 +59,42 @@
 //
 // PROCESS — ADDING A NEW SELECTABLE ALIAS REQUIRES AN EVAL PASS FIRST
 // -------------------------------------------------------------------
-// This list is append-controlled, not free-text. To make a new alias
-// selectable for a function: (1) register the alias in LiteLLM; (2) run that
-// function's promptfoo eval against THAT ALIAS'S TARGET MODEL (not just the
-// pinned claude-sonnet-4-6 reference) and clear >95% — until the live
-// multi-provider gate (ADR-0006 T-B1 option (b), deferred to Sprint 8) exists,
-// this is a manual `promptfoo eval` run via LiteLLM/LiteLLM providers, recorded
-// in DECISIONS.md; (3) only then add the alias here in the same PR that records
-// the eval result. Removing an alias needs no eval. This keeps the standing
-// eval-gate constraint enforced by construction.
+// This list is append-controlled, not free-text. Admitting a new alias to a
+// function's list requires a recorded >95% live eval pass (grader != target,
+// ADR-0007 §5.3) for THAT (function, alias) pair first — the (2b) route above.
 //
-// NOTE (T-93): the "live multi-provider gate" referenced above is now WIRED as a
-// sibling CI workflow — .github/workflows/eval-gate-live.yml (path-filtered
-// pull_request, grader != target, scoped LITELLM_EVAL_KEY only). It is not yet a
-// required merge check (T-94) and is dormant while fallback-model is FQ-70-blocked;
-// this PROCESS block is reconciled to point at it in T-95 once the gate enforces.
-// (This comment also serves as the path-filtered trigger proving T-93's wiring.)
+// PRIMARY ADMISSION PATH — the now-live LLM-rubric gate (T-95, ADR-0007 §8).
+// The "real" live eval gate designed in ADR-0007 is BUILT and is a required,
+// merge-blocking status check on `main` — `live-eval-gate`
+// (.github/workflows/eval-gate-live.yml; T-89–T-94, live 2026-07-12). Its shared
+// runner (scripts/eval/live-run.sh, T-89) with the T-91 calibration guards is now
+// the automated vetting mechanism that REPLACES the old hand-run `promptfoo eval`.
+// To make a new alias selectable for a function:
+//   (1) register the alias in LiteLLM;
+//   (2) vet it via the shared runner with THE NEW ALIAS AS TARGET — dispatch
+//       eval-gate-live.yml (or run-*-eval.yml) with TARGET_ALIAS=<new alias> and a
+//       JUDGE_ALIAS != target (grader != target), all T-91 guards green, clearing
+//       >95%; the run persists to eval_gate_runs and is linked in DECISIONS.md.
+//   (3) only then add the alias here in the same PR that records the eval result.
+// IMPORTANT nuance (don't re-drift this): the gate's AUTO `pull_request` trigger
+// runs each function's eval against the DEFAULT production target to catch
+// REGRESSIONS in the existing prompts — it does NOT, by itself, evaluate a
+// newly-added alias. A new alias needs the TARGETED dispatch in step (2).
+// Worked example: T-96 (DECISIONS.md 2026-07-12) admitted
+// `meta/llama-3.3-70b-instruct` to `kb_learn` by dispatching the shared runner at
+// TARGET=meta/llama-3.3-70b-instruct, JUDGE=triage-model (grader != target),
+// scoped LITELLM_EVAL_KEY (never the master key), 4/4 (100%), guards green
+// (run 29180466358) — then adding it here in the same PR.
+//
+// FALLBACK (retained, not deleted — ADR-0007 §8 "coexist"): a fully-manual local
+// `promptfoo eval` run against the alias's target model via LiteLLM, cleared >95%
+// and hand-recorded in DECISIONS.md, then added here in the same PR. Kept only for
+// a scheduling edge case where the CI gate/runner is unavailable; the automated
+// path above is preferred.
+//
+// Removing an alias needs no eval. The gate AUTOMATES this admission step; it does
+// NOT replace this allowlist, which remains the SELECTION constraint (ADR-0007 §8).
+// This keeps the standing eval-gate constraint enforced by construction.
 //
 // SCOPE BOUNDARY: this allowlist constrains which aliases the dashboard may
 // SELECT. It does not, and cannot, constrain what each alias RESOLVES TO inside
