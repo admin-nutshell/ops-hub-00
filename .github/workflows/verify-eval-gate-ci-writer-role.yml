@@ -137,10 +137,50 @@ jobs:
           echo "marker=$MARKER" >> "$GITHUB_OUTPUT"
           echo "(e) PASS: well-formed platform llm_rubric INSERT succeeded (marker=$MARKER)."
 
+      # (f) — beyond the credential review's a-e list: exercise the ACTUAL
+      # production persist path (scripts/eval/persist-eval-run.sh) with a
+      # marker-tagged, well-formed payload, so the jq extraction, the psql -f -
+      # binding, and the case_results ::jsonb cast are all proven with the real
+      # credential BEFORE the first genuine eval run relies on them (the (e)
+      # test's inline SQL never touched case_results at all). The row is tagged
+      # via WORKFLOW_RUN_URL and read back + deleted in cleanup, same as (e) —
+      # nothing fabricated is left behind.
+      - name: Checkout (needed only for step (f)'s production script)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: (f) persist-eval-run.sh with a marker payload -> must SUCCEED
+        id: check_f
+        continue-on-error: true
+        env:
+          MARKER_F: "T-93-VERIFY-F-${{ github.run_id }}"
+        run: |
+          echo "::add-mask::$EVAL_GATE_DB_URL"
+          cat > /tmp/verify-payload.json <<EOF
+          {
+            "status": "pass",
+            "totalCases": 1,
+            "passedCases": 1,
+            "gitSha": "verify-test",
+            "ciRunAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "caseResults": [
+              {"test_id": "verify::persist-script-probe", "eval": "verify", "description": "persist-script-probe", "passed": true, "score": 1}
+            ]
+          }
+          EOF
+          if WORKFLOW_RUN_URL="$MARKER_F" bash scripts/eval/persist-eval-run.sh /tmp/verify-payload.json; then
+            echo "(f) PASS: production persist script wrote the marker row (marker=$MARKER_F)."
+          else
+            echo "::error::(f) FAILED — persist-eval-run.sh could not write a well-formed payload with the real credential. eval-gate-live.yml's persist step is NOT proven; inspect output above."
+            exit 1
+          fi
+
       - name: Cleanup test row via ops_hub_app (read-back proof + delete)
-        if: steps.check_e.outcome == 'success'
+        if: steps.check_e.outcome == 'success' || steps.check_f.outcome == 'success'
         env:
           MARKER: "T-93-VERIFY-${{ github.run_id }}"
+          MARKER_F: "T-93-VERIFY-F-${{ github.run_id }}"
         run: |
           set -euo pipefail
           [ -n "${COOLIFY_TOKEN:-}" ] || { echo "::warning::COOLIFY_API_TOKEN not set — cannot fetch OPS_HUB_APP_LOGIN_URL to read back/clean up the (e) test row. The row is harmless (platform-scope, marker-tagged) but will need manual cleanup."; exit 0; }
@@ -153,17 +193,24 @@ jobs:
             echo "::warning::OPS_HUB_APP_LOGIN_URL not found on staging app — skipping cleanup, row is harmless."; exit 0
           fi
           echo "::add-mask::$LOGIN"
-          # Same -f - form as step (e): -c never interpolates :'var'.
-          FOUND=$(printf '%s\n' "select count(*) from eval_gate_runs where workflow_run_url = :'marker'" \
-            | psql "$LOGIN" -v ON_ERROR_STOP=1 -v marker="$MARKER" -tA -f -)
-          echo "Read-back via ops_hub_app: found $FOUND row(s) tagged marker=$MARKER (proves the (e) INSERT is really persisted, not just a claimed success)."
-          if [ "$FOUND" != "1" ]; then
-            echo "::warning::expected exactly 1 tagged row, found $FOUND — inspect before assuming cleanup is safe. Skipping delete."
-            exit 0
-          fi
-          printf '%s\n' "delete from eval_gate_runs where workflow_run_url = :'marker'" \
-            | psql "$LOGIN" -v ON_ERROR_STOP=1 -v marker="$MARKER" -f -
-          echo "Cleanup: deleted the tagged verify row via ops_hub_app."
+          # Same -f - form as step (e)/(f): -c never interpolates :'var'.
+          # (e) row: metadata-only inline INSERT.
+          FOUND_E=$(printf '%s\n' "select count(*) from eval_gate_runs where workflow_run_url = :'m'" \
+            | psql "$LOGIN" -v ON_ERROR_STOP=1 -v m="$MARKER" -tA -f -)
+          echo "Read-back via ops_hub_app: (e) marker=$MARKER -> $FOUND_E row(s) (proves the (e) INSERT is really persisted, not just a claimed success)."
+          # (f) row: must exist AND carry its case_results as a 1-element jsonb
+          # array — proves the production script's ::jsonb cast path end-to-end.
+          FOUND_F=$(printf '%s\n' "select count(*)::text || '|' || coalesce(max(jsonb_array_length(case_results))::text, 'null') from eval_gate_runs where workflow_run_url = :'m'" \
+            | psql "$LOGIN" -v ON_ERROR_STOP=1 -v m="$MARKER_F" -tA -f -)
+          echo "Read-back via ops_hub_app: (f) marker=$MARKER_F -> count|case_results_len = $FOUND_F (expect 1|1)."
+          OK=true
+          [ "$FOUND_E" = "1" ] || { echo "::warning::(e) expected exactly 1 tagged row, found $FOUND_E — inspect before assuming cleanup is safe."; OK=false; }
+          [ "$FOUND_F" = "1|1" ] || { echo "::warning::(f) expected count|case_results_len = 1|1, got $FOUND_F — the production persist path is NOT fully proven; inspect."; OK=false; }
+          # Delete whatever tagged rows exist (never anything untagged).
+          printf '%s\n' "delete from eval_gate_runs where workflow_run_url in (:'m1', :'m2')" \
+            | psql "$LOGIN" -v ON_ERROR_STOP=1 -v m1="$MARKER" -v m2="$MARKER_F" -f -
+          echo "Cleanup: deleted the tagged verify rows via ops_hub_app."
+          [ "$OK" = "true" ] || exit 1
 
       - name: Summary + exit-criteria gate
         if: always()
@@ -173,6 +220,7 @@ jobs:
           C: ${{ steps.check_c.outcome }}
           D: ${{ steps.check_d.outcome }}
           E: ${{ steps.check_e.outcome }}
+          F: ${{ steps.check_f.outcome }}
         run: |
           echo "============================================================"
           echo " T-93 — eval_gate_ci_writer scope verification"
@@ -182,13 +230,14 @@ jobs:
           echo " (c) UPDATE/DELETE denied            : $C"
           echo " (d) non-null project_id RLS-blocked : $D"
           echo " (e) well-formed INSERT succeeds     : $E"
+          echo " (f) production persist script OK    : $F"
           echo ""
           FAIL=false
-          for outcome in "$A" "$B" "$C" "$D" "$E"; do
+          for outcome in "$A" "$B" "$C" "$D" "$E" "$F"; do
             [ "$outcome" = "success" ] || FAIL=true
           done
           if [ "$FAIL" = "true" ]; then
-            echo "::error::One or more checks did not pass. (a)-(d) are the security proof — do NOT treat eval-gate-live.yml's persist step as trustworthy until all five are green. Needs Security Lead re-review before relying on this role."
+            echo "::error::One or more checks did not pass. (a)-(d) are the security proof — do NOT treat eval-gate-live.yml's persist step as trustworthy until all six are green. Needs Security Lead re-review before relying on this role."
             exit 1
           fi
-          echo "All five checks PASS. eval_gate_ci_writer's scope matches the design exactly: one INSERT shape, nothing else — ready for Security Lead sign-off (T-90-style) on the persist step going live."
+          echo "All six checks PASS. eval_gate_ci_writer's scope matches the design exactly (one INSERT shape, nothing else) AND the production persist script writes + round-trips its case_results jsonb — ready for Security Lead sign-off (T-90-style) on the persist step going live."
