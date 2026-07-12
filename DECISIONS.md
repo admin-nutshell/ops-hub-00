@@ -4054,3 +4054,216 @@ sprint from going stale, the exact anti-pattern prior retros flagged.
   pending). Standing correction for future self-merges: never reach for --admin; merge normally
   once required checks pass.
 ```
+
+### 2026-07-12 — T-98 Security Lead design review: synthetic-ticket downstream E2E monitor — APPROVED WITH CONDITIONS (2 design amendments + SC1–SC10); `OPS_HUB_APP_LOGIN_URL` in CI REJECTED
+
+```
+2026-07-12 [Security Lead] T-98 — pre-implementation security review of the proposed
+synthetic-ticket downstream E2E monitor design (the review-before-build step, same
+two-step sequence as T-90 / T-93's DB writer / T-96's key re-scope). VERDICT:
+APPROVE WITH CONDITIONS. The core approach is sound — test-tenant injection +
+direct Inngest event dispatch + closed FreeScout test conversation + LangFuse read
+assertion — but two pieces of the proposal are rejected and replaced (Amendments
+A1/A2 below), and one claim in the proposal is factually wrong and must not become
+folklore: T-97's monitor does NOT hold prod secrets (its own header: "It holds
+ZERO copy of LITELLM_MASTER_KEY"). T-98 is therefore NOT "following the T-97
+precedent" on secrets — it is the FIRST scheduled workflow to hold write-capable
+prod credentials, and it gets the same scoped-credential discipline as
+LITELLM_EVAL_KEY ($7-capped) and EVAL_GATE_DB_URL (insert-only role), the two
+scheduled-context credentials that actually exist. Design review only; nothing
+was built, dispatched, or provisioned. Production Manager implements from the
+spec below; QA Manager owns the assertion design on top of it.
+
+RULING 1 — TEST-TENANT REUSE (project 00…0001 "ops-hub" / tenant 00…0010
+"staging-support"): APPROVED, with two corrections to the proposal's claims.
+Verified directly, not from the summary:
+  a. All prod-side crons and queries are structurally blind to this tenant. Every
+     Inngest sweep GUC-scopes to POLLING_PROJECT_ID/POLLING_TENANT_ID
+     (freescout-poller.ts, ticket-triage.ts sweepNewTickets, ticket-resolve.ts
+     sweepRespondedTickets, sla-monitor.ts — all import the same pair), which on
+     ops-hub-prod = 00…0003/00…0030. RLS is fail-closed (tickets_select/insert/
+     update all `tenant_id = current_tenant_id()`, 20260618120100), so tenant
+     00…0010 rows are invisible to every prod sweep, the prod dashboard
+     (web/lib/project.ts scopes to the same env pair), prod SLA metrics, and
+     kb-learn (fires only on ops-hub/ticket.resolved, which only prod-scoped
+     sweeps or explicit events emit).
+  b. CORRECTION 1 — the tenant is NOT "invisible to every dashboard": the STAGING
+     ops dashboard is deliberately provisioned onto exactly this pair
+     (provision-ops-dashboard-staging.yml: STAGING_PROJECT_ID=00…0001,
+     STAGING_TENANT_ID=00…0010; web/lib/project.ts defaults likewise). Synthetic
+     tickets WILL render there. Acceptable — internal-only surface, and arguably
+     useful (live E2E state visible on a dashboard) — but it must be documented
+     and the synthetic ticket unmistakably titled (SC6).
+  c. CORRECTION 2 — the tenant is only inert because ops-hub-staging is STOPPED
+     (T-54). This tenant is the staging app's HOME scope: if staging is ever
+     restarted, its sweepNewTickets/sweepRespondedTickets/sla-monitor crons run
+     GUC'd to 00…0010 and would double-process synthetic tickets (staging LiteLLM
+     spend, duplicate FreeScout notes, auto-resolve after 24h → kb-learn →
+     synthetic KB articles written into project 00…0001's kb_articles). Also the
+     T-54(B) fan-out class: both apps' functions subscribe to the same event
+     names in the same Inngest env. "ops-hub-staging stays stopped" becomes a
+     NAMED operating assumption of this monitor (SC7); restarting staging
+     requires a re-review of T-98 first.
+  d. Nothing else depends on this tenant being empty: repo-wide search found only
+     mocked unit tests using these UUIDs and the T-21/kb-seed seed rows. No
+     customer-facing aggregation reads it.
+
+RULING 2 — FREESCOUT CLOSED-CONVERSATION TRICK: reasoning verified CORRECT, but
+the proposed CLEANUP re-opens the exact hole the trick closes → REJECTED and
+replaced by Amendment A1.
+  a. Verified: the poller matches ONLY `c.status = 1 AND c.state = 2`
+     (freescout-poller.ts, FS_STATUS_ACTIVE/FS_STATE_PUBLISHED). A Closed
+     (status=3) conversation is never picked up. No mailbox filter exists, so
+     mailbox placement is NOT a defense — status is the only gate.
+  b. THE HOLE: the proposal's cleanup (`UPDATE tickets SET state='closed',
+     freescout_conversation_id=NULL`) nulls the FK to free the UNIQUE constraint
+     for the next run's INSERT. But `freescout_conversation_id bigint UNIQUE`
+     (20260623180000) + the poller's `ON CONFLICT (freescout_conversation_id) DO
+     NOTHING` is the ONLY dedup shield. With the FK nulled, a support agent's
+     manual re-open or a FreeScout bulk op flipping the test conversation to
+     active+published would cause the prod poller (every minute, stamps
+     POLLING_TENANT_ID on everything it matches) to mint a REAL prod-tenant
+     ticket from the test conversation — triaged, responded, counted in prod SLA
+     and dashboards. Exactly what Ruling 1 exists to prevent.
+  c. AMENDMENT A1 (the cleaner alternative — adopt it): ONE permanent SENTINEL
+     ticket row instead of insert-per-run + null-cleanup. Provision once: a
+     single ticket in tenant 00…0010 holding the test conversation's FK forever.
+     Each monitor run UPDATEs it back to state='new' (legal: tickets_state_check
+     is set-membership, no transition machine; tickets_update policy permits it),
+     dispatches ops-hub/ticket.triage, asserts new→triaged→responded, and leaves
+     it at 'responded' (or 'closed'). Because the sentinel permanently holds the
+     conv_id, the UNIQUE + ON CONFLICT DO NOTHING makes a re-opened test
+     conversation STRUCTURALLY harmless — the poller's insert no-ops forever. No
+     row accumulation, no FK nulling, idempotency guards (triage requires 'new',
+     respond requires 'triaged') still hold, Inngest retries still dedup.
+  d. Side effect the proposal omitted: ticket-respond's delivery step raw-INSERTs
+     a REAL internal note (thread type=3 — internal-only, never emailed) into the
+     test conversation on EVERY successful run, via the app's FREESCOUT_DB_URL
+     (not a CI credential). Bounded by cadence (SC5) — at 6-hourly that is 4
+     notes/day on one closed conversation; prune opportunistically/quarterly via
+     the existing founder/Production Manager channel. Raw inserts bypass
+     FreeScout's app layer, so no workflows/auto-replies fire on them.
+  e. Honest coverage note for the deploy record: this design does NOT exercise
+     the poller/intake stage, and CANNOT — the poller stamps POLLING_TENANT_ID
+     on every conversation it matches, so any poller-visible synthetic
+     conversation lands in the REAL prod tenant by construction. Chain coverage
+     starts at event dispatch. State it plainly in the marginal-value paragraph
+     (intake stays covered by T-97 + the FQ-69-era diagnostics).
+
+RULING 3 — SECRETS IN A SCHEDULED WORKFLOW: APPROVED for a dedicated event key +
+a new purpose-minted DB role; REJECTED for OPS_HUB_APP_LOGIN_URL.
+  a. AMENDMENT A2 — `OPS_HUB_APP_LOGIN_URL` must NOT enter GitHub Actions, on the
+     same grounds my T-93 credential review rejected `ops_hub_app`-class creds:
+     RLS scoping is CLIENT-ASSERTED (set_config GUC), so the DSN's holder can
+     assert ANY tenant → unbounded prod customer-ticket read/write in CI =
+     non-negotiable #10 violation ("CI does NOT have access to customer data").
+     A scheduled workflow is a worse context than the workflow_dispatch
+     diagnostics: it runs unattended 24/7 and any code landing on main (or a
+     compromised action dependency in that workflow) can exfiltrate the secret
+     without a human dispatch. Replacement (T-93 eval_gate_ci_writer pattern):
+     new role `e2e_monitor` — LOGIN, NOSUPERUSER, NOBYPASSRLS, NOINHERIT,
+     CONNECTION LIMIT 2, statement_timeout=15s; GRANT USAGE on schema public +
+     SELECT, INSERT, UPDATE ON tickets ONLY (no other table, no audit_log — the
+     workflow run log is the audit trail); NEW role-named RLS policies on
+     tickets with the synthetic scope HARDCODED, not GUC-derived:
+       USING / WITH CHECK
+         (tenant_id  = '00000000-0000-0000-0000-000000000010'::uuid
+      AND project_id = '00000000-0000-0000-0000-000000000001'::uuid)
+     → structurally incapable of touching any real tenant regardless of what the
+     workflow asserts. Migration + FQ founder-apply (FQ-71/72/73 channel),
+     password via the T-93 pg_temp/SELECT-readback script pattern, secret
+     `E2E_MONITOR_DB_URL` (explicit :5432), and a T-90-style dispositive
+     negative-test verify workflow BEFORE first scheduled run: prod-tenant
+     SELECT returns 0 rows, prod-tenant INSERT/UPDATE → RLS violation,
+     synthetic-tenant round-trip succeeds. My sign-off on that evidence is the
+     last gate (SC1).
+  b. INNGEST_EVENT_KEY: approved as a NEW, dedicated event key minted in Inngest
+     Cloud for this monitor only (Inngest supports multiple named keys per env)
+     — never the prod app's own key; independently revocable; if Inngest's
+     event-key filtering can restrict it to `ops-hub/ticket.triage`, apply that
+     at provisioning (verify capability then, don't assume). Blast radius if
+     leaked, stated honestly: event injection into the prod Inngest env. The
+     pipeline functions TRUST event payloads (triageOneTicket takes
+     project_id/tenant_id from event.data), so a leaked key lets an attacker
+     drive triage/respond against REAL tenants' tickets — bounded to legal state
+     transitions + LLM spend on the app's key + FreeScout note spam; NO read
+     path, no data egress. Accepted with: dedicated key (revoke = kill switch),
+     schedule + workflow_dispatch only, never any pull_request context (SC3),
+     concurrency group, cadence cap (SC5). This is a real step past current
+     posture — record it as such, not as "T-97 already did this."
+  c. LangFuse assertion: reuse of LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY
+     read-only (verify-agent-cost-feed.yml pattern) — approved; keys already
+     exist in Actions. Residual, named: LangFuse traces carry real ticket titles
+     in metadata and the key is project-wide, so scheduled context marginally
+     widens existing exposure; scope the query to name=ticket-triage/-respond +
+     metadata.tenant_id=00…0010 and print nothing but the synthetic trace's
+     id/timestamps. Cost-feed note: agent-cost-sync will sync the synthetic
+     traces into agent_cost_events under project 00…0001 — invisible to the prod
+     dashboard (project-scoped), and honest cost accounting for the monitor.
+
+RULING 4 — CUSTOMER DATA / REAL MAILBOX (non-negotiable #8, FQ-69 caution): PASS
+with the amendments. With A1+A2 the design is STRUCTURALLY incapable of touching
+real tenant rows (role-scoped RLS, not convention), never emails a customer
+(notes are type=3 internal; drafts are never auto-sent — ticket-respond.ts
+header), and never writes into the live support@ intake path. The one real leak
+path found (reopen → poller → prod-tenant ticket) is closed structurally by A1.
+
+CONDITIONS (all must hold; deviation = stop and re-review):
+SC1. E2E_MONITOR_DB_URL provisioning per A2, with the negative-test verify run +
+     Security Lead readback BEFORE the schedule is enabled. OPS_HUB_APP_LOGIN_URL
+     never appears in any workflow file or Actions secret.
+SC2. Dedicated new Inngest event key per R3b; provision, don't reuse; record the
+     filtering capability outcome in the deploy record.
+SC3. Workflow triggers: `schedule` + `workflow_dispatch` ONLY. Never
+     pull_request/pull_request_target. permissions: contents:read +
+     actions:write (incident dispatch, same as T-97). concurrency group,
+     cancel-in-progress: false.
+SC4. Step-level env for both secrets (T-93 W1 pattern), no secret in any URL
+     query string (T-90 O1 lesson), no ticket/draft content echoed to logs
+     beyond state names + row ids.
+SC5. Cadence: every 6 hours default, never more frequent than hourly without a
+     fresh review. Per-run cost ≈ 2 prod LLM calls + 1 FreeScout note — state it
+     in the deploy record.
+SC6. Sentinel ticket title and test conversation subject both carry an
+     unmistakable marker, e.g. "[SYNTHETIC E2E MONITOR — DO NOT REOPEN / DO NOT
+     DELETE]" — it renders on the staging dashboard and in FreeScout, and the
+     marker is the human-facing guard Ruling 1b/2b rely on.
+SC7. Named operating assumption: ops-hub-staging stays stopped. Restarting it
+     (or repointing staging's POLLING_* env) requires a T-98 re-review first.
+     Note this in the deploy record and in any staging-restart runbook.
+SC8. Failure path mirrors T-97: on a stage failing to advance within the
+     QA-designed window (suggest: poll up to 10 min post-dispatch), open a
+     status-incident via status-incident.yml workflow_dispatch with a DISTINCT
+     title (never colliding with T-97's), fail the run (native email); on
+     success, resolve any open incident from this monitor only.
+SC9. FreeScout test conversation provisioning (Production Manager): create via
+     the FreeScout UI (app layer keeps counters/invariants sane — a raw
+     conversations INSERT is rejected), as a PHONE-type conversation (no
+     outbound email on creation) against a dedicated synthetic customer with a
+     non-routable address (e.g. synthetic-e2e@invalid.inatechshell.ca — NOT
+     info@/support@, which the IMAP fetcher ingests → loop risk), then
+     immediately mark Closed. THEN read-only discovery before any write: confirm
+     via the discover-freescout-schema.yml pattern (SELECT id, status, state
+     FROM conversations WHERE subject LIKE '%SYNTHETIC E2E%') that status=3,
+     state=2, and capture the conversation id for the sentinel row. Only then
+     provision the sentinel ticket (one INSERT via the new e2e_monitor role —
+     doubles as its positive test).
+SC10. DECISIONS.md + deploy record entries per WORK.md T-98 exit criteria,
+     including the marginal-value-over-T-97 statement AND Ruling 2e's honest
+     "intake not covered" scope note.
+
+Blast-radius summary (the earning-trust-both-ways paragraph): with A1+A2+SC1–SC10
+the worst credible failures are (i) leaked E2E_MONITOR_DB_URL → read/write of ONE
+synthetic tenant's synthetic tickets — nuisance, zero customer data; (ii) leaked
+monitor event key → prod pipeline churn within legal state transitions + LLM
+spend until revoked — availability/cost nuisance, no read path; (iii) monitor bug
+→ stuck synthetic rows visible only on the staging dashboard + its own incident
+alert. None reaches customer data or the support mailbox. That is an acceptable
+posture for the coverage T-98 buys.
+
+Handoff: Production Manager builds from this spec (migration + FQ for the
+e2e_monitor role, Inngest key mint, SC9 provisioning sequence, the workflow
+itself); QA Manager designs the stage-window assertions (SC8) on top. No
+FOUNDER_QUEUE escalation needed beyond the role-apply FQ — technical scoping,
+no business decision; the founder sees the FQ-71/72/73-style apply request only.
+```
