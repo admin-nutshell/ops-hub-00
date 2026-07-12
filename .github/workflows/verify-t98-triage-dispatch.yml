@@ -145,11 +145,21 @@ jobs:
           echo "::add-mask::$LOGIN"
           FINAL=""
           for i in $(seq 1 18); do
+            # NOTE (bug found + fixed live, run 29201941935): set_config(...,
+            # true) is transaction-LOCAL. Without an explicit BEGIN/COMMIT
+            # wrapping all three statements in one transaction, each line
+            # above ran in its own auto-committed transaction and the GUC was
+            # gone before the SELECT ran -- RLS then saw no tenant context and
+            # silently returned 0 rows. Real app code (ticket-triage.ts et al)
+            # always wraps GUC + query in one explicit transaction for exactly
+            # this pooler-safety reason; this ad hoc probe now matches that.
             STATE=$(printf '%s\n' \
+              "begin;" \
               "select set_config('app.current_tenant', :'tid', true);" \
               "select set_config('app.current_project', :'pid', true);" \
               "select state from tickets where id = :'id'::uuid;" \
-              | psql "$LOGIN" -v tid="$SYN_TENANT_ID" -v pid="$SYN_PROJECT_ID" -v id="$TICKET_ID" -tA -f - 2>&1 | tail -1)
+              "commit;" \
+              | psql "$LOGIN" -v tid="$SYN_TENANT_ID" -v pid="$SYN_PROJECT_ID" -v id="$TICKET_ID" -tA -f - 2>&1 | sed -n '4p')
             echo "Attempt $i/18: state=$STATE"
             if [ "$STATE" = "triaged" ] || [ "$STATE" = "responded" ]; then
               FINAL="$STATE"
@@ -212,9 +222,17 @@ jobs:
           TICKET_ID: ${{ steps.insert.outputs.ticket_id }}
         run: |
           echo "::add-mask::$LOGIN"
-          printf '%s\n' \
+          # Same fix as the poll step: GUC + UPDATE must share one explicit
+          # transaction or the set_config is gone (transaction-local) before
+          # the UPDATE runs, and RLS silently affects 0 rows (observed live
+          # in run 29201941935: "UPDATE 0").
+          OUT=$(printf '%s\n' \
+            "begin;" \
             "select set_config('app.current_tenant', :'tid', true);" \
             "select set_config('app.current_project', :'pid', true);" \
             "update tickets set state = 'closed' where id = :'id'::uuid;" \
-            | psql "$LOGIN" -v tid="$SYN_TENANT_ID" -v pid="$SYN_PROJECT_ID" -v id="$TICKET_ID" -v ON_ERROR_STOP=1 -tA -f -
+            "commit;" \
+            | psql "$LOGIN" -v tid="$SYN_TENANT_ID" -v pid="$SYN_PROJECT_ID" -v id="$TICKET_ID" -v ON_ERROR_STOP=1 -tA -f - 2>&1)
+          echo "$OUT"
+          echo "$OUT" | grep -q "UPDATE 1" || { echo "::error::Cleanup UPDATE did not report exactly 1 row affected — inspect output above before assuming the ticket was closed."; exit 1; }
           echo "Verification ticket $TICKET_ID marked closed. It remains in the table permanently (title-marked, harmless, tenant-fenced) -- consistent with this schema's no-hard-delete convention for tickets."
