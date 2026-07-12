@@ -4,10 +4,11 @@
 
 ---
 
-## FQ-74 — Turn ON the eval gate as a required check (one GitHub settings toggle)
+## ✅ FQ-74 — RESOLVED: `live-eval-gate` is now a required status check on `main`
 
-**Filed:** 2026-07-12
+**Filed:** 2026-07-12 | **Resolved:** 2026-07-12
 **Filed by:** Tech Lead (Sprint 9, T-94; ADR-0007 §6 step 6 — the final step of the real eval-gate build)
+**Status:** RESOLVED — founder added `live-eval-gate` via GitHub branch-protection settings. Verified via the GitHub API: `required_status_checks.contexts` now lists `["Lint & Type Check","Security Scan","Unit Tests","Eval Gate","live-eval-gate"]`. The real LLM-rubric eval gate is now merge-blocking on `main` — this is the capstone of the entire Sprint 9 eval-gate build (T-89 through T-94, all complete).
 **Needs:** Authorization + one founder-run action (changing a GitHub repository setting — a repo-admin action only you can do; no agent has, or should have, the access to flip branch-protection rules).
 **Deadline:** Non-blocking. Nothing is broken today. This is the last "make it official" step of a feature the team has been building all sprint; do it whenever convenient.
 
