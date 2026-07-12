@@ -1,0 +1,159 @@
+name: T-104 spike — litellm-staging persistent network alias feasibility (read-only)
+
+# ADR-0008 build-task #1 / §6.1 finding-2: before touching litellm-PROD, prove
+# on the free litellm-STAGING canary whether this Coolify instance can give an
+# application a network alias / fixed internal hostname that survives a
+# REDEPLOY (not just a restart) — the one load-bearing fact ADR-0008 could not
+# verify statically (PM review finding-1: prior art `fix-litellm-network.yml`
+# guessed the bare UUID prefix would resolve and wrapped it in a 5-candidate
+# probe specifically because that wasn't confirmed; every subsequent PROD
+# incident re-pinned to the full suffixed name, never a bare alias).
+#
+# This workflow makes NO mutations. It only reads:
+#   1. litellm-staging's current container name/suffix (SSH docker ps) —
+#      baseline for the later redeploy-rotation check.
+#   2. That container's actual Docker network aliases on the shared "coolify"
+#      network (SSH docker inspect) — does a stable alias already exist?
+#   3. `docker network inspect coolify` — full alias map for the network.
+#   4. Full, UNFILTERED JSON for the litellm-staging app from the Coolify API
+#      (GET /applications/<uuid>) — searches for any alias/network/label/
+#      compose-customization field this instance actually exposes, rather
+#      than guessing a field name (connect_to_docker_network and
+#      docker_network are the only ones any existing workflow has ever
+#      exercised — this dumps everything else too).
+#   5. Full JSON for ops-hub-app (staging) — same reason, and to confirm
+#      shared-network membership (§6.1 finding-7 pre-check) before assuming
+#      alias resolution "just works".
+#
+# Shared-network pre-check (finding-7) + explicit rollback note (finding-6):
+# this run changes nothing, so there is nothing to roll back. The rollback for
+# the LATER (mutating) staging-apply step is documented in that workflow, not
+# here.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_STAGING_UUID: "h12xz8887fxvbvjts2hac8if"
+
+jobs:
+  spike:
+    name: Read-only feasibility spike (no mutation)
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Find ops-hub-app (staging) UUID + shared-network pre-check (finding-7)
+        id: app
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/apps.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications")
+          echo "GET /applications -> HTTP $HTTP"
+          UUID=$(jq -r '.[] | select(.name == "ops-hub-app" and (.fqdn // "" | contains("staging"))) | .uuid' /tmp/apps.json 2>/dev/null | head -1)
+          if [ -z "$UUID" ] || [ "$UUID" = "null" ]; then
+            # Fall back to the known-stable pinned UUID used by update-litellm-suffix.yml
+            UUID="ajqplom2mghf5a8h6vf1q6xg"
+            echo "Name-match lookup inconclusive — falling back to known pinned staging UUID $UUID"
+          fi
+          echo "ops-hub-app (staging) UUID: $UUID"
+          echo "uuid=$UUID" >> "$GITHUB_OUTPUT"
+
+      - name: Current litellm-staging container name (SSH, read-only)
+        id: before
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          NAME=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_STAGING_UUID} --format '{{.Names}}'" | head -1)
+          echo "litellm-staging container BEFORE: $NAME"
+          echo "container_name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Docker network aliases on the shared 'coolify' network (SSH, read-only)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          CONTAINER="${{ steps.before.outputs.container_name }}"
+          echo "=== docker inspect $CONTAINER -- NetworkSettings.Networks (all networks + aliases) ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker inspect '$CONTAINER' --format '{{json .NetworkSettings.Networks}}'" \
+            | jq . 2>/dev/null || echo "(inspect failed or jq not available on runner for this step)"
+
+          echo ""
+          echo "=== docker network inspect coolify -- full alias map (does litellm-staging already have a non-suffixed alias?) ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker network inspect coolify --format '{{json .Containers}}'" \
+            | jq 'to_entries[] | {container: .value.Name, ipv4: .value.IPv4Address}' 2>/dev/null \
+            || echo "(network inspect failed)"
+
+      - name: Coolify controller version (SSH, read-only best-effort)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=coolify --format '{{.Image}}' | head -3" \
+            || echo "(could not read coolify controller image tag)"
+
+      - name: Full UNFILTERED app JSON — litellm-staging (search for alias/network/compose fields)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/litellm_full.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_STAGING_UUID")
+          echo "GET /applications/$LITELLM_STAGING_UUID -> HTTP $HTTP"
+          echo "=== Full field list (keys only) ==="
+          jq -r 'keys[]' /tmp/litellm_full.json 2>/dev/null | sort
+          echo ""
+          echo "=== Fields whose name mentions network / alias / label / compose / docker ==="
+          jq -r 'keys[] | select(test("network|alias|label|compose|docker|host";"i"))' /tmp/litellm_full.json 2>/dev/null
+          echo ""
+          echo "=== Values of those fields ==="
+          jq 'with_entries(select(.key | test("network|alias|label|compose|docker|host";"i")))' /tmp/litellm_full.json 2>/dev/null
+
+      - name: Full UNFILTERED app JSON — ops-hub-app staging (confirm shared-network membership, finding-7)
+        run: |
+          UUID="${{ steps.app.outputs.uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/opshub_full.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$UUID")
+          echo "GET /applications/$UUID -> HTTP $HTTP"
+          jq '{name, fqdn, connect_to_docker_network, docker_network, additional_networks_count}' /tmp/opshub_full.json 2>/dev/null
+          echo ""
+          echo "=== Fields whose name mentions network / alias / label / compose / docker ==="
+          jq 'with_entries(select(.key | test("network|alias|label|compose|docker|host";"i")))' /tmp/opshub_full.json 2>/dev/null
+
+      - name: Existing debug connectivity probe (current 5-candidate state, before any change)
+        run: |
+          curl -s --max-time 40 "https://ops-hub-staging.inatechshell.ca/debug/litellm-connectivity" | jq . 2>/dev/null \
+            || echo "(probe endpoint not reachable or not present on this deploy)"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================="
+          echo " T-104 SPIKE — read-only, no mutation performed"
+          echo "======================================================="
+          echo " litellm-staging container (before): ${{ steps.before.outputs.container_name }}"
+          echo " Next: inspect this run's logs for (a) any existing stable"
+          echo " alias, (b) which Coolify API fields exist for aliasing,"
+          echo " (c) shared-network confirmation, before designing the"
+          echo " apply step."
+          echo "======================================================="
