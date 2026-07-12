@@ -3762,3 +3762,92 @@ CAVEATS / RESIDUALS (recorded for eval honesty; none re-open T-96):
     the DB accepts it — no "offered then rejected at save" latent bug, no migration
     needed.
 ```
+
+### 2026-07-12 — T-94: eval gate ready to be a required check — nightly drift + wedge fix + first real graded green (Tech Lead)
+
+```
+2026-07-12 [Tech Lead] T-94 build tail DONE (PR #394, merged 0791c11); only the
+  founder branch-protection click remains (FQ-74). This closes the last team-side
+  step of the ADR-0007 real-eval-gate build. → ADR-0007 §6 step 6 + Tech Lead
+  Review Condition C4.
+
+Context: FQ-70 resolved (both litellm-staging billing + litellm-prod key), so
+  fallback-model is healthy and the gate can finally run its INTENDED grader!=target
+  config for real — not the judge==target=triage-model placeholder used during the
+  outage. T-89–T-93 already delivered/proven; T-94 is the build tail.
+
+Three coupled deliverables:
+
+1. NIGHTLY DRIFT `schedule:` (ADR §6 step 6). Added `schedule: '17 8 * * *'` (08:17
+   UTC daily, off-peak, non-top-of-hour) to eval-gate-live.yml — a full-suite run
+   against main independent of any PR, to catch an alias remap / model drift no code
+   diff would surface. Non-pull_request events force the internal path gate to run
+   the full suite; a real regression fails the scheduled run (native failure email).
+
+2. C4 WEDGE FIX — the load-bearing architecture call, and BOTH wedge sources, not
+   just fork. The prior T-93 handoff (2026-07-10) named two: fork PRs AND
+   non-path-matching PRs. The dominant one is the latter: a path-filtered
+   `pull_request` TRIGGER creates NO check run at all on a non-matching PR, so
+   registering `live-eval-gate` as required would wedge every docs/dashboard/infra
+   PR (the MAJORITY) forever at "Expected — Waiting for status to be reported." This
+   is confirmed current GitHub behaviour (claude-code-guide, cited GitHub docs +
+   community #44490): a workflow skipped by a path filter leaves a required check
+   Pending; a job that RUNS to completion with steps skipped via step-level `if:`
+   reports SUCCESS and satisfies the required check. FIX: moved the ADR §3 path
+   filter OFF the trigger and INTO an internal step-level gate (STEP 0.5) — the job
+   runs on EVERY PR and always reports the `live-eval-gate` context; the metered LLM
+   work stays gated to prompt-surface changes (fail-safe: RUN the gate if the PR diff
+   can't be read, rather than skip a possibly-prompt-touching PR). The §3 cost lever
+   (no LLM spend on unrelated PRs) is fully preserved — only cheap CI-runner seconds
+   are added on non-prompt PRs. Deliberate deviation-with-rationale vs ADR §3's
+   "path-filtered TRIGGER" wording: the intent (LLM spend only on prompt PRs) is
+   kept; the mechanism moved to avoid the wedge the ADR didn't fully account for
+   (C4 flagged it; §6 step 5 left CI shape to the Tech Lead).
+   PROVEN LIVE: PR #394 touched only .github/workflows/ (a non-prompt path) →
+   live-eval-gate neutral green-skipped in ~6s and reported GREEN under the same
+   check context (run 29196665724), posting the explanatory skip comment. That is
+   the exact case that wedged before, and the SAME step-level-skip mechanism that
+   makes the fork path report the same context — so C4 is satisfied by construction
+   (a real external fork can't be opened on a private single-team repo; this is the
+   definitive verification available). Exact required-check string confirmed
+   `live-eval-gate` via gh api commits/<sha>/check-runs.
+   Two real bugs found + fixed in the neutral-skip path while proving it: STEP 0.5
+   and STEP 7 both call `gh` BEFORE checkout (no git remote to infer the repo), so
+   both need `--repo ${{ github.repository }}`; STEP 0.5 also needed an `if ASSIGN`
+   form so GitHub's default `bash -e` doesn't abort on a diff-read failure before the
+   fail-safe branch.
+
+3. grader!=target BASELINE RE-CAPTURE (mandatory per T-92/T-93 before the gate
+   blocks) surfaced + fixed a REAL BUG: capture-eval-baseline.yml globbed
+   `*-results.json`, which scoops T-91's `*-canary-results.json` into the baseline
+   (18 tests). The gate's compare feeds only the 3 product files (12), so the 3
+   must-pass canaries read as [REGRESSION: DROPPED] → a FALSE GATE FAIL against any
+   freshly-captured baseline. The old 2026-07-10 baseline pre-dated canary emission,
+   which is exactly why it never bit and run 29195017036 (against it) passed. Fixed:
+   product-only glob in capture AND in the gate's persist glob (STEP 6), aligned with
+   the compare (STEP 5, explicit 3 product files) — ADR §5.2: canaries are
+   harness-integrity probes, NOT the product pass-rate; their integrity is enforced
+   at run-time by live-run.sh's calibration guards (exit 2/3/4) in BOTH capture and
+   gate, independent of the baseline. Also flipped capture's default judge to
+   fallback-model (grader!=target, §5.3; a default-args capture no longer trips
+   live-run.sh's exit-3).
+   RESULTS: new product-only grader!=target baseline GREEN 12/12 (run 29196767764,
+   sha 0791c11, target=triage-model judge=fallback-model). First real fully-graded
+   gate run against it: GATE PASS (run 29196855171) — judge preflight reachable,
+   3 evals graded live by the DISTINCT judge, baseline 12 vs current 12, zero
+   regressions, and the FIRST genuine graded row persisted to eval_gate_runs
+   (`INSERT 0 1`, status=pass total=12 passed=12 run_type=llm_rubric project_id=NULL
+   — T-93 condition V1: no fabricated row, lands automatically now FQ-70 is fixed).
+
+FQ-74 FILED (founder branch-protection registration — plain language, 8 literal
+  click steps). Tech Lead does NOT self-register even with API access: flipping a
+  branch-protection rule is a repo-admin action deliberately kept above the agents
+  (the task's own ownership line + FOUNDER model). Sequenced correctly: PR #394
+  merged FIRST so `live-eval-gate` has reported on a recent commit (main + PR #394),
+  which is what makes GitHub list it in the branch-protection picker.
+
+NOT done (correctly out of scope): T-95 docs reconciliation (CLAUDE.md "Eval-gated"
+  caveat drop + allowlist PROCESS pointer) waits until the gate is actually enforced
+  (founder click); dropping the caveat before enforcement would re-introduce the
+  exact drift ADR-0007 exists to close.
+```

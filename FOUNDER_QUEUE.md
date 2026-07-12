@@ -4,6 +4,44 @@
 
 ---
 
+## FQ-74 — Turn ON the eval gate as a required check (one GitHub settings toggle)
+
+**Filed:** 2026-07-12
+**Filed by:** Tech Lead (Sprint 9, T-94; ADR-0007 §6 step 6 — the final step of the real eval-gate build)
+**Needs:** Authorization + one founder-run action (changing a GitHub repository setting — a repo-admin action only you can do; no agent has, or should have, the access to flip branch-protection rules).
+**Deadline:** Non-blocking. Nothing is broken today. This is the last "make it official" step of a feature the team has been building all sprint; do it whenever convenient.
+
+**In plain language:** All sprint we've been building the "real" eval gate — an automatic check that, whenever someone changes one of our AI prompts, re-runs those prompts against real test cases and blocks the change if it made the AI behave worse. It is now fully built, and we've watched it work for real: it ran a genuine graded check this morning, passed, and saved its result to the database. The one thing left is to tell GitHub *"this check is mandatory — don't allow a prompt change to merge unless it passes."* That's a single toggle in a settings screen that only a repository administrator (you) can reach.
+
+**Why only you:** flipping a branch-protection rule is an admin-only setting, and deliberately so — it's the rule that governs what's allowed to merge, so it sits above the automated agents by design. We don't give agents that access, on purpose.
+
+**Is it safe to turn on now?** Yes — and this is the part we specifically engineered for. A naive version of this would have accidentally jammed *every other* pull request (docs, dashboard, infra — the majority) at "waiting for a check that never runs," because the gate only actually runs when a prompt file changes. We restructured the gate (merged in PR #394) so it now reports a green result on *every* pull request — doing the full expensive check only when a prompt actually changed, and instantly reporting "nothing to check here, all clear" otherwise. We proved this live: PR #394 itself (which changed no prompt) got a green gate result in ~6 seconds. So turning this on will **not** block unrelated work.
+
+**What's needed (one sitting, ~2 minutes, all in the GitHub website):**
+
+1. Go to the repository on GitHub: **`admin-nutshell/ops-hub-00`**.
+2. Click **Settings** (the tab along the top of the repo page, far right).
+3. In the left sidebar, click **Branches** (under the "Code and automation" section).
+4. You'll see a **Branch protection rule** for **`main`**. Click **Edit** (the pencil icon) next to it.
+5. Find the checkbox **"Require status checks to pass before merging."** It should already be ticked (we use it for our other checks). Leave it ticked.
+6. Just below it there's a **search box** labelled something like *"Search for status checks in the last week for this repository."* Click in it and type: **`live-eval-gate`**
+7. **`live-eval-gate`** should appear in the dropdown. Click it to add it to the list of required checks. (Our existing required checks — *Lint & Type Check*, *Unit Tests*, *Security Scan*, *Eval Gate* — should already be in that list; you're adding `live-eval-gate` alongside them, not replacing anything.)
+8. Scroll to the bottom and click **Save changes**.
+
+That's it. **If `live-eval-gate` does NOT appear when you type it in step 6, stop and tell the team** — it just means GitHub hasn't indexed a recent run of it yet, and we'll trigger one and let you know when to retry. (It *should* appear: the check reported successfully on the `main` branch and on PR #394 today, which is exactly what makes GitHub list it.)
+
+**What this does NOT do:** it does not touch customer data, tickets, deploys, or any other setting. It only adds one more box to the list of automated checks that must be green before a prompt change can merge — exactly like the four checks already there. It costs effectively nothing to run (a fraction of a cent per prompt-changing PR; unrelated PRs cost nothing).
+
+**Options:**
+- **(A)** Do the 8 steps above (recommended) — the eval gate becomes truly enforced, closing the long-standing gap where CLAUDE.md *said* changes were "eval-gated" but nothing actually enforced it.
+- **(B)** Do nothing for now — the gate still runs automatically on every prompt PR and still posts its pass/fail result for humans to see; it just isn't *mandatory*, so in theory someone could merge a prompt change over a red gate. (It's already delivering most of its value either way.)
+
+**Recommendation:** (A) — this is the capstone of the whole Sprint 9 eval-gate build (T-89 through T-93, all complete and proven). The gate has already run a real graded check and passed (run [29196855171](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29196855171), 12/12 tests, result saved to the database), the wedge risk that would have jammed other PRs is fixed and proven, and turning it on is a genuinely 2-minute, low-risk toggle.
+
+**Notify:** Tech Lead / PM / Evals Lead once done — the team will open a throwaway prompt-touching test PR to confirm the gate now shows as **Required** and correctly blocks a merge until it's green, then close T-94 and reconcile the docs (T-95).
+
+---
+
 ## ✅ FQ-73 — RESOLVED: password set + `EVAL_GATE_DB_URL` GitHub secret added
 
 **Filed:** 2026-07-10 | **Resolved:** 2026-07-11
