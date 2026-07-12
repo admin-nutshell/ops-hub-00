@@ -40,10 +40,11 @@
 
 ---
 
-## FQ-75 — T-98 synthetic E2E monitor: apply the `e2e_monitor` DB role migration + set its password; mint a dedicated Inngest event key
+## ✅ FQ-75 — RESOLVED: `e2e_monitor` DB role applied + password set (`E2E_MONITOR_DB_URL`); dedicated Inngest event key minted (`E2E_MONITOR_INNGEST_KEY`) — T-98 monitor now LIVE
 
-**Filed:** 2026-07-12 | **Status:** OPEN
+**Filed:** 2026-07-12 | **Resolved:** 2026-07-12
 **Filed by:** Production Manager (Sprint 10, T-98; design origin = Security Lead design review, DECISIONS.md 2026-07-12 "T-98 Security Lead design review... APPROVED WITH CONDITIONS")
+**Status:** RESOLVED — founder applied the `e2e_monitor` role migration + password (`E2E_MONITOR_DB_URL` secret set) and minted the dedicated Inngest event key (`E2E_MONITOR_INNGEST_KEY`). Both founder actions landed. SC9 completed downstream (FreeScout test conversation #34 created; the one-time sentinel-ticket INSERT built as `provision-e2e-sentinel-ticket.yml` and dispatched — sentinel ticket `b91f7b21-bd9f-4a8c-b732-1663dc630d0b`; `E2E_SENTINEL_TICKET_ID` corrected from the conversation number to the ticket UUID after the reset step's `::uuid` cast caught it loudly). **First genuine `mode=live` end-to-end run [29209542703] — full success** (reset → real Inngest dispatch → `state='responded'` → LangFuse trace asserted → green, no incident). T-98 is now live, scheduled 6-hourly, structurally safe (hardcoded-tenant DB role, dedicated Inngest key, permanent sentinel row immune to reopen-duplication). See WORK.md T-98 row + DECISIONS.md 2026-07-12; retro `docs/retros/sprint-10.md` §4.1.
 **Needs:** Authorization + two founder-run actions (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-45/61/62/67/68/71/72/73; and minting a new Inngest event key is a console action only an Inngest account owner can do, same shape as every other "only you can click this" item in this queue).
 **Deadline:** Non-blocking. Nothing in production depends on this today — it unblocks a NEW monitor (T-98) that watches for a *future* silent failure, the same class of bug that caused three real incidents this summer (T-71, FQ-69, FQ-70) before anyone noticed. Nothing breaks if this sits for a while; the sooner it lands, the sooner that new safety net is live.
 
