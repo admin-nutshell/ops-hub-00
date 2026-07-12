@@ -5344,3 +5344,97 @@ note still stands (do NOT label M7). CLAUDE.md "Active sprint" block AND the
 parentheticals with its retro link) — keeping the compass file from going
 stale, the anti-pattern prior retros flagged.
 ```
+
+### 2026-07-12 — T-102 DONE: `monitor-litellm-internal-auth.yml` now requires 3 consecutive fails before paging; failure path proven with 4 real dispatches (Production Manager)
+
+```
+2026-07-12 [Production Manager] T-102 (Sprint 11 Track A, FQ-76 follow-up #2)
+— `monitor-litellm-internal-auth.yml` used to page on a SINGLE failed poll;
+the 07-10/07-11 self-healing hiccups (sprint-10 retro §4.2/§7) churned
+open/resolve noise on every transient blip, which is what made FQ-76's real
+3-day sustained break harder to read against the noise. FIX (PR #422,
+squash-merged `15c02be`): a consecutive-fail threshold, `FAIL_THRESHOLD: "3"`
+(env var in the workflow). Chose N=3 over N=2 — at this monitor's 15-minute
+cron cadence, N=3 pages a sustained break at ~T+30min (fail at T+0/T+15/T+30),
+inside this task's ~30-45min SLA; N=2 (T+15) would undershoot it, and N=3
+gives one extra poll of insulation against exactly the kind of single-poll
+noise that prompted this task.
+
+MECHANISM: deliberately no new secret, repo variable, or state file — a
+read-only `gh run list` run-history lookback (new "Determine consecutive-fail
+streak" step), reusing the job's existing `actions: write` permission +
+`GH_TOKEN`. Scoped two ways to prevent misfires: (1) same `github.event_name`
+as the current run, so a manual `mode=simulate-failure` verification dispatch
+can never count towards, or be counted by, the real schedule-driven prod
+streak, and vice versa; (2) `createdAt` within the last 2 hours, so old/
+unrelated dispatch runs (e.g. T-97's original 07-10 verification runs) never
+bleed into "consecutive" math that's only meaningful over a short recent
+window. The job's own exit code still reflects the true probe result on
+every run (sub-threshold fails still show as a failed Action run, preserving
+the existing GitHub failed-run-email backstop) — only the incident-OPEN call
+is gated on the threshold. Touches no credential/secret — confirmed before
+starting, so the Sprint 9 §5.1 Security Lead pre-review gate correctly does
+not apply.
+
+HARD EXIT GATE (Sprint 10 §5.1 NEW norm — proven on the FAILURE path via
+real dispatches, not YAML review, mirroring exactly how T-98's BC1 fix was
+proven): 4 real workflow_dispatch runs on branch
+`t102-litellm-monitor-fail-threshold`, via `--ref` before merge, each awaited
+to completion (`gh run watch --exit-status`) before the next was fired, so
+each run's own conclusion was settled before the next run's lookback queried
+it:
+  1. Run A (`mode=simulate-failure`) — run 29210699251, conclusion=failure
+     (probe forced to a guaranteed-404 path, as designed). Streak step found
+     0 prior same-event completed runs in the 2h window -> threshold_met=false
+     -> "Sub-threshold: only 1/3" -> NO incident opened. Confirmed by
+     positive evidence, not absence-of-mention: `gh run list --workflow
+     status-incident.yml` around this timestamp shows no dispatch.
+  2. Run B (`mode=simulate-failure`) — run 29210726416, conclusion=failure.
+     Streak step found Run A as 1 prior failure -> threshold_met=false ->
+     "Sub-threshold: only 2/3" -> NO incident opened (same status-incident.yml
+     run-list check, clean). PROVES (a): N-1=2 consecutive fails do not page.
+  3. Run C (`mode=simulate-failure`) — run 29210741763, conclusion=failure.
+     Streak step found Runs A+B as 2 prior failures -> threshold_met=true ->
+     "Streak confirmed: this is consecutive failure #3" -> incident OPENED:
+     status-incident.yml run 29210745813 -> status-content commit `77b21c7`
+     (status/content/2026-07-12-litellm-internal-auth-probe-failing-on-ops-
+     hub-pro.md, resolved: false). PROVES (b): the Nth (3rd) consecutive
+     fail DOES open a real incident.
+  4. Confirmed real prod healthy first (`curl
+     https://ops-hub-prod.inatechshell.ca/health/litellm-internal` -> 200)
+     before firing the recovery run — avoiding the failure mode where a
+     workflow_dispatch recovery attempt during a genuine live break would
+     have opened a SECOND incident instead of resolving the first (the
+     status-incident.yml resolve handler resolves by most-recent-open file,
+     not by title match, so ordering here matters).
+  5. Run D (`mode=live`) — run 29210773889, conclusion=success (real prod
+     probe, genuinely healthy). "On success -> resolve" step fired ->
+     status-content commit `6077e4e` flips the SAME file to resolved: true,
+     resolvedWhen: 2026-07-12T22:03:10Z. PROVES (c): a subsequent recovery
+     auto-resolves it.
+  6. (d) No spurious side-effects: scanned the FULL status-content branch
+     after Run D for any file still `resolved: false` -- zero found, nothing
+     left open.
+
+CI: PR #422 — Eval Gate, Lint & Type Check, Security Scan, Unit Tests,
+CodeRabbit, and `live-eval-gate` all green. `live-eval-gate` neutral-skipped
+in ~6s as expected (this PR touches only
+`.github/workflows/monitor-litellm-internal-auth.yml` — no prompt surface).
+Squash-merged to main, branch deleted.
+
+NOT DONE / FLAGGED, NOT DECIDED (per the task's explicit instruction not to
+expand scope silently): T-98's `monitor-e2e-pipeline.yml` runs 6-hourly, not
+every 15 minutes. Mechanically copying this same 2-3-consecutive-fail
+threshold there would push detection to 12-18+ hours, working directly
+against the reason T-98 exists (catch a broken downstream pipeline fast).
+Left untouched; noted in the PR body and WORK.md's T-102 row. This is a
+separate decision for a future task, owner TBD.
+
+KNOWN LIMITATION (noted in the workflow's own header comment, not fixed —
+over-engineering for this task's scope): the streak-counting signal is "did
+this run's conclusion come back failure", which conflates "the probe itself
+failed" with "the probe succeeded but the open/resolve dispatch step failed
+for an unrelated infra reason" (e.g. a `gh workflow run status-incident.yml`
+transient error). Considered rare; flagged so it isn't a silent trap for a
+future reader, not worth a dedicated fix here.
+```
