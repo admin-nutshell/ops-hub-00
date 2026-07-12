@@ -4,10 +4,11 @@
 
 ---
 
-## 🔲 FQ-73 — One-sitting action: turn on the eval gate's database saving (password + one GitHub secret)
+## ✅ FQ-73 — RESOLVED: password set + `EVAL_GATE_DB_URL` GitHub secret added
 
-**Filed:** 2026-07-10 | **Status:** OPEN
+**Filed:** 2026-07-10 | **Resolved:** 2026-07-11
 **Filed by:** Production Manager (Sprint 9, T-93 last mile; mechanism ruled on by Security Lead)
+**Status:** RESOLVED — founder ran the password-provisioning script via Supabase SQL Editor and added the resulting value as the `EVAL_GATE_DB_URL` GitHub Actions secret. Team now runs `verify-eval-gate-ci-writer-role.yml` to confirm the credential is scoped exactly as designed before relying on it.
 **Needs:** Authorization + a founder-run action (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-45/61/62/67/68/71/72).
 **Deadline:** Non-blocking. The eval gate itself already works today without this — it still catches a regression and blocks a bad pull request either way. This only turns on saving a *history* of each run to the database (so the dashboard/team can look back at past runs later).
 
