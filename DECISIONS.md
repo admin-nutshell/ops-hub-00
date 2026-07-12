@@ -5239,4 +5239,20 @@ calling it proof — a same-conclusion, wrong-stage pass can hide a defect in
 the test harness itself, exactly the class of mistake this project's own
 T-98/PR#407→#408 "correct overstated verification claim" precedent already
 warned about.
+
+RESIDUAL NAMED, NOT VERIFIED (untestable pre-provisioning, watch item for
+whoever runs the first live reset): PR #415 changed the reset step's
+positive case from "pass on any non-empty output" to "pass ONLY if a line is
+exactly `UPDATE 1`." Every run this session drove reset to FAIL (fake UUID)
+or SKIP (dormant) — a real, healthy 1-row reset has never actually executed
+against this exact psql invocation. Indirect evidence it's correct:
+`verify-e2e-monitor-role.yml` check (c), same role/DB/psql shape, logged a
+real `UPDATE 1`-adjacent tag per the Security Lead's sign-off log excerpt
+above; and this fails LOUD (opens an incident) rather than silently, the
+opposite failure direction of the FQ-69 class T-98 exists to catch. Still:
+**confirm the first provisioned reset actually logs `UPDATE 1` and proceeds**
+— if the tag format ever differs, `grep -qx 'UPDATE 1'` will false-FAIL
+every healthy run. Fold this check into SC9/FQ-75's first-live-run
+observation (WORK.md's existing "first real scheduled run is the first
+genuine end-to-end proof" step), not a separate task.
 ```
