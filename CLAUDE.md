@@ -59,10 +59,11 @@ If you encounter a security concern, stop work and post to `FOUNDER_QUEUE.md` im
 
 ## Active sprint
 
-**Sprint 9 — Real LLM-Rubric Eval Gate (build) + Monitoring Hardening**
-Window: July 23 – August 6, 2026
-Goal: Build the "real" LLM-rubric eval gate designed in ADR-0007 (Accepted) — the live, calibration-guarded, path-filtered `llm-rubric` gate that finally makes the "eval-gated >95%" constraint true instead of schema-validation-only, using a scoped budget-capped LiteLLM **virtual** key (never the master key). Anchor = the medium build across the shared live-run runner, calibration guards, per-test baseline store, and CI wiring (T-89–T-95, folding in Tech Lead conditions C1–C4). In parallel: close the FQ-69 monitoring blind spot with a monitor that exercises the app's real internal LiteLLM auth path (T-97), and cash in the now-unblocked KB Learn allowlist unpin (T-96). No milestone targeted — see WORK.md's "Milestone numbering note."
+**Sprint 10 — End-to-End Pipeline Monitoring + Eval Coverage Depth**
+Window: August 6–20, 2026 (nominal)
+Goal: Cash in Sprint 9's two loudest forward-threads. **Anchor (T-98):** build the synthetic-ticket **downstream** E2E monitor flagged-but-deferred since Sprint 6 — inject a synthetic ticket (dedicated test tenant, self-cleaning, never the real support mailbox) and assert the full downstream chain (Inngest → triage → respond → Supabase `state='responded'` → LangFuse trace); T-97 covered the internal-auth *hop*, this covers the downstream stages. **Parallel (T-99/T-100):** deepen eval coverage now the live gate exists — grow each product eval past ADR-0007 §5.4's small-N caveat, and vet additional `triage`/`respond` aliases through the gate the way T-96 did for `kb_learn`. Any credential/eval-key re-scope Track B needs is gated by a fresh Security Lead review first (Sprint 9 §5.1 norm). No milestone targeted — see WORK.md's "Milestone numbering note."
 
+*(Sprint 9 — Real LLM-Rubric Eval Gate (build) + Monitoring Hardening — COMPLETE 2026-07-12. No milestone (capability-building). The ADR-0007 real eval gate is BUILT and LIVE: `live-eval-gate` is a required, calibration-guarded, baseline-relative merge-blocking check (T-89–T-95) — CLAUDE.md's "Eval-gated" constraint is now literally true. T-96 widened `kb_learn`'s allowlist; T-97 closed the FQ-69 internal-auth blind spot. FQ-70 prod-fallback incident found + fixed mid-sprint. Retro: `docs/retros/sprint-9.md`.)*
 *(Sprint 8 — Drift Reconciliation + Eval Coverage — COMPLETE 2026-07-09. No milestone (capability/hardening). T-83 closed the `pg_policy` drift class proactively; FQ-69 (70% of prod tickets stuck 3.6 days on a rejected master key) found mid-sprint and fully resolved. Retro: `docs/retros/sprint-8.md`.)*
 *(Sprint 7 — Ops Dashboard Settings / Write Surface — COMPLETE 2026-07-09. No milestone (capability-building). Retro: `docs/retros/sprint-7.md`.)*
 *(Sprint 6 — Ops Dashboard MVP + Reliability Debt Closure — COMPLETE 2026-07-08. No milestone (capability-building). Retro: `docs/retros/sprint-6.md`.)*
@@ -72,7 +73,7 @@ Goal: Build the "real" LLM-rubric eval gate designed in ADR-0007 (Accepted) — 
 **Recent decisions:** `DECISIONS.md`
 **Founder queue:** `FOUNDER_QUEUE.md`
 
-Critical path: T-89 (shared live-run runner) → T-91 (calibration guards) + T-92 (per-test baseline store + green baseline) → T-93 (CI wiring — sibling workflow) → T-94 (register required check + nightly, founder/admin, build tail) → T-95 (docs reconciliation once live). Hard build-ordering edge (Tech Lead C1): T-90's scoped LiteLLM **virtual** key (Production Manager + Security Lead) gates T-93's auto `pull_request` trigger — the live run stays `workflow_dispatch` and the master key never enters the auto-triggered job until `LITELLM_EVAL_KEY` exists. T-96 (KB Learn unpin) rides the gate once live; T-97 (internal-auth monitor) runs independently.
+Critical path: T-98 (synthetic-ticket downstream E2E monitor — the sprint anchor; Production Manager builds the scheduled workflow, QA designs the end-to-end assertion) runs independently of Track B. T-99 (grow eval N past ADR §5.4's small-N caveat) and T-100 (vet additional `triage`/`respond` aliases through the live gate) are parallel Evals-Lead coverage work riding the now-live gate (ADR §8); T-100 needs a Production-Manager eval-key re-scope + fresh Security Lead review only if a candidate alias is outside `LITELLM_EVAL_KEY`'s current scope (the T-96 wall). Deliberately small — anchor + one parallel eval track — holding the overcommit discipline of Sprints 6–9.
 
 ---
 
