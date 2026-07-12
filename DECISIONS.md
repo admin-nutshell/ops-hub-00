@@ -3162,3 +3162,112 @@ STATE: code fully wired and degrades gracefully with EVAL_GATE_DB_URL absent
   Lead sign-off on that evidence (T-90-style), then trigger eval-gate-live.yml
   and confirm a real row via the ops_hub_app read path.
 ```
+
+### 2026-07-12 — T-93 `eval_gate_ci_writer` / `EVAL_GATE_DB_URL` provisioning verification: Security Lead SIGN-OFF — credential + persist path APPROVED (one named operational condition)
+
+```
+2026-07-12 [Security Lead] T-93 closing verification, post-FQ-73 (founder set the
+role password + EVAL_GATE_DB_URL repo secret, 2026-07-12T00:31Z). This is the
+T-90-style readback my own T-93 credential design review (2026-07-10) and the
+Option-B password ruling (R3) required before eval-gate-live.yml's persist step
+is trusted. Evidence reviewed from actual run logs, not workflow existence.
+
+VERDICT: SIGNED OFF. The provisioned credential can do exactly one thing —
+INSERT a platform-scoped llm_rubric row into eval_gate_runs — and provably
+nothing else. The production persist path (persist-eval-run.sh) is proven
+live end-to-end with the real credential, including the case_results ::jsonb
+round-trip. W1–W4 re-verified on the merged eval-gate-live.yml. One bug was
+found and fixed along the way (below) — the verification process caught it
+BEFORE the first production write, which is the process working as designed.
+
+EVIDENCE — three verify dispatches + one live-gate dispatch, all on main:
+
+1. Run 29173981113 (first dispatch, FAILED — for the right reason):
+   (a) SELECT tickets -> "ERROR: permission denied for table tickets" — the
+       permission-denied class, not a connection error. PASS.
+   (b) SELECT eval_gate_runs -> permission denied (role has NO SELECT). PASS.
+   (c) UPDATE + DELETE eval_gate_runs -> both permission denied. PASS.
+   (d) INSERT with non-null project_id -> "ERROR: new row violates row-level
+       security policy for table eval_gate_runs" — the RLS class, exactly the
+       eval_gate_runs_insert_ci predicate doing its job. PASS.
+   (e) FAILED with "syntax error at or near \":\"" — NOT a role defect: psql -c
+       does not interpolate :'var' psql variables (binding applies only to
+       stdin/-f input); the literal :'marker' reached the server. Harness bug.
+
+2. THE CATCH THAT MATTERS: the identical broken pattern (psql -v ... -c "$SQL")
+   was live in scripts/eval/persist-eval-run.sh — the actual production persist
+   path, which the Production Manager's own T-93 entry flagged as "psql/jq
+   happy-path not locally exercised." Its first real invocation would have
+   failed with the same syntax error (caught by continue-on-error, so no gate
+   impact — but the DB persistence feature would have silently never worked).
+   Fixed in PR #383 (merged, CI green incl. CodeRabbit): SQL now fed via
+   `psql -f -` in persist-eval-run.sh AND the verify workflow's (e)/cleanup.
+   Security surface unchanged — no grant, policy, or secret touched; the W3
+   parameterization property is preserved (and now actually functions).
+
+3. Run 29174279082 (post-fix): ALL FIVE checks green, same correct error
+   classes on (a)–(d); (e) INSERT succeeded; cleanup read back EXACTLY 1
+   marker-tagged row via ops_hub_app and deleted it (read-back proof, not
+   claimed success).
+
+4. Run 29174523109 (final, after PR #384 added check (f)): ALL SIX green.
+   New (f) runs the ACTUAL production script (scripts/eval/persist-eval-run.sh)
+   with a marker-tagged well-formed payload — proving the jq extraction, the
+   -f - variable binding, AND the case_results ::jsonb cast none of (a)–(e)
+   exercised. ops_hub_app read-back: count|case_results_len = 1|1 (the jsonb
+   array persisted intact), then both marker rows deleted (DELETE 2). The DB
+   leg of T-93 is therefore proven END-TO-END with the real credential over
+   the real network path: payload file -> production script -> scoped INSERT
+   -> app-role read-back -> cleanup.
+
+5. Run 29174301548 (eval-gate-live.yml, workflow_dispatch — the real gate):
+   judge preflight hit fallback-model -> HTTP 400 "Your credit balance is too
+   low to access the Anthropic API" — FQ-70, still live — and the gate
+   NEUTRAL-SKIPPED loudly, exactly as the T-93 design specifies (dormant, not
+   red, not silently green-with-a-write). STEP 6 was correctly not reached.
+   Consequence stated plainly: a row from a GENUINE graded run cannot exist
+   until FQ-70 (external Anthropic billing, founder-owned, non-blocking by its
+   own FQ) resolves — the §5.3 grader!=target guard and the T-90 key's
+   two-alias scope leave no legitimate alternative judge, and I REFUSED to
+   fabricate an llm_rubric row to simulate one (the table's own design comment
+   forbids fabricated/backfilled rows; writing fake quality data is precisely
+   the failure mode this credential design exists to prevent).
+
+6. New read-only confirmation tool: .github/workflows/t93-readback-eval-gate-runs.yml
+   (dispatch-only, ops_hub_app via the Coolify OPS_HUB_APP_LOGIN_URL pattern,
+   prints row metadata + case_results shape, never LLM output bodies, never
+   the writer credential). First run 29174543951: connects as ops_hub_app_login,
+   eval_gate_runs contains 0 llm_rubric rows — CORRECT: all verify markers
+   cleaned up, no genuine run yet. The table enters production use empty and
+   honest.
+
+WIRING CONDITIONS RE-VERIFIED on merged main (d1a2ba6):
+  W1 PASS — EVAL_GATE_DB_URL appears ONLY in STEP 6's step-level env.
+  W2 PASS — STEP 6 continue-on-error: true; STEP 9 alone decides the gate.
+  W3 PASS — all payload-derived values via psql -v + :'var' (now genuinely
+    binding); project_id/run_type are hard-coded SQL literals, unreachable
+    from any payload field.
+  W4 PASS — zero references to SUPABASE_STAGING_DB_URL anywhere in
+    eval-gate-live.yml (or persist-eval-run.sh / the verify workflow).
+  W5 unchanged — no LangFuse push exists; still needs its own review if built.
+
+ONE NAMED CONDITION (V1, operational — the security properties are proven now,
+this is completeness): on the FIRST genuine graded run after FQ-70 resolves,
+dispatch t93-readback-eval-gate-runs.yml and confirm >=1 llm_rubric row whose
+case_results is a non-empty array with per-case keys (test_id, eval,
+description, passed, score) and whose workflow_run_url points at that run.
+Zero code change is expected to be needed — the persist path this sign-off
+proves is byte-identical to what that run will execute.
+
+PROCESS NOTE for future workflow authors (recorded so this bug class dies
+here): psql performs :'var'/:var substitution ONLY on stdin/-f input, never on
+a -c command string. Any workflow binding untrusted values through psql
+variables MUST use `... | psql -v x="$X" -f -`. Both prior uses in this repo
+were authored (by different sessions) with -c and would each have failed on
+first contact with a live server.
+
+Scope: this closes the T-93 security track — credential design (2026-07-10),
+password-provisioning ruling (2026-07-10), and this provisioning verification.
+No FOUNDER_QUEUE escalation: nothing here is a business decision; FQ-70 is
+already filed and owns the only open external dependency.
+```
