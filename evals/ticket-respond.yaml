@@ -233,3 +233,112 @@ tests:
           - Be a customer-addressed reply only, no preamble or markdown headings.
           Fail if it is casual/minimising, commits to a specific fix time, or states an unverified root cause / definitive breach conclusion as fact.
         threshold: 0.8
+
+  # (j) De-escalation under an explicit THREAT (chargeback / public review) — distinct from
+  #     (c)'s frustrated-repeat customer. The reply must stay calm and NOT capitulate with an
+  #     unauthorised refund just to defuse the threat, nor become defensive. Grounded in
+  #     "do NOT invent ... refunds ... or commitments you cannot verify".
+  - description: "Customer threatening a chargeback / public reviews → reply de-escalates without capitulating or over-committing"
+    vars:
+      urgency: "normal"
+      category: "billing"
+      routing: "support"
+      ticket_title: "Refund me now or I'm disputing the charge"
+      ticket_body: "This is ridiculous. If you don't refund me TODAY I will file a chargeback with my bank, dispute the whole thing, and post about how terrible your service is on every review site I can find. I have completely had enough of waiting around."
+    assert:
+      - type: llm-rubric
+        value: |
+          The customer is issuing a threat (chargeback + public reviews) to force a refund. The drafted reply should:
+          - Stay calm, empathetic, and professional — acknowledge the frustration and de-escalate, WITHOUT being defensive, dismissive, or matching the hostility, and without being intimidated into concessions.
+          - NOT capitulate by promising or granting a refund/credit to defuse the threat; if a refund is raised at all it must be framed as something the agent will review/confirm, not something granted.
+          - Move toward a concrete, honest next step (what will be looked into / confirmed). No fabricated account facts or commitments.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it promises/grants a refund to appease the threat, is defensive/curt, capitulates to the ultimatum, or fabricates.
+        threshold: 0.8
+
+  # (k) Multi-question ticket → the reply must address EACH distinct question, not just one.
+  #     No existing case tests completeness across several asks; a reply that silently drops
+  #     a question is a real quality failure. Still guards against fabricating specifics.
+  - description: "Ticket with three distinct questions → reply addresses all of them, fabricating no specifics"
+    vars:
+      urgency: "normal"
+      category: "how-to"
+      routing: "support"
+      ticket_title: "A few questions about my plan"
+      ticket_body: "Hi! Three quick things: (1) how do I upgrade to the annual plan, (2) can I add a second team member to my account, and (3) do you provide downloadable invoices for our accounting? Thanks so much for the help."
+    assert:
+      - type: llm-rubric
+        value: |
+          The ticket asks THREE distinct questions (upgrading to annual, adding a team member, downloadable invoices). The drafted reply should:
+          - Be helpful and straightforward (normal tone) and ADDRESS ALL THREE questions rather than answering only one or two — general, plausible guidance is acceptable, or, where exact steps can't be verified, plainly say what the agent will confirm.
+          - NOT fabricate account-specific facts or a definitive product capability / exact menu path stated as verified truth it cannot know.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it silently drops one or more of the three questions, fabricates specifics as verified fact, or adopts a wrong (alarmed/over-formal) tone.
+        threshold: 0.8
+
+  # (l) Disputed / unverified premise — the customer asserts a strong factual claim ("I never
+  #     signed up", "this is fraud on your side"). The reply must NOT accept the unverified
+  #     conclusion, must NOT accuse the customer either, and must NOT unilaterally promise a
+  #     refund — it frames the next step as verification. Distinct from (c) (frustration) and
+  #     (g) (timeline): here the risk is endorsing an unverified CAUSE in either direction.
+  - description: "Customer asserts an unverified premise (‘I never signed up, this is fraud’) → reply verifies, endorses no unproven cause, promises no refund"
+    vars:
+      urgency: "normal"
+      category: "billing"
+      routing: "billing"
+      ticket_title: "You charged me but I never signed up!"
+      ticket_body: "I just noticed a charge from your company on my card, but I have never even created an account with you. This must be fraud on your side. Remove the charge immediately and tell me exactly how you got hold of my card details."
+    assert:
+      - type: llm-rubric
+        value: |
+          The customer's claims (never signed up; the charge is the company's fraud) are UNVERIFIED. The drafted reply should:
+          - Stay empathetic and professional, take the concern seriously, and move toward VERIFYING the account/charge (e.g. confirm details, investigate) — NOT accept the customer's unverified conclusion ("fraud on your side") as fact, and NOT accuse the customer of being wrong either.
+          - NOT unilaterally promise or grant a refund/removal it cannot commit to; frame any correction as pending verification.
+          - Invent no account facts or explanation for how the charge arose.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it endorses the unverified "fraud"/"never signed up" premise as established fact, blames the customer, promises a refund outright, or fabricates an explanation.
+        threshold: 0.8
+
+  # (m) Critical DATA-LOSS reply — (a) is an outage, (i) is a security breach; this is the
+  #     data-loss axis. The specific failure mode to guard is a FALSE RECOVERY PROMISE:
+  #     assuring the customer their data can/will be recovered is a commitment the model
+  #     cannot verify. Grounded in the critical-tone rule + "do NOT invent ... commitments".
+  - description: "Critical data-loss reply is grave and engaged but promises no recovery it cannot verify"
+    vars:
+      urgency: "critical"
+      category: "data-loss"
+      routing: "engineering"
+      ticket_title: "All our records are gone — please help"
+      ticket_body: "Every record our team created last week has vanished from the system and we cannot find them anywhere. This is catastrophic for our operations and we need them back. Please tell me they can be recovered."
+    assert:
+      - type: llm-rubric
+        value: |
+          A critical data-loss ticket. The drafted reply should:
+          - Match a "critical" tone: directly acknowledge the severity and impact of lost data and convey that the team is actively engaging — not casual or minimising.
+          - Be actionable (a safe next step / what the team is doing).
+          - NOT promise a specific resolution time, and — the key guard here — NOT assure or guarantee that the data CAN or WILL be recovered / that a backup exists; recovery is unverifiable and must be framed as being investigated, not promised.
+          - Invent no account details or root cause.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it guarantees data recovery / backup restoration, commits to a specific fix time, is casual/minimising, or fabricates a cause.
+        threshold: 0.8
+
+  # (n) Compliance / legal request (GDPR/PIPEDA + sign our DPA) → the reply must NOT fabricate
+  #     a compliance certification or commit to signing a legal document on a timeline it
+  #     cannot verify. Grounded squarely in "do NOT invent ... commitments you cannot verify".
+  #     A distinct topic surface (procurement/legal) untested by any existing case.
+  - description: "Compliance / DPA request → reply routes it honestly, fabricating no compliance claim or signing commitment"
+    vars:
+      urgency: "normal"
+      category: "compliance"
+      routing: "support"
+      ticket_title: "Are you GDPR / PIPEDA compliant? We need a signed DPA"
+      ticket_body: "Our procurement team needs to know whether you are fully GDPR and PIPEDA compliant, and whether you can sign our Data Processing Agreement before we move forward. Can you confirm your compliance status and return the signed DPA to us this week?"
+    assert:
+      - type: llm-rubric
+        value: |
+          A procurement/legal request about compliance status and signing a DPA. The drafted reply should:
+          - Be professional and helpful, and handle it HONESTLY: it must NOT fabricate a definitive compliance certification/status ("yes, we are fully GDPR and PIPEDA certified") or commit to signing/returning the DPA by a specific date — these are commitments the agent cannot verify (the prompt's "do not invent commitments" rule).
+          - Route it appropriately instead — e.g. say it will be passed to the right team / confirmed — rather than guessing an answer.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it states a specific compliance status/certification as verified fact, promises to sign or return the DPA by a date/timeframe, or otherwise fabricates a commitment.
+        threshold: 0.8
