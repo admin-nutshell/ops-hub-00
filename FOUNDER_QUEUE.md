@@ -4,6 +4,41 @@
 
 ---
 
+## 🟠 FQ-76 — OPEN: the internal-auth monitor (T-97) fired for real — it caught a broken internal link to the AI service, BEFORE any customer was affected. One pre-built fix needs your go-ahead.
+
+**Filed:** 2026-07-12
+**Filed by:** Tech Lead (URGENT-class diagnosis — chasing down the T-97 monitor's "third-day trigger" that T-98/PR #407 correctly flagged but left un-investigated; **diagnosis only, nothing mutated**).
+**Needs:** Authorization to run one pre-built fix workflow that changes a production setting (agents don't self-authorize prod mutations — same discipline as FQ-69's fix).
+**Deadline:** Time-sensitive but **not an active emergency**. Nothing is broken for a customer *right now* (verified below). But the protective margin lasts only until the **next real support email arrives** — at which point this becomes a live FQ-69-style stuck-ticket incident. Recommend authorizing **today**.
+
+**The good news first — this is the system working as designed.** In the FQ-69 incident, a broken internal link between our app and the AI service went undetected for **3.6 days** while 70% of production tickets sat un-triaged, because our old health check literally couldn't see that failure. We built a monitor (T-97) specifically to catch exactly that. **It just did its job — it caught the same class of break, and it caught it *before* a single customer ticket was affected.** That is precisely the outcome T-97 was built for; the value now is acting on it promptly.
+
+**In plain language — what happened:** This afternoon you fixed FQ-70 (you swapped the AI service's Anthropic key and redeployed it — the right fix; the AI service itself is healthy). But when that service restarts, it comes back at a **new internal address**, and our app was still pointed at the **old** one. So right now, over the app's private internal path, our app can't reach the AI service. (The AI service's *public* address still works fine — I confirmed both live: internal path **down**, external path **up**. This is an addressing mismatch, not a broken key and not a broken AI service.)
+
+**Is a customer affected right now? No — verified, not assumed.** I checked the live production ticket table (read-only): **20 tickets resolved, 1 responded, ZERO stuck waiting.** That is the *opposite* of FQ-69 (which had 14 tickets jammed un-handled). The break simply hasn't bitten yet, because no new customer email has arrived since the redeploy. **The next email that arrives will get stuck** — exactly like FQ-69 — until the addresses are re-aligned.
+
+**We now know the "how," which FQ-69 never pinned down.** In FQ-69 we couldn't explain how the addresses drifted. This time it's clear: your FQ-70 redeploy of the AI service (re-verified 2:11pm) changed its internal address, and the monitor went red one minute later (2:12pm). Nothing is silently or mysteriously rotating our settings — this was a direct, understood side-effect of an action you took on purpose. (Worth knowing: the two earlier red blips this week, 07-10 and 07-11, were *different* — brief and self-healing. Today's is a real sustained break that will **not** self-heal on its own. That distinction is why this one, unlike those, needs a fix.)
+
+**What's needed from you — authorize one pre-built, guarded fix:**
+- The workflow is `fix-ops-hub-prod-litellm-url.yml` — the exact same tool that fixed the equivalent problem in FQ-69. It deletes the stale address setting(s), sets the one correct value, restarts the app, and re-checks health.
+- It requires someone to **type the current AI-service address as a safety confirmation** (so a stale value can't be silently reused). As of my check that value is **`hlik1d96uvkkjzpbxa3azhcv-140935289661`** — but **the team must re-confirm it at the moment of running**, because the AI service could redeploy again and change it (that typed confirmation is the whole safety point).
+- Production Manager runs it after a deployability glance; Security Lead eyeballs the masked steps — same handling as FQ-69.
+
+**Options:**
+- **(A)** Authorize the team to run `fix-ops-hub-prod-litellm-url.yml` (re-confirming the current address at dispatch) — **recommended**. Re-aligns the address, restarts the app, closes the window before the next ticket hits it, and clears a cosmetic duplicate-setting footgun in the same run.
+- **(B)** You make the same change by hand in Coolify (delete the stale `LITELLM_URL` row(s) on `ops-hub-prod`, set the one correct value `http://hlik1d96uvkkjzpbxa3azhcv-140935289661:4000`, restart), if you'd rather not authorize the Action.
+- **(C)** Do nothing — **not advised**: the next real customer email will stick un-triaged, turning this pre-impact catch into a live FQ-69-style incident.
+
+**Recommendation:** **(A), today.** The fix is pre-built, guarded, and scoped to exactly this failure; the only thing to insist on is re-confirming the current address at dispatch. The whole point of the T-97 monitor was to buy us the chance to fix this *before* a customer is hit — acting promptly is what cashes that in.
+
+**True "all-clear" signal (stated so we don't repeat FQ-69's blind spot):** after the fix, the real green light is **`/health/litellm-internal` returning 200** (the internal path itself) **and** the T-97 monitor's next scheduled run flipping back to green and auto-resolving its own status-page incident — **not** the generic `/health` check, which is the exact check that stayed green through all 3.6 days of FQ-69.
+
+**Team follow-up (no founder action — logged for visibility):** this is now the **third** instance of "AI-service redeploy changes its internal address, our app's pointer isn't auto-resynced" (T-71, FQ-69's URL sub-issue, and now this). Re-aligning by hand a third time is a band-aid; the durable fix — a stable internal address, or an automatic re-sync tied to AI-service redeploys — is a Tech Lead architecture item I'm opening separately from this authorization. I'll also propose the monitor only page after 2–3 consecutive failed checks (not a single one), so brief self-healing blips (like 07-10/07-11) stop creating noise while sustained breaks like today's still alert immediately.
+
+**Notify:** Tech Lead / Production Manager / Security Lead once authorized — Production Manager re-confirms the live container name, runs the fix, and posts back the `/health/litellm-internal` → 200 + next-monitor-run-green confirmation.
+
+---
+
 ## FQ-75 — T-98 synthetic E2E monitor: apply the `e2e_monitor` DB role migration + set its password; mint a dedicated Inngest event key
 
 **Filed:** 2026-07-12 | **Status:** OPEN

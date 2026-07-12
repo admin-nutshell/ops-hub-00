@@ -4724,3 +4724,109 @@ pending FQ-75 + SC9 exactly as before — this entry corrects the verification
 record's accuracy, it does not change the done/pending split. Deploy record:
 `docs/deploys/2026-07-12-t98-e2e-monitor.md` ("CORRECTED" section).
 ```
+
+### 2026-07-12 — Root-caused the T-97 "third-day trigger" litellm-internal incident: it's the T-71 stale-`LITELLM_URL` class (NOT provider-credential divergence), triggered by FQ-70's redeploy; ZERO customer impact; FQ-76 filed for the founder-gated URL fix (Tech Lead)
+
+```
+2026-07-12 [Tech Lead] URGENT-class, READ-ONLY diagnosis. Chased down the
+litellm-internal monitor incident that T-98/PR #407 correctly flagged
+(WORK.md line 18 "TRIGGER FIRED") but explicitly deferred root-causing (that
+entry, step 4/6: "Not investigated further this session — out of T-98's
+scope"). This closes that open question. Nothing mutated; a fix is founder-
+gated (FQ-76), not self-dispatched (non-negotiable #3, FQ-69 precedent).
+
+CLASSIFICATION: (a) active FQ-69 repeat? NO. (b) monitor false-positive? NO.
+(c) real-but-not-yet-customer-impacting break the monitor correctly caught
+PRE-impact? YES — this one.
+
+EVIDENCE CHAIN (all read-only):
+1. Failure SHAPE distinguishes it from FQ-69 at the handler level. Live probe
+   (curl, 2 independent + the monitor's own runs): /health/litellm-internal ->
+   HTTP 503 `{"status":"degraded","litellm_internal":"unreachable"}`. That is
+   healthLitellmInternal.ts's CATCH block (fetch threw: network/DNS/timeout on
+   the app's internal hop) — NOT the `auth_rejected` (401/403) branch that was
+   FQ-69's exact signature (app's master key rejected: 401 token_not_found).
+   So this is not the master-key class.
+2. AI service itself is UP. /health/litellm (external URL, LiteLLM's own key)
+   -> HTTP 200 `reachable`. litellm-prod is healthy; only the app's INTERNAL
+   Docker-network hop is failing. => addressing problem, not a dead service and
+   not a bad key.
+3. ROOT CAUSE = stale internal container suffix (the T-71 / CLAUDE.md "suffix
+   changes on every LiteLLM redeploy" footgun), proven by the two FQ-69
+   read-only diagnostics:
+   - diagnose-litellm-prod-container.yml (run 29203293641): litellm-prod's
+     CURRENT container = `hlik1d96uvkkjzpbxa3azhcv-140935289661`.
+   - diagnose-ops-hub-prod-litellm-url.yml (run 29203294569): ops-hub-prod's
+     configured LITELLM_URL = `http://hlik1d96uvkkjzpbxa3azhcv-132650269773:4000`.
+   Correct UUID prefix (hlik…, litellm-PROD — not pointed at staging), but the
+   numeric SUFFIX is stale: -132650269773 (the exact value FQ-69's fix set on
+   2026-07-09) vs. the now-running -140935289661. The old container is gone ->
+   getaddrinfo fails -> fetch throws -> "unreachable". Also 2 LITELLM_URL rows
+   (the known Coolify duplicate-row footgun; the displayed value was the stale
+   one — did NOT verify the 2nd row's value, so no claim it's identical; moot,
+   the fix deletes all rows).
+4. The "HOW" — established, which FQ-69 could NOT ("root cause of HOW it got
+   set wrong is not yet established"). Timeline is airtight: monitor last GREEN
+   run 29192918056 @ 12:36:22Z; founder's FQ-70 manual Coolify redeploy of
+   litellm-prod (Anthropic-key swap) re-verified @ 14:11:44Z (run 29195788372);
+   monitor first FAIL run 29195824525 @ 14:12:52Z — ~1 min after the redeploy.
+   The FQ-70 redeploy rotated the suffix and orphaned ops-hub-prod's pointer.
+   Documented founder action, not silent/mysterious drift.
+5. NO CUSTOMER IMPACT — verified against the live tickets table, the load-
+   bearing FQ-69 test (diagnose-stuck-triage-tickets.yml, run 29203228739,
+   ops_hub_app, prod project+tenant GUC-scoped, read-only, no content printed):
+   overall prod state distribution = 20 `resolved` + 1 `responded`, **0 in
+   `new`**. The 11 FQ-69-era sampled ids are all `resolved`/`ticket-resolve`.
+   This is the exact INVERSE of FQ-69's signature (14 in `new`, owner_agent
+   NULL, since_last_update==age). Nothing is stuck. The break hasn't bitten
+   because no new ticket has arrived since ~14:11; the NEXT one will stick
+   (classifyTicket -> resolveLitellmTarget uses this same LITELLM_URL ->
+   throws) until the URL is re-aligned. Latent, pre-impact — the outcome T-97
+   was built to produce (vs. FQ-69's 3.6 undetected days).
+
+RECONCILIATION WITH T-98/PR #407's entry above (steps 4 & 6): PM's call not to
+file an FQ was defensible ON THE INFORMATION THEY HAD (already status-page-
+tracked; self-resolved within ~1hr on 07-10 & 07-11). Two corrections this
+diagnosis makes:
+  - MISCLASSIFICATION: it was filed under the "provider-credential divergence"
+    carry (master-key / Anthropic-key rotation, WORK.md line 18 / Sprint-9-retro
+    trigger). It is NOT that class — it's the LITELLM_URL suffix-rotation class
+    (T-71). Same upstream cause (a litellm-prod redeploy) but a different
+    failure and, crucially, a different self-heal behavior.
+  - The "self-resolving pattern" does NOT hold for the 07-12 instance. 07-10/
+    07-11's blips were transient (a stale URL cannot self-heal without a re-sync
+    — so those were brief network/restart/completion-latency hiccups, genuinely
+    self-clearing). 07-12 is a real stale-URL break: sustained 4+ consecutive
+    failing runs (14:12 -> 17:31+ and still red at diagnosis time), will NOT
+    self-heal. So "already tracked + self-resolves => no FQ" no longer applies;
+    FQ-76 filed.
+
+RECOMMENDATIONS:
+  - REMEDIATE (founder-gated): authorize fix-ops-hub-prod-litellm-url.yml with
+    confirm_container_name RE-CONFIRMED at dispatch (currently
+    hlik1d96uvkkjzpbxa3azhcv-140935289661; it can move again on any litellm-prod
+    redeploy — the typed input is the safety point). True green = 
+    /health/litellm-internal -> 200 AND the T-97 monitor's next run flips green +
+    auto-resolves its incident (NOT the generic /health, FQ-69's blind spot).
+    Note: the fix workflow only polls /health post-restart — insufficient as the
+    all-clear; re-probe /health/litellm-internal explicitly.
+  - DURABLE FIX (Tech Lead architecture item — band-aid ceiling reached at 3
+    instances: T-71, FQ-69-URL, this). Options to weigh in a follow-up ADR/task:
+    (i) a stable internal address for litellm-prod (Coolify service alias / fixed
+    network hostname) so the suffix stops rotating; (ii) a post-redeploy re-sync
+    hook that rewrites ops-hub-prod's LITELLM_URL whenever litellm-prod
+    redeploys; (iii) app-side resolution by service name rather than a pinned
+    container suffix. Provider-neutral, must survive a Project-#2 LiteLLM too.
+  - MONITOR THRESHOLD (secondary, addresses the "cries wolf" / T-98 "noisy third
+    day" observation): monitor-litellm-internal-auth.yml opens/pages on a SINGLE
+    failed poll, so transient blips (07-10/07-11) churn open/resolve and made the
+    "third consecutive day" look like a worsening trend when it was 2 transients
+    + 1 real. Recommend a consecutive-failure threshold (2–3 polls) before
+    opening an incident; a sustained break like today's still pages within ~30–45
+    min while single-poll transients self-clear silently. Cheap workflow-logic
+    change; no new service.
+
+FQ-76 filed (founder-gated remediation, FQ-69 plain-language format). WORK.md
+line-18 carry updated from "TRIGGER FIRED / not investigated" to
+diagnosed+resolved-pending-FQ-76, with the misclassification corrected.
+```
