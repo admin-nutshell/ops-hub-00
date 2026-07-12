@@ -113,10 +113,11 @@ One more thing that's intentional: this new login is created **without a passwor
 
 ---
 
-## FQ-70 — litellm-prod's Anthropic fallback path is broken (customer-impacting risk: no fallback if the primary model fails)
+## 🟡 FQ-70 — PARTIALLY RESOLVED: staging billing fixed; litellm-prod's Anthropic fallback still broken (different cause — an invalid key, not credit)
 
-**Filed:** 2026-07-10 | **Filed by:** Production Manager, T-90 follow-up investigation.
-**Needs:** Information (which of 2 duplicate `ANTHROPIC_API_KEY` rows is/was valid, if either) + Authorization (top up / rotate the Anthropic API key litellm-prod uses).
+**Filed:** 2026-07-10 | **Staging resolved:** 2026-07-12 | **Filed by:** Production Manager, T-90 follow-up investigation.
+**Status:** Founder topped up the Anthropic account's credit. Re-verified live (2026-07-12): litellm-**staging**'s `fallback-model` now returns HTTP 200 — the eval gate ran a real, fully-graded quality check for the first time (run [29195017036](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29195017036), GATE PASS, DB write confirmed). **litellm-prod is still broken** — re-checked same day ([run 29195106605](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29195106605)): still `HTTP 401 invalid x-api-key`, unchanged from the original filing. This is a **different failure than the one the credit top-up just fixed** — prod's stored key itself is rejected by Anthropic (revoked/wrong value), not a billing shortfall, so funding the account does not touch this half.
+**Needs:** Information (which of 2 duplicate `ANTHROPIC_API_KEY` rows on litellm-prod is/was valid, if either) + Authorization (rotate/replace the Anthropic API key litellm-prod uses).
 
 **Context:** T-90 (provisioning the LiteLLM eval virtual key) found litellm-**staging**'s `fallback-model` alias (anthropic/claude-haiku-4-5-20251001, T-46) is Anthropic-credit-exhausted (`HTTP 400`, `"Your credit balance is too low to access the Anthropic API"` — confirmed on 2 independent runs, [29065628215](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29065628215), [29066125110](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29066125110)). `configure-litellm-anthropic-fallback.yml`'s own header says it targets staging only, so I checked whether prod has a separate fallback path and whether it shares the same problem.
 
