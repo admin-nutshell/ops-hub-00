@@ -1,4 +1,8 @@
 # evals/kb-learn.yaml
+# T-94 detection-path proof (2026-07-12): this comment is a deliberate no-op edit to a
+# prompt surface (evals/**), used to prove the live-eval-gate STEP 0.5 grep sets
+# should_run=true and runs the FULL metered gate on a real prompt PR (not a neutral-skip).
+# It changes no eval semantics. Safe to remove; kept as the audit trail for that proof.
 # Why this eval exists: kb-learn (src/inngest/kb-learn.ts → generateKbArticle) is the
 # ONLY one of the three ops-hub agent functions that shipped with ZERO prompt-eval
 # coverage — the exact reason its src/config/model-allowlist.ts entry is pinned to a
