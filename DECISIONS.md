@@ -3951,3 +3951,60 @@ SPRINT 9 TRACK A COMPLETE. T-95 is the last task in the eval-gate track (T-89 sh
   this entire session — is done: the "eval-gated" constraint is enforced by a live,
   calibration-guarded, required merge check, not by process + a schema check alone.
 ```
+
+### 2026-07-12 — Sprint 9 retro authored + Sprint 9 CLOSED + Sprint 10 planned (PM)
+
+```
+2026-07-12 [PM] Sprint 9 retro authored: docs/retros/sprint-9.md (7-section house
+format). Headline: the ADR-0007 real eval-gate build (T-89–T-95) closed the OLDEST
+live-vs-record drift on the books — CLAUDE.md's own "Eval-gated" constraint, which
+asserted a live >95% gate since T-58/T-79 while CI ran schema-validation only.
+`live-eval-gate` is now a live, calibration-guarded, baseline-relative, REQUIRED
+merge-blocking check on main; it ran a real fully-graded grader!=target check (12/12)
+and persisted a genuine row to eval_gate_runs. The constraint is now literally true;
+T-95 made the doc honest again. Retro also captures as real findings: (a) FQ-70 — a
+prod resilience gap (broken fallback key) + a staging judge-billing exhaustion, one
+fault two halves, found by side-effect (T-90 provisioning) not a monitor, and it sat
+on the critical path of BOTH the product AND the sprint's own deliverable (grader!=
+target couldn't run until billing cleared); (b) THREE credential-provisioning cycles
+(T-90 / T-93 writer role / T-96 re-widen), each gated by a fresh Security Lead review
+BEFORE implementation, each catching a distinct real risk (owner-role reuse rejected;
+NIM $0-metering cap gap; unmasked workflow_dispatch input) — framed as a GOOD outcome,
+defense in depth earning its keep; (c) T-96 — an agent correctly REFUSED to force a
+false pass when the scoped-key path was genuinely blocked, recorded the structural
+blocker instead of reaching for the master key. Also logged: recurring subagent
+"response stalled mid-stream" transient failures this session (no work lost; NOT
+root-caused, NOT actionable — a tracked watch item only).
+
+2026-07-12 [PM] Sprint 9 CLOSED. WORK.md header 🟢 ACTIVE → ✅ COMPLETE (2026-07-12),
+matching the Sprint 8 completion pattern. All 9 tasks (T-89–T-97) ✅. Reconciled ONE
+stale marker before stamping: T-92 still read 🟡 "baseline DB row blocked on FQ-71" —
+but FQ-71 is resolved (case_results column live) and the first GENUINE graded row
+landed via T-94's grader!=target re-capture (run 29196855171, INSERT 0 1, 12/12), so
+the blocker cleared downstream; T-92 reconciled to ✅ with a note (no sprint stamped
+COMPLETE over a 🟡, per the b011c6f status-hygiene precedent). No FQ filed — nothing
+this sprint requires a founder business/pricing/SLA/security-incident decision;
+FQ-70–74 all resolved in-sprint.
+
+2026-07-12 [PM] Sprint 10 planned: Aug 6–20, 2026 (nominal) — "End-to-End Pipeline
+Monitoring + Eval Coverage Depth" (capability/hardening). ANCHOR (Track A) T-98:
+finally build the synthetic-ticket DOWNSTREAM E2E monitor flagged-but-deferred since
+Sprint 6 §7 — the Sprint 8 revisit trigger ("once the internal-auth probe lands") has
+fired (T-97 shipped), and the marginal value over T-97 is exactly the downstream chain
+(Inngest → triage → respond → DB state='responded' → LangFuse trace) T-97 doesn't
+touch. Hard design constraints made exit criteria, not afterthoughts: dedicated test
+tenant (non-negotiable #8), self-cleaning, NEVER the real support mailbox (FQ-69
+caution). Owner Production Manager + QA Manager. PARALLEL (Track B, Evals Lead) T-99:
+grow each product eval past ADR-0007 §5.4's small-N caveat; T-100: vet additional
+triage/respond aliases through the now-live gate (the T-96 pattern), with a
+Production-Manager eval-key re-scope + fresh Security Lead review as a HARD prereq IF a
+candidate is outside LITELLM_EVAL_KEY's scope. Overcommit discipline held: anchor +
+ONE parallel eval track only. DEFERRED as flagged carries (scheduled-scoped-named, not
+punted): provider-credential-divergence root-cause (non-blocking, partly mitigated by
+T-97 — revisit on a 3rd instance); T-90 O1–O3 obs; LITELLM_URL dedup; the subagent-
+stall watch item; plus the standing founder-gated carries (T-77 Option A, FQ-63,
+FQ-47 4b, DNC/FQ-43). No milestone (capability-building); Milestone numbering note
+still stands (do not label M7). CLAUDE.md "Active sprint" pointer updated 9→10 (Sprint
+9 moved to the completed parentheticals with its retro link) — the compass file was one
+sprint from going stale, the exact anti-pattern prior retros flagged.
+```
