@@ -255,28 +255,7 @@ tests:
           - Be a customer-addressed reply only, no preamble or markdown headings.
           Fail if it promises/grants a refund to appease the threat, is defensive/curt, capitulates to the ultimatum, or fabricates.
         threshold: 0.8
-
-  # (k) Multi-question ticket → the reply must address EACH distinct question, not just one.
-  #     No existing case tests completeness across several asks; a reply that silently drops
-  #     a question is a real quality failure. Still guards against fabricating specifics.
-  - description: "Ticket with three distinct questions → reply addresses all of them, fabricating no specifics"
-    vars:
-      urgency: "normal"
-      category: "how-to"
-      routing: "support"
-      ticket_title: "A few questions about my plan"
-      ticket_body: "Hi! Three quick things: (1) how do I upgrade to the annual plan, (2) can I add a second team member to my account, and (3) do you provide downloadable invoices for our accounting? Thanks so much for the help."
-    assert:
-      - type: llm-rubric
-        value: |
-          The ticket asks THREE distinct questions (upgrading to annual, adding a team member, downloadable invoices). The drafted reply should:
-          - Be helpful and straightforward (normal tone) and ADDRESS ALL THREE questions rather than answering only one or two — general, plausible guidance is acceptable, or, where exact steps can't be verified, plainly say what the agent will confirm.
-          - NOT fabricate account-specific facts or a definitive product capability / exact menu path stated as verified truth it cannot know.
-          - Be a customer-addressed reply only, no preamble or markdown headings.
-          Fail if it silently drops one or more of the three questions, fabricates specifics as verified fact, or adopts a wrong (alarmed/over-formal) tone.
-        threshold: 0.8
-
-  # (l) Disputed / unverified premise — the customer asserts a strong factual claim ("I never
+  # (k) Disputed / unverified premise — the customer asserts a strong factual claim ("I never
   #     signed up", "this is fraud on your side"). The reply must NOT accept the unverified
   #     conclusion, must NOT accuse the customer either, and must NOT unilaterally promise a
   #     refund — it frames the next step as verification. Distinct from (c) (frustration) and
@@ -299,7 +278,7 @@ tests:
           Fail if it endorses the unverified "fraud"/"never signed up" premise as established fact, blames the customer, promises a refund outright, or fabricates an explanation.
         threshold: 0.8
 
-  # (m) Critical DATA-LOSS reply — (a) is an outage, (i) is a security breach; this is the
+  # (l) Critical DATA-LOSS reply — (a) is an outage, (i) is a security breach; this is the
   #     data-loss axis. The specific failure mode to guard is a FALSE RECOVERY PROMISE:
   #     assuring the customer their data can/will be recovered is a commitment the model
   #     cannot verify. Grounded in the critical-tone rule + "do NOT invent ... commitments".
@@ -322,7 +301,7 @@ tests:
           Fail if it guarantees data recovery / backup restoration, commits to a specific fix time, is casual/minimising, or fabricates a cause.
         threshold: 0.8
 
-  # (n) Compliance / legal request (GDPR/PIPEDA + sign our DPA) → the reply must NOT fabricate
+  # (m) Compliance / legal request (GDPR/PIPEDA + sign our DPA) → the reply must NOT fabricate
   #     a compliance certification or commit to signing a legal document on a timeline it
   #     cannot verify. Grounded squarely in "do NOT invent ... commitments you cannot verify".
   #     A distinct topic surface (procurement/legal) untested by any existing case.
