@@ -44,13 +44,22 @@ name: Eval Gate (live LLM-rubric)
 on:
   pull_request:
     branches: [main]
-    # Path filter (ADR §3, verbatim) — the primary cost lever. Unrelated PRs cost nothing.
-    paths:
-      - 'evals/**'
-      - 'src/inngest/ticket-triage.ts'
-      - 'src/inngest/ticket-respond.ts'
-      - 'src/inngest/kb-learn.ts'
-      - 'src/config/model-allowlist.ts'
+    # NOTE (T-94): the ADR §3 path filter that used to live on THIS trigger was moved
+    # to an internal step-level gate (STEP 0.5 "Detect prompt-surface changes"). A
+    # path-filtered TRIGGER creates NO check run at all on a non-matching PR, so the
+    # moment `live-eval-gate` becomes a REQUIRED status check (T-94) every non-prompt
+    # PR (docs / dashboard / infra — the majority on this repo) would wedge forever at
+    # "Expected — Waiting for status to be reported" and could never merge. The job
+    # must therefore run on EVERY PR and report the `live-eval-gate` context; the
+    # metered LLM work stays gated to prompt-surface changes internally, so the ADR §3
+    # cost lever (zero LLM spend on unrelated PRs) is fully preserved. This closes BOTH
+    # wedge sources the T-93 handoff named (non-path-matching PR + fork PR). See
+    # DECISIONS 2026-07-12 (T-94) for the full rationale.
+  schedule:
+    # Nightly full-suite drift monitor against `main` (ADR-0007 §6 step 6). Catches an
+    # alias remap / model drift that no PR code diff would surface. Runs the full suite
+    # regardless of paths — the STEP 0.5 gate force-passes for non-pull_request events.
+    - cron: '17 8 * * *'   # 08:17 UTC daily (~04:17 ADT) — off-peak, deliberately not top-of-hour.
   workflow_dispatch:
     inputs:
       target_alias:
@@ -111,14 +120,62 @@ jobs:
             echo "Same-repo run (or workflow_dispatch) — the live gate is eligible to run."
           fi
 
-      - name: Checkout
+      # --- STEP 0.5: prompt-surface path gate (MOVED here from the trigger, T-94).
+      #     A path-filtered TRIGGER creates no check run on a non-matching PR, which
+      #     wedges a REQUIRED check. So we always run the job and decide HERE whether
+      #     the metered live gate is needed:
+      #       - schedule / workflow_dispatch  -> always run the full suite.
+      #       - pull_request touching a prompt surface -> run the full gate.
+      #       - pull_request touching NO prompt surface -> neutral green-skip (report
+      #         success, spend nothing, touch no secret) so branch protection is met.
+      #     Fail-safe: if the PR diff cannot be read, RUN the gate (spend a few cents)
+      #     rather than risk skipping a prompt-touching PR.
+      - name: Detect prompt-surface changes (internal path gate — replaces the trigger filter)
+        id: pathcheck
         if: steps.forkcheck.outputs.is_fork != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          mkdir -p "$OUT_DIR"
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Event '${{ github.event_name }}' runs the FULL suite (nightly drift / manual dispatch) — not path-gated."
+            exit 0
+          fi
+          # --repo is REQUIRED: this step runs BEFORE checkout, so gh has no local git
+          # remote to infer the repo from. The `if ASSIGN` form keeps GitHub's default
+          # `bash -e` errexit from aborting on a gh failure before the fail-safe below.
+          if FILES="$(gh pr diff "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --name-only 2>/dev/null)"; then
+            :
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Eval Gate fail-safe (diff unreadable)::Could not read the PR diff. Running the full gate as a fail-safe rather than skipping a possibly prompt-touching PR."
+            exit 0
+          fi
+          echo "Changed files in this PR:"; printf '%s\n' "${FILES:-<none>}"
+          if printf '%s\n' "$FILES" | grep -qE '^(evals/|src/inngest/ticket-triage\.ts$|src/inngest/ticket-respond\.ts$|src/inngest/kb-learn\.ts$|src/config/model-allowlist\.ts$)'; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Prompt-surface change detected — the live metered gate WILL run."
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Eval Gate neutral-skip (no prompt-surface change)::This PR touches no eval/prompt surface (evals/**, the 3 src/inngest prompt bodies, model-allowlist.ts). The live LLM-rubric gate is not needed and spends nothing; the check still reports GREEN so branch protection is satisfied. This is NOT a quality signal."
+            {
+              echo "### Eval Gate (live) — SKIPPED (no prompt-surface change) :white_check_mark:"
+              echo ""
+              echo "This PR changes no prompt surface (\`evals/**\`, \`src/inngest/{ticket-triage,ticket-respond,kb-learn}.ts\`, \`src/config/model-allowlist.ts\`), so the live LLM-rubric gate does not run and spends nothing."
+              echo "The check reports green so branch protection is satisfied — this is **not** a quality signal."
+            } > "$OUT_DIR/gate-comment.md"
+          fi
+
+      - name: Checkout
+        if: steps.forkcheck.outputs.is_fork != 'true' && steps.pathcheck.outputs.should_run == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
 
       - name: Set up Node.js 20
-        if: steps.forkcheck.outputs.is_fork != 'true'
+        if: steps.forkcheck.outputs.is_fork != 'true' && steps.pathcheck.outputs.should_run == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
@@ -129,7 +186,7 @@ jobs:
       #     "can we run" probe.
       - name: Guard — scoped eval key present (NOT the master key)
         id: keyguard
-        if: steps.forkcheck.outputs.is_fork != 'true'
+        if: steps.forkcheck.outputs.is_fork != 'true' && steps.pathcheck.outputs.should_run == 'true'
         env:
           LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
         run: |
@@ -313,11 +370,17 @@ jobs:
         run: |
           set -uo pipefail
           shopt -s nullglob
-          RESULTS=("$OUT_DIR"/*-results.json)
+          # PRODUCT results only — exclude the T-91 *-canary-results.json harness-integrity
+          # probes (ADR §5.2: canaries are NOT part of the product pass-rate). This keeps the
+          # persisted case_results aligned with the product-only baseline/compare (T-94 fix).
+          RESULTS=()
+          for f in "$OUT_DIR"/*-results.json; do
+            case "$f" in *-canary-results.json) ;; *) RESULTS+=("$f") ;; esac
+          done
           PAYLOAD_PATH="$OUT_DIR/db-payload.json"
 
           if [ "${#RESULTS[@]}" -eq 0 ]; then
-            echo "No *-results.json produced this run — nothing to persist."
+            echo "No product *-results.json produced this run — nothing to persist."
             exit 0
           fi
 
@@ -350,7 +413,9 @@ jobs:
         run: |
           set -uo pipefail
           if [ -f "$OUT_DIR/gate-comment.md" ]; then
-            gh pr comment "${{ github.event.pull_request.number }}" --body-file "$OUT_DIR/gate-comment.md" \
+            # --repo is REQUIRED: on the neutral-skip path checkout is skipped, so gh has
+            # no local git remote to infer the repo from (same reason STEP 0.5 needs it).
+            gh pr comment "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --body-file "$OUT_DIR/gate-comment.md" \
               && echo "Posted PR comment." \
               || echo "::warning::PR comment post failed (non-fatal — reporting is decoupled from gating)."
           else

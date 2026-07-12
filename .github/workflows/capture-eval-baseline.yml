@@ -14,15 +14,20 @@ name: T-92 — capture green eval baseline (all 3 evals, live via LiteLLM)
 # mint/refresh a baseline); it is NOT the auto `pull_request` gate (that is T-93,
 # still gated on C1) and is NOT wired to auto-trigger.
 #
-# JUDGE == TARGET FOR NOW (documented limitation, re-baseline required):
+# GRADER != TARGET (ADR §5.3, the gate's real config — default since FQ-70 cleared):
 # all three evals route through `triage-model` in production today
-# (src/config/model-allowlist.ts), so TARGET_ALIAS=triage-model for all three.
-# The judge also uses triage-model — grader != target (ADR §5.3, enforced by T-91)
-# needs a SECOND healthy alias, but the only other scoped alias, `fallback-model`,
-# is currently broken on litellm-staging (Anthropic credit exhaustion, FQ-70).
-# So this captures a valid green baseline under the ONLY healthy config available.
-# WHEN T-91 lands grader!=target AND a healthy judge alias exists, the baseline
-# MUST be re-captured under the gate's real config before the gate blocks anything.
+# (src/config/model-allowlist.ts), so TARGET_ALIAS=triage-model for all three; the
+# JUDGE defaults to `fallback-model` (a DISTINCT alias, so live-run.sh's exit-3
+# grader!=target guard is satisfied). `fallback-model` is healthy again on
+# litellm-staging as of 2026-07-12 (FQ-70 RESOLVED — Anthropic credit topped up).
+# The baseline the gate compares against MUST be captured under this same grader!=
+# target config as the gate itself uses — that is now the default here (T-94).
+#
+# PRODUCT-ONLY baseline (T-94 fix): the capture step below globs product
+# *-results.json but EXCLUDES the T-91 *-canary-results.json harness-integrity probes
+# (ADR §5.2: canaries are not part of the product pass-rate). Including them would put
+# 6 canary entries in the baseline that the gate's product-only compare never supplies,
+# so the 3 must-pass canaries would read as [REGRESSION: DROPPED] → a false GATE FAIL.
 #
 # DB WRITE IS DEFERRED (not done here): recording the baseline row into
 # eval_gate_runs needs (a) the case_results column (migration 20260709020000,
@@ -43,9 +48,9 @@ on:
         required: false
         default: "triage-model"
       judge_alias:
-        description: "LiteLLM grader alias (== target until a 2nd healthy alias exists; see FQ-70)"
+        description: "LiteLLM grader alias — MUST differ from target (grader != target, ADR §5.3). Default fallback-model (healthy since FQ-70 cleared)."
         required: false
-        default: "triage-model"
+        default: "fallback-model"
 
 permissions:
   contents: read
@@ -57,7 +62,7 @@ jobs:
     env:
       LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
       TARGET_ALIAS: ${{ github.event.inputs.target_alias || 'triage-model' }}
-      JUDGE_ALIAS: ${{ github.event.inputs.judge_alias || 'triage-model' }}
+      JUDGE_ALIAS: ${{ github.event.inputs.judge_alias || 'fallback-model' }}
       LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
       OUT_DIR: /tmp/eval-live
     steps:
@@ -122,10 +127,19 @@ jobs:
         run: |
           set -uo pipefail
           shopt -s nullglob
-          RESULTS=("$OUT_DIR"/*-results.json)
-          echo "Found ${#RESULTS[@]} results file(s): ${RESULTS[*]:-<none>}"
+          # PRODUCT results only — EXCLUDE the T-91 *-canary-results.json harness-integrity
+          # probes (ADR §5.2: canaries are not part of the product pass-rate; live-run.sh
+          # writes <eval>-canary-results.json into OUT_DIR). A canary in the baseline that
+          # the gate's product-only compare never supplies reads as [REGRESSION: DROPPED]
+          # → a false GATE FAIL. This must stay aligned with eval-gate-live.yml's compare
+          # (STEP 5, explicit 3 product files) and persist (STEP 6, same exclusion). (T-94)
+          RESULTS=()
+          for f in "$OUT_DIR"/*-results.json; do
+            case "$f" in *-canary-results.json) ;; *) RESULTS+=("$f") ;; esac
+          done
+          echo "Found ${#RESULTS[@]} product results file(s): ${RESULTS[*]:-<none>}"
           if [ "${#RESULTS[@]}" -eq 0 ]; then
-            echo "::error::no *-results.json produced by any eval — nothing to baseline (see the eval step log above for why)"
+            echo "::error::no product *-results.json produced by any eval — nothing to baseline (see the eval step log above for why)"
             exit 1
           fi
           python3 scripts/eval/compare-baseline.py capture \
