@@ -1,0 +1,165 @@
+name: T-98 verify — e2e_monitor scope (dispositive negative tests)
+
+# Provisioning-verification job the Security Lead's T-98 design review specified
+# (DECISIONS.md, "T-98 Security Lead design review... APPROVED WITH CONDITIONS",
+# SC1: "a T-90-style dispositive negative-test verify workflow BEFORE first
+# scheduled run"). Mirrors T-93's verify-eval-gate-ci-writer-role.yml (itself
+# mirroring T-90's provision-litellm-eval-key.yml) for the e2e_monitor DB
+# credential: assume the connection string can leak, and PROVE — don't just
+# assert — that it is structurally incapable of touching any tenant other than
+# the one synthetic test tenant/project this monitor owns.
+#
+# workflow_dispatch-ONLY, never on a schedule or pull_request (same posture as
+# every other credential-holding verify job in this repo). Run this ONCE after
+# a founder completes the E2E_MONITOR_DB_URL provisioning FQ (FQ-75), before
+# enabling monitor-e2e-pipeline.yml's schedule / trusting its writes.
+#
+# Checks (per SC1, adapted from the T-93 credential-review shape to this
+# role's SELECT+INSERT+UPDATE grant):
+#   (a) SELECT scoped to the REAL prod tenant (00...0030)      -> 0 rows
+#       (RLS hides real prod tickets entirely, even though they exist —
+#        e2e_monitor HAS a SELECT grant on tickets, so this must be proven by
+#        row-count, not a permission-denied error, unlike eval_gate_ci_writer
+#        which has no SELECT grant at all).
+#   (b) INSERT scoped to the REAL prod tenant/project          -> RLS violation
+#   (c) Synthetic-tenant round trip (insert/select/update)     -> succeeds
+#   (d) UPDATE attempting to rewrite tenant_id to the prod tenant on the row
+#       just inserted in (c)                                   -> RLS violation
+#       (proves WITH CHECK, not just USING, is enforced — the row is visible/
+#        writable via (c), but cannot be rewritten to escape its own scope)
+# (a)/(b)/(d) are the security proof; (c) alone is not evidence of scoping.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  PROD_TENANT_ID: "00000000-0000-0000-0000-000000000030"
+  PROD_PROJECT_ID: "00000000-0000-0000-0000-000000000003"
+  SYN_TENANT_ID: "00000000-0000-0000-0000-000000000010"
+  SYN_PROJECT_ID: "00000000-0000-0000-0000-000000000001"
+
+jobs:
+  verify:
+    name: Dispositive negative tests — e2e_monitor
+    runs-on: ubuntu-latest
+    env:
+      E2E_MONITOR_DB_URL: ${{ secrets.E2E_MONITOR_DB_URL }}
+    steps:
+      - name: Guard — E2E_MONITOR_DB_URL present
+        run: |
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          if [ -z "${E2E_MONITOR_DB_URL:-}" ]; then
+            echo "::error::E2E_MONITOR_DB_URL is not set. This is expected until the founder completes the one-sitting provisioning action (supabase/ops/t98_set_e2e_monitor_password.sql + gh secret, FQ-75). Nothing to verify yet — not a defect."
+            exit 1
+          fi
+          echo "E2E_MONITOR_DB_URL present."
+
+      - name: (a) SELECT scoped to the real prod tenant -> must return 0 rows
+        id: check_a
+        continue-on-error: true
+        run: |
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          OUT=$(psql "$E2E_MONITOR_DB_URL" -tAc "select count(*) from tickets where tenant_id = '${PROD_TENANT_ID}'::uuid" 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::(a) FAILED — the query itself errored (expected a clean 0, not permission-denied — e2e_monitor DOES have a SELECT grant on tickets; RLS should silently filter, not reject the statement). Inspect output above."
+            exit 1
+          fi
+          COUNT=$(echo "$OUT" | tail -1 | tr -d '[:space:]')
+          if [ "$COUNT" != "0" ]; then
+            echo "::error::(a) FAILED — expected 0 rows for the real prod tenant, got $COUNT. e2e_monitor can see real prod tickets — the RLS scope is NOT structurally limited to the synthetic tenant. STOP — do not trust this role."
+            exit 1
+          fi
+          echo "(a) PASS: SELECT scoped to the real prod tenant returned 0 rows (RLS-blind to it, even though real prod tickets exist)."
+
+      - name: (b) INSERT scoped to the real prod tenant/project -> must be an RLS violation
+        id: check_b
+        continue-on-error: true
+        run: |
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          OUT=$(printf '%s\n' \
+            "insert into tickets (project_id, tenant_id, title, severity, state) values (:'pid'::uuid, :'tid'::uuid, 'T-98-VERIFY-prod-scope-probe (should be rejected)', 'P3', 'new')" \
+            | psql "$E2E_MONITOR_DB_URL" -v pid="$PROD_PROJECT_ID" -v tid="$PROD_TENANT_ID" -tA -f - 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::(b) FAILED — an INSERT scoped to the real prod tenant/project SUCCEEDED (should have been an RLS policy violation). STOP — this role can write real-tenant rows."
+            exit 1
+          fi
+          echo "$OUT" | grep -qi "row-level security\|violates row-level" || { echo "::error::(b) FAILED — non-zero exit but not an RLS-violation error; inspect output above (could be a different failure masking the real test)."; exit 1; }
+          echo "(b) PASS: prod-tenant/project INSERT rejected by RLS."
+
+      - name: (c) synthetic-tenant round trip -> must SUCCEED
+        id: check_c
+        continue-on-error: true
+        env:
+          MARKER: "T-98-VERIFY-${{ github.run_id }}"
+        run: |
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          INS=$(printf '%s\n' \
+            "insert into tickets (project_id, tenant_id, title, severity, state) values (:'pid'::uuid, :'tid'::uuid, :'marker', 'P3', 'new') returning id" \
+            | psql "$E2E_MONITOR_DB_URL" -v pid="$SYN_PROJECT_ID" -v tid="$SYN_TENANT_ID" -v marker="$MARKER" -tA -f - 2>&1) && RC=0 || RC=$?
+          echo "$INS"
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::(c) FAILED — the synthetic-tenant INSERT itself failed (RLS or grant issue on the ONE scope this role must be able to write). Inspect output above."
+            exit 1
+          fi
+          TICKET_ID=$(echo "$INS" | tail -1 | tr -d '[:space:]')
+          echo "ticket_id=$TICKET_ID" >> "$GITHUB_OUTPUT"
+
+          SEL=$(printf '%s\n' "select count(*) from tickets where id = :'id'::uuid" \
+            | psql "$E2E_MONITOR_DB_URL" -v id="$TICKET_ID" -tA -f - 2>&1) && RC2=0 || RC2=$?
+          echo "$SEL"
+          [ "$RC2" -eq 0 ] && [ "$(echo "$SEL" | tail -1 | tr -d '[:space:]')" = "1" ] || { echo "::error::(c) FAILED — could not read back the just-inserted synthetic row."; exit 1; }
+
+          UPD=$(printf '%s\n' "update tickets set state = 'closed' where id = :'id'::uuid" \
+            | psql "$E2E_MONITOR_DB_URL" -v id="$TICKET_ID" -tA -f - 2>&1) && RC3=0 || RC3=$?
+          echo "$UPD"
+          [ "$RC3" -eq 0 ] || { echo "::error::(c) FAILED — could not UPDATE the synthetic row's own state (the sentinel reset/advance pattern this role exists for)."; exit 1; }
+          echo "(c) PASS: synthetic-tenant insert + read-back + update all succeeded (ticket_id=$TICKET_ID, left state=closed — a real, marker-tagged, harmless row; no DELETE grant exists to remove it, matching this schema's no-hard-delete convention)."
+
+      - name: (d) UPDATE attempting to escape scope (rewrite tenant_id to prod) -> must be an RLS violation
+        id: check_d
+        continue-on-error: true
+        if: steps.check_c.outcome == 'success'
+        env:
+          TICKET_ID: ${{ steps.check_c.outputs.ticket_id }}
+        run: |
+          echo "::add-mask::$E2E_MONITOR_DB_URL"
+          OUT=$(printf '%s\n' "update tickets set tenant_id = :'tid'::uuid where id = :'id'::uuid" \
+            | psql "$E2E_MONITOR_DB_URL" -v tid="$PROD_TENANT_ID" -v id="$TICKET_ID" -tA -f - 2>&1) && RC=0 || RC=$?
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::(d) FAILED — UPDATE rewriting the synthetic row's tenant_id to the real prod tenant SUCCEEDED (should have been rejected by WITH CHECK). STOP — a leaked credential could relocate a row into prod scope."
+            exit 1
+          fi
+          echo "$OUT" | grep -qi "row-level security\|violates row-level" || { echo "::error::(d) FAILED — non-zero exit but not an RLS-violation error; inspect output above."; exit 1; }
+          echo "(d) PASS: tenant_id-escape UPDATE rejected by WITH CHECK — the row cannot be rewritten out of its own scope."
+
+      - name: Summary + exit-criteria gate
+        if: always()
+        env:
+          A: ${{ steps.check_a.outcome }}
+          B: ${{ steps.check_b.outcome }}
+          C: ${{ steps.check_c.outcome }}
+          D: ${{ steps.check_d.outcome }}
+        run: |
+          echo "============================================================"
+          echo " T-98 — e2e_monitor scope verification"
+          echo "============================================================"
+          echo " (a) SELECT blind to real prod tenant   : $A"
+          echo " (b) INSERT into real prod tenant denied: $B"
+          echo " (c) synthetic-tenant round trip         : $C"
+          echo " (d) tenant_id-escape UPDATE denied       : $D"
+          echo ""
+          FAIL=false
+          for outcome in "$A" "$B" "$C" "$D"; do
+            [ "$outcome" = "success" ] || FAIL=true
+          done
+          if [ "$FAIL" = "true" ]; then
+            echo "::error::One or more checks did not pass. Do NOT enable monitor-e2e-pipeline.yml's schedule or trust this role until all four are green. Needs Security Lead re-review before relying on this credential."
+            exit 1
+          fi
+          echo "All four checks PASS. e2e_monitor's scope matches the design exactly — structurally blind to the real prod tenant on SELECT, cannot INSERT into it, can fully read/write its own synthetic-tenant sentinel ticket, and cannot rewrite that row's tenant_id to escape scope. Ready for Security Lead sign-off (T-90-style) before the schedule is trusted."

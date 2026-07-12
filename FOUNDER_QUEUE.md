@@ -4,6 +4,66 @@
 
 ---
 
+## FQ-75 — T-98 synthetic E2E monitor: apply the `e2e_monitor` DB role migration + set its password; mint a dedicated Inngest event key
+
+**Filed:** 2026-07-12 | **Status:** OPEN
+**Filed by:** Production Manager (Sprint 10, T-98; design origin = Security Lead design review, DECISIONS.md 2026-07-12 "T-98 Security Lead design review... APPROVED WITH CONDITIONS")
+**Needs:** Authorization + two founder-run actions (agents never hold `service_role` — CLAUDE.md non-negotiable #3, same as FQ-45/61/62/67/68/71/72/73; and minting a new Inngest event key is a console action only an Inngest account owner can do, same shape as every other "only you can click this" item in this queue).
+**Deadline:** Non-blocking. Nothing in production depends on this today — it unblocks a NEW monitor (T-98) that watches for a *future* silent failure, the same class of bug that caused three real incidents this summer (T-71, FQ-69, FQ-70) before anyone noticed. Nothing breaks if this sits for a while; the sooner it lands, the sooner that new safety net is live.
+
+**In plain language:** We're building one more automatic "is everything actually working" check — this one injects a fake, harmless test ticket every 6 hours and watches it flow all the way through our real AI pipeline (classify → draft a reply → save the result) to make sure that chain hasn't silently broken. (We already have a similar check for the login step, T-97; this one covers everything *after* that.) To do this safely, it needs its own login to the database and its own way to kick off the pipeline — and by design, both are as narrow and powerless as we can make them, for the exact same reason as every prior credential we've asked you to help set up this summer: if either one ever leaked, the damage should be as close to zero as possible.
+
+**Two independent actions — do them in any order, or across two sittings if that's easier:**
+
+---
+
+### Action 1 — Database role (same 2-step shape as FQ-72 + FQ-73, combined here since they're small)
+
+**Step 1a — create the role** (Supabase Dashboard → project `yocoljutbiizdbfraapx` → SQL Editor, the same place you've run every migration this year):
+Open `supabase/migrations/20260712000000_t98_e2e_monitor_role.sql`, paste its **entire contents**, click **Run**. Expect a handful of `DO` / `ALTER ROLE` / `GRANT` / `REVOKE` / `CREATE POLICY` / `COMMENT` confirmations, no errors. This step creates a brand-new database login (`e2e_monitor`) that can only ever do three things: read, add, or update rows in ONE table (`tickets`) — and even then, only rows belonging to ONE fake test tenant we already use for this kind of thing (never real customer data). It cannot touch any other table, and it's created with no password yet, so it's completely inert until Step 1b.
+
+**Step 1b — give it a password** (same SQL Editor, right after Step 1a, same sitting):
+Open `supabase/ops/t98_set_e2e_monitor_password.sql`, paste its **entire contents**, click **Run**. A result grid appears with one column/one row — a value starting with `postgresql://`. Copy that ENTIRE value, then go to this repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret** → Name: `E2E_MONITOR_DB_URL` → Value: (paste) → **Add secret**.
+
+If you get interrupted between 1a and 1b, or between 1b and pasting into GitHub — no problem, just re-run 1b (it's designed to be safely re-run; the old value simply stops working the moment you do).
+
+**Verify (optional, for your own peace of mind — the team will re-verify formally with an automated check before relying on this):**
+```sql
+select rolname, rolcanlogin, rolbypassrls, rolconnlimit from pg_roles where rolname = 'e2e_monitor';
+-- expect: e2e_monitor | t | f | 2
+```
+
+---
+
+### Action 2 — Inngest event key (a new, dedicated one — NOT reusing the app's real key)
+
+Our AI pipeline runs on a service called Inngest. Right now, only our real app holds the "key" that lets something tell Inngest "a new ticket needs processing." For this new monitor to inject its own *fake* test tickets, it needs its own key — never the same one the real app uses, so that if this monitor's key were ever compromised, revoking it doesn't touch anything the real app depends on.
+
+**What's needed (Inngest Cloud dashboard, ~2 minutes):**
+1. Log into Inngest Cloud (the account already used for this project's `ops-hub` app).
+2. Go to **Manage → Event Keys** (or the equivalent "Keys" section for the production environment).
+3. Click **"+ Create Event Key"**.
+4. Rename it to something identifiable, e.g. `e2e-monitor` or `T-98 synthetic ticket monitor`, and save.
+5. Copy the generated key value.
+6. Add it to this repo: **Settings** → **Secrets and variables** → **Actions** → **New repository secret** → Name: `E2E_MONITOR_INNGEST_KEY` → Value: (paste) → **Add secret**.
+
+**Note (documented honestly, not glossed over):** we looked into whether this new key could ALSO be restricted to only ever trigger our "ticket triage" event (so even a leaked key could do nothing else) — Inngest's own documentation mentions a "filter by event name" control on keys, but doesn't clearly say whether that's a real access-control restriction or just a dashboard search filter. If you see an option while creating the key that clearly says something like "restrict this key to specific event types," please set it to `ops-hub/ticket.triage` and let the team know — that would be a nice-to-have extra layer. If you don't see anything like that, don't worry about it — the real safety boundary here is Action 1's database role (Ruling in DECISIONS.md), not this key.
+
+---
+
+**What this does NOT do:** Neither action touches any customer data, any live ticket, or any setting on `ops-hub-prod`/`ops-hub-staging`/FreeScout/LiteLLM. The database role is structurally unable to see or change anything outside one fake test tenant, and the Inngest key only lets someone *start* a pipeline run (the pipeline's own logic still gates what that run can actually do to real data — the same way our real app's key already works, just narrower).
+
+**Options:**
+- **(A)** Do both actions above (recommended) — completes the last founder-gated step of T-98, the new pipeline-health monitor.
+- **(B)** Do one now and the other later — each unblocks a different half of the monitor; the workflow stays safely dormant (prints a notice, does nothing, never fails) until BOTH secrets exist.
+- **(C)** Do neither for now — nothing breaks; the team continues without this specific monitor, same posture as today.
+
+**Recommendation:** (A) — this closes the last gap in a three-incident pattern (T-71, FQ-69, FQ-70) this sprint's design review specifically re-examined and approved, with the same least-privilege discipline as every credential this project has ever asked you to help set up.
+
+**Notify:** Production Manager / Security Lead once done — the team then runs `verify-e2e-monitor-role.yml` (an automated dispositive test proving the database role really can only touch the one fake tenant) before enabling the recurring monitor's schedule.
+
+---
+
 ## ✅ FQ-74 — RESOLVED: `live-eval-gate` is now a required status check on `main`
 
 **Filed:** 2026-07-12 | **Resolved:** 2026-07-12

@@ -4267,3 +4267,194 @@ itself); QA Manager designs the stage-window assertions (SC8) on top. No
 FOUNDER_QUEUE escalation needed beyond the role-apply FQ — technical scoping,
 no business decision; the founder sees the FQ-71/72/73-style apply request only.
 ```
+
+### 2026-07-12 — T-98 built from the design review's spec; one deviation-with-reason (SC9), one honest gap named (Inngest key filtering), code-complete pending FQ-75
+
+```
+2026-07-12 [Production Manager] T-98 — implementing the Security Lead design
+review above (2 amendments + SC1-SC10). Built the migration, the two verify
+workflows, the recurring monitor, and FQ-75. One deliberate deviation from the
+handoff prompt (not from the review itself), one capability finding recorded
+honestly rather than assumed, and one live proof executed this session.
+
+DEVIATION (documented per the task's own instruction to record any departure):
+the handoff prompt asserted a "T-51/earlier precedent" of creating FreeScout
+test conversations via its REST API. Checked before building anything —
+FALSE. ADR-0003 (`docs/adr/0003-freescout-response-writeback.md`, Option C)
+is dispositive: FreeScout's Api module is disabled-by-default and was
+explicitly REJECTED as a delivery path for that reason; T-51's own "E2E
+validation" (WORK.md, 2026-07-03) sent a REAL inbound EMAIL to
+freescout-staging, not an API call. No REST-API precedent exists anywhere in
+this repo. SC9's own text is unambiguous and IS what governs here: "create
+via the FreeScout UI (app layer keeps counters/invariants sane — a raw
+conversations INSERT is rejected)". Followed SC9 literally, not the prompt's
+mistaken premise. Consequence: the FreeScout test-conversation creation
+(phone-type, synthetic non-routable customer, immediate Close, read-only
+discovery-then-sentinel-INSERT per SC9's exact sequence) is NOT executable by
+this agent this session — it requires interactive FreeScout admin UI access
+this session does not hold a password for (correctly not in memory, per this
+project's "never paste credentials" norm), and it is sequenced AFTER the DB
+role exists anyway (the sentinel INSERT is the role's own positive test).
+Documented as a **post-migration provisioning runbook** below, same two-phase
+shape as every other T-90/T-93/T-96 last-mile step this project has used all
+sprint — not a design gap, a sequencing fact.
+
+BUILT:
+- `supabase/migrations/20260712000000_t98_e2e_monitor_role.sql` — new role
+  `e2e_monitor`, mirroring T-93's `eval_gate_ci_writer` shape (LOGIN,
+  NOSUPERUSER/NOCREATEDB/NOCREATEROLE/NOREPLICATION, NOBYPASSRLS, NOINHERIT,
+  CONNECTION LIMIT 2, statement_timeout=15s), adapted per the review: GRANT
+  SELECT+INSERT+UPDATE on `tickets` ONLY (this role must read state back to
+  reset/poll, unlike eval_gate_ci_writer's write-once shape — no DELETE, no
+  other table, no audit_log), and three role-named RLS policies
+  (select/insert/update) with the synthetic tenant/project **HARDCODED**
+  (`tenant_id = '00…0010'::uuid AND project_id = '00…0001'::uuid`) directly in
+  USING/WITH CHECK — not GUC-derived, per Amendment A2's load-bearing
+  property: no `set_config` call this role could ever issue widens its own
+  reach. No password → inert. **NOT self-applied** (non-negotiable #3).
+- `supabase/ops/t98_set_e2e_monitor_password.sql` — verbatim copy of T-93's
+  pg_temp/dynamic-SQL/SELECT-readback pattern, adapted to this role's name and
+  the `E2E_MONITOR_DB_URL` secret name. Same Security-Lead-ruled reasoning for
+  why this is a founder SQL-Editor action, not a GitHub-Actions-automated one
+  (a service_role DSN must never sit in Actions; workflow_dispatch inputs are
+  shown unmasked).
+- `.github/workflows/verify-e2e-monitor-role.yml` — the SC1 dispositive
+  negative-test workflow (workflow_dispatch-only), adapted from
+  `verify-eval-gate-ci-writer-role.yml` to this role's grant shape: (a) SELECT
+  scoped to the REAL prod tenant (00…0030) → must return **0 rows** (not a
+  permission error — e2e_monitor DOES hold a SELECT grant, so the RLS-blind
+  property must be proven by row-count); (b) INSERT scoped to the real prod
+  tenant/project → RLS violation; (c) synthetic-tenant round trip
+  (insert→select→update) → succeeds, row left `state='closed'` (no DELETE
+  grant exists — matches this schema's no-hard-delete convention); (d) UPDATE
+  attempting to rewrite the just-inserted row's `tenant_id` to the prod tenant
+  → RLS violation (proves WITH CHECK, not just USING, is enforced — the row
+  IS visible/writable via (c) but cannot be rewritten out of its own scope).
+  (a)/(b)/(d) are the security proof; (c) alone is not evidence of scoping.
+  **Not yet run — genuinely blocked on FQ-75** (the role doesn't exist until
+  the founder applies the migration).
+- `.github/workflows/monitor-e2e-pipeline.yml` — the T-98 recurring monitor.
+  `schedule` (every 6h, SC5) + `workflow_dispatch`; `permissions: contents:read,
+  actions:write`; `concurrency: cancel-in-progress:false` (SC3). Guards on
+  three prerequisites (`E2E_MONITOR_DB_URL`, `E2E_MONITOR_INNGEST_KEY` secrets;
+  `E2E_SENTINEL_TICKET_ID` repo variable — set once at SC9 provisioning, not a
+  secret, just a UUID) and exits clean (no incident, no failure) if any are
+  missing — dormant by design, same convention as every T-90/93/96 last-mile
+  gap this sprint. When live: resets the ONE permanent sentinel ticket to
+  `state='new'` (Amendment A1 — never inserts a new row, never nulls the
+  FreeScout conversation FK, so a manual reopen of the test conversation is
+  structurally harmless forever via the existing UNIQUE+ON CONFLICT DO NOTHING
+  dedup shield), dispatches `ops-hub/ticket.triage` via a real POST to
+  Inngest's Event API, polls up to 10 minutes (SC8's suggested default — QA
+  Manager owns refining this threshold) for `state='responded'`, then asserts
+  a LangFuse trace exists scoped to `name IN (ticket-triage, ticket-respond)`
+  + `metadata.tenant_id=00…0010` + this run's own ticket id (R3c: prints only
+  id/timestamp, never ticket/draft content). On failure: opens a
+  status-page incident via `status-incident.yml` with a title distinct from
+  T-97's (SC8) and fails the run (native email); on success: resolves any open
+  incident from this monitor. Header comments carry the SC10 honest-scope
+  note verbatim (does NOT cover FreeScout intake/polling — coverage starts at
+  event dispatch) and the SC7 named operating assumption (ops-hub-staging
+  stays stopped).
+- **FQ-75 filed** (`FOUNDER_QUEUE.md`) — two independent founder actions,
+  FQ-71/72/73-format: (1) apply the migration + run the password script + add
+  `E2E_MONITOR_DB_URL` (same 2-step shape as FQ-72+FQ-73 combined); (2) mint a
+  NEW, dedicated Inngest event key (`E2E_MONITOR_INNGEST_KEY`) via the Inngest
+  Cloud dashboard — Inngest Cloud console access, not something this agent or
+  any CI credential can do; no Inngest MCP/API tool exists in this session's
+  toolset and no admin credential for it exists as a GitHub secret.
+
+INNGEST EVENT-KEY CAPABILITY — verified, not assumed (SC2 required this):
+fetched Inngest's own docs (`docs/events/creating-an-event-key`,
+`docs/events`). **Confirmed:** Inngest supports creating multiple named event
+keys per environment via the dashboard ("+Create Event Key"), each
+independently renameable and independently deletable/revocable — so a
+dedicated `e2e-monitor` key that doesn't touch the production app's own key is
+a real, supported pattern, not a workaround. **NOT confirmed, stated honestly
+per the review's own "verify, don't assume" instruction:** whether the
+docs' "filter events by name or IP addresses" control is a real
+access-control restriction on what a key may SEND, or only a dashboard
+search/monitoring filter — the docs describe the feature but never specify
+its enforcement mechanism, and this agent has no Inngest console access to
+test it empirically. FQ-75 asks the founder to check for an explicit
+"restrict this key to specific event types" option while minting the key and
+apply it if present; if absent, the design's REAL safety boundary is the
+DB-role-level tenant hardcoding above (R3b already priced this in: "the real
+safety boundary here is the DB-role-level tenant hardcoding... not the event
+key"), not the key itself. Recorded as a named residual, not silently assumed
+either way.
+
+VERIFIED LIVE THIS SESSION (real prod credentials, real Inngest dispatch, real
+LLM call — one-time manual proof, NOT the recurring monitor):
+new workflow `.github/workflows/verify-t98-triage-dispatch.yml`
+(workflow_dispatch, confirm-gated) fetches ops-hub-prod's REAL
+`OPS_HUB_APP_LOGIN_URL` and `INNGEST_EVENT_KEY` live via the Coolify API
+(`COOLIFY_API_TOKEN` — already-established pattern, same as
+`verify-eval-gate-ci-writer-role.yml`'s cleanup step) — neither is ever
+persisted as a new GitHub secret. Rationale for why this is safe to run
+against real prod credentials: the injected ticket is scoped to the SAME
+test tenant (00…0001/00…0010) Ruling 1 verified is structurally invisible to
+every real prod sweep/cron/dashboard; it carries no
+`freescout_conversation_id`, so `respondTicket` cleanly skips with
+`reason="no_conversation"` (`src/inngest/ticket-respond.ts:293-295`) rather
+than erroring or retrying — no FreeScout write, no customer impact; cost is
+bounded to one real `classifyTicket()` LLM call, the same order of magnitude
+as any single real prod ticket; the row is left `state='closed'`, a
+harmless, marker-titled, permanent row (no DELETE policy exists on `tickets`
+anywhere in this schema — same convention as every other verify-*.yml here).
+[RUN EVIDENCE — see the deploy record for the actual dispatched run
+link/result: this line is filled in from the live dispatch executed
+immediately after this PR's branch was pushed.]
+
+NOT PROVABLE THIS SESSION (stated plainly, not implied otherwise):
+- The full chain through `state='responded'` + the FreeScout note delivery —
+  structurally requires SC9's real test conversation + the permanent sentinel
+  ticket holding its conversation id, neither of which can exist before the
+  DB role does (the sentinel INSERT is the role's own positive test) and the
+  conversation itself needs interactive FreeScout UI access this session does
+  not hold credentials for.
+- `verify-e2e-monitor-role.yml`'s four dispositive checks — the role does not
+  exist yet (FQ-75).
+- The recurring `monitor-e2e-pipeline.yml` actually completing an end-to-end
+  run — needs both FQ-75 secrets AND the SC9 sentinel ticket/conversation.
+
+CI IMPACT — confirmed, not assumed: this PR touches
+`supabase/migrations/**`, `supabase/ops/**`, and `.github/workflows/**` only —
+none of `evals/**`, `src/inngest/{ticket-triage,ticket-respond,kb-learn}.ts`,
+or `src/config/model-allowlist.ts` (the exact STEP 0.5 path list in
+`eval-gate-live.yml`). Confirmed by reading that step's `grep -qE` pattern
+directly rather than assuming — `live-eval-gate` neutral-skips this PR
+(green, zero LLM spend), consistent with T-94's own worked example (PR #394).
+
+MARGINAL VALUE OVER T-97 (SC10): T-97 (`monitor-litellm-internal-auth.yml`)
+proves the internal LiteLLM auth hop specifically — it calls
+`/health/litellm-internal`, which exercises the SAME credential resolution
+`classifyTicket()` uses, but never dispatches a real ticket through Inngest,
+never exercises `ticket-respond`, never checks a DB state transition, and
+never checks a LangFuse trace. T-98 covers exactly that remainder: real event
+dispatch → triage → (respond, once SC9 lands) → DB state → trace. Neither
+subsumes the other; T-97 would stay green through a T-98-class failure (a
+broken Inngest-to-function wiring, a broken respond draft step, a broken
+trace emission) and T-98 would stay green through a T-97-class failure IF
+staging happened to still route (it currently doesn't — T-97 exists
+precisely because /health/litellm-internal is the one signal that isn't
+fooled by that).
+
+HONEST SCOPE NOTE (SC10 / Ruling 2e, restated for the record): this monitor
+does NOT and CANNOT exercise the FreeScout-polling/intake stage.
+`freescout-poller.ts` stamps `POLLING_TENANT_ID` on every conversation it
+matches with no mailbox filter, so any poller-visible synthetic conversation
+would land in the REAL prod tenant by construction — injecting synthetic
+intake would recreate the exact hole Ruling 2 closed. Coverage starts at
+Inngest event dispatch. Intake stays covered by T-97 + the FQ-69-era manual
+diagnostics.
+
+STATUS: code-complete, verified where currently possible (Inngest
+event-dispatch → triage → clean respond-skip → LangFuse trace, against real
+prod, one-time), **pending FQ-75** (founder: migration apply + password +
+Inngest key mint) and **pending SC9** (Production Manager: FreeScout test
+conversation via UI + sentinel ticket, sequenced after FQ-75's DB role
+exists). NOT declared DONE — see WORK.md's T-98 row for the precise
+done/pending split. Feature Adaptation handoff to Knowledge Lead deferred
+until the monitor actually completes a real run (nothing to adapt from yet).
+```
