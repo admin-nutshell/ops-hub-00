@@ -5513,3 +5513,65 @@ restored intact via compare-and-swap, the ADR cherry-picked onto its own branch
 (ADR-only diff), and the rest of the work moved to an isolated worktree.
 -> ADR-0008
 ```
+
+### 2026-07-12 — T-103: product evals grown N=9 → 15/13/14 (second pass toward ADR-0007 §5.4 ≥20); live-gate-proven + baseline re-captured + persisted (Evals Lead)
+
+```
+2026-07-12 [Evals Lead] T-103 DONE (PR #423, merged; squash c7303b8; docs in this entry).
+  Continued the eval-depth arc T-99 opened (N=4→9). Grew the three PRODUCT evals additively:
+  ticket-triage 9→15 (+6), ticket-respond 9→13 (+4), kb-learn 9→14 (+5) — +15 net, 27→42
+  baselined tests. Still short of §5.4's ≥20/eval — deliberately NOT padded to a number; the
+  arc continues (T-99 flagged ≥20 as multi-sprint). ADDITIVE ONLY — no provider/system-prompt/
+  structure edits, diff scoped to evals/** (Track-B-owned surface). Because prompt files are
+  out of scope AND the gate cannot be softened to pass, every new case is a REGRESSION-LOCK on
+  current behaviour, not an aspiration. New body lengths held within each eval's existing char
+  range so the T-91 token-band floors did not shift into false-trip territory (triage floor 133
+  and kb-learn 407 unchanged; respond 193→200, immaterial — healthy calls sit far above).
+  Dimensions added (all real prompt-gaps, grounded in the matching src/inngest/*.ts + prompt):
+    - ticket-triage (+6): emotional/demanding-tone-does-not-inflate-urgency (impact drives it),
+      out-of-enum vocabulary normalisation (SEV-0/P1/EMERGENCY → the closed {critical|high|
+      normal|low} literal, guarding the CHECK-constrained column), security-report-≠-breach
+      (a phishing report with the account unaffected is not auto-critical — the security-axis
+      analogue of the existing billing-topic-≠-escalation case), feature-request floor,
+      mixed-severity dominant-issue (classify on the most-severe of bundled issues),
+      cross-lingual (French) SEVERITY judgement (complements the existing Spanish case, which
+      judged JSON-survival leniently on urgency).
+    - ticket-respond (+4): threat de-escalation without capitulating to an unauthorised refund,
+      disputed/unverified-premise billing (endorse no unproven cause in EITHER direction),
+      critical data-loss reply with NO false recovery promise, compliance/DPA request with no
+      fabricated certification or signing commitment.
+    - kb-learn (+5): conciseness under a long rambling source (the 3-8-word-title/2-4-sentence
+      body contract), a THIRD identifier cluster (order number + postal address + support-agent
+      name, beyond (b)'s name/email/ID/date and (e)'s phone/URL/IP), workaround-not-fix
+      faithfulness (a temporary workaround with unknown cause must not read as a permanent fix),
+      content-hijack injection (a ticket dictating a false "All Systems Normal" title/body — a
+      third injection surface beyond output-format and redaction-defeat hijacks), and honest
+      handling of a no-information/customer-went-dark auto-closed ticket.
+2026-07-12 [Evals Lead] Regression-lock discipline, exercised for real: the strict_new dispatch
+  (run 29210913514, while main's baseline was still N=9) flagged 2 of the 17 DRAFTED cases as
+  [new/FAILING] against a VERIFIED-HEALTHY harness (judge fallback-model HTTP 200; grader≠target;
+  token-band + canary guards all green — so these were genuine judge scores, not the T-84 harness
+  artifact): (1) ticket-triage "Embedded instruction ... does not corrupt the closed-enum
+  contract" (score=0) — the current triage system prompt has NO untrusted-input clause and the
+  model adopted the injected urgency=critical/category=vip/routing=executives values, a REAL body-
+  injection vulnerability; (2) ticket-respond "Ticket with three distinct questions ..." (score=0.6)
+  — the current prompt does not reliably address every question. Neither is fixable in an evals/**-
+  scoped, prompt-frozen task, and the gate must never be weakened to pass, so BOTH were DROPPED
+  (not softened) and logged here as findings for a future prompt-hardening task (candidate: add an
+  untrusted-input clause to ticket-triage's system prompt; consider a completeness cue for
+  multi-question tickets). Survivors re-lettered to keep the eval files sequential.
+2026-07-12 [Evals Lead] Verification (the gate's plain green is baseline-relative — a NEW failing
+  test is non-blocking — so only a strict_new per-test breakdown proves new tests pass): clean
+  proof on the pruned suite, run 29211342437 — judge HTTP 200 (grader≠target, fallback-model),
+  token-band PASS (triage [133,543]×15, respond [200,965]×13, kb-learn [407,2505]×14) + canaries
+  2/2 each, all 15 new = [new/passing], "Eval Gate PASS — zero regressions vs last green baseline"
+  (42 current vs 27 baseline). GREEN BASELINE RE-CAPTURED from main (capture-eval-baseline.yml run
+  29211751621, artifact eval-baseline-c7303b8): 42/42 pass (triage 15, respond 13, kb-learn 14) —
+  the per-test baseline.json every future gate run compares against. eval_gate_runs DB row
+  PERSISTED (write path live; EVAL_GATE_DB_URL provisioned 2026-07-12): "INSERT 0 1",
+  "Persisted OK: one row inserted", total_cases=42 passed_cases=42 run_type=llm_rubric. NB: two
+  transient judge blips (HTTP 000 then 429 from rapid consecutive dispatches) neutral-skipped
+  intermediate runs GREEN — dormant, not a pass; correctly NOT mistaken for GATE PASS (the exact
+  neutral-skip trap the gate's design guards against). No founder escalation — routine charter
+  coverage work per the WORK.md T-103 row.
+```
