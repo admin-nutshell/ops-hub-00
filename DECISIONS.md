@@ -3350,3 +3350,153 @@ technical dependency (eval-key scope), not a business decision; FQ-70 is already
 owns the external billing dependency. Handoff: PM + Production Manager for option 1.
 T-96 stays OPEN.
 ```
+
+### 2026-07-11 — T-96 Security Lead review: widening LITELLM_EVAL_KEY scope to include meta/llama-3.3-70b-instruct — APPROVED WITH CONDITIONS
+
+```
+2026-07-11 [Security Lead] T-96 — scope-widening review of LITELLM_EVAL_KEY (T-90
+key, my sign-off 2026-07-10 above): adding meta/llama-3.3-70b-instruct as a THIRD
+alias in the key's models list. VERDICT: APPROVE WITH CONDITIONS (C1–C7 below).
+Widen the EXISTING key's role, not a separate per-function key — but via RE-ISSUE
+(new key value), never an in-place /key/update. Design review only; no key, secret,
+or CI surface was touched. Production Manager implements from this spec.
+
+WHY WIDEN RATHER THAN A SEPARATE KEY (considered and rejected the split): the
+widening is not a one-shot need. Once meta/llama clears KB Learn's vetting eval and
+enters model-allowlist.ts, the STANDING gate credential (eval-gate-live.yml,
+capture-eval-baseline.yml — both read secrets.LITELLM_EVAL_KEY by name) must be able
+to eval kb_learn against whichever allowlisted model the function targets, including
+this one. A separate vetting-only key would be revoked after one run and the standing
+key would still need the alias — two provisioning cycles, two reviews, same end
+state, plus permanent secret sprawl if the second key lingered. One key, one scope of
+record, one audit surface. The per-function blast-radius separation a split would buy
+is not worth it HERE because all three aliases share the same blast-radius class (see
+next paragraph) — I would insist on separation if the new alias carried a different
+data or capability class. It does not.
+
+1) BLAST RADIUS — class UNCHANGED, shape changed in one way that needs a guard.
+   Capability: no change. meta/llama-3.3-70b-instruct is a completion-class alias
+   like the other two; the key gains no management routes (my 2026-07-10 capability
+   analysis stands — no user_id/team_id/permissions, cannot mint keys or touch model
+   registry). The NVIDIA upstream credential (NVIDIA_API_KEY) never moves: it lives
+   as os.environ ref inside the litellm-staging container (configure-litellm-nvidia.yml,
+   DECISIONS.md 2026-06-23) and is not exposed to the virtual key's holder. Staging
+   only; no tenant data behind LiteLLM. Same "availability nuisance, not
+   data/config exposure" class as before.
+   The shape change: PRICING/METERING. The repo's own record (2026-06-23 Production
+   Manager entry) chose NIM precisely because it is credit-based developer inference
+   "without per-token Anthropic costs". The alias is registered as a custom
+   openai/-prefixed model with an api_base override — a shape LiteLLM's cost map
+   may price at $0/unknown per request. If spend meters at 0, the $7 max_budget
+   NEVER TRIPS for this alias: a leaked key could burn the NVIDIA free-credit pool
+   (= staging default-provider outage) without touching the dollar cap. Still an
+   availability nuisance, still recoverable — but the T-90 review's "$7-bounded"
+   claim would silently be false for one of the three aliases. That gap is closed by
+   C3 (rpm cap) + C4 (metering probe), below. With those, the honest bound becomes:
+   "$7/30d on the two $-metered aliases, plus rpm-bounded staging completions on the
+   NIM alias" — accepted.
+
+2) BUDGET CAP — keep max_budget=$7.00 USD / soft_budget=$3.00 / budget_duration=30d
+   UNCHANGED. Adding an alias to scope does not add eval traffic: the KB Learn
+   vetting run swaps the target 1:1 (TARGET=meta/llama, JUDGE=triage-model — 12
+   cases, same call count as any run), and the standing gate evals one target per
+   function per run regardless of how wide the choice-set is. The ADR-0007 expected-
+   spend math (~$3.90 USD/mo) is unaffected; if anything, NIM calls metering at ~$0
+   push real spend DOWN. No cap change is the correct call.
+
+3) MECHANISM — RE-ISSUE, NOT /key/update. LiteLLM's management API does support
+   POST /key/update with a models list (so widening in place is TECHNICALLY
+   possible without changing the secret). I am rejecting that path and holding the
+   rule my T-90 sign-off ratified and the Evals Lead's T-96 entry relied on:
+   changing SCOPE = a NEW key value + fresh gh secret set + a fresh dispatch of the
+   provisioning workflow. Three reasons: (a) audit invariant — the secret VALUE is
+   an immutable record of its reviewed scope; an in-place update makes the same
+   string silently mean more than what was reviewed; (b) the provisioning workflow
+   IS the reviewed artifact — re-issuing forces the full verify + positive/negative
+   battery through it, where an ad-hoc master-key /key/update curl would bypass
+   every check; (c) rotation is nearly free — consumers reference the secret by
+   NAME (eval-gate-live.yml, capture-eval-baseline.yml), so a value rotation needs
+   zero CI changes, and the procedure (local pre-generate to scratchpad, gh secret
+   set, dispatch) is exactly the rehearsed T-90 runbook. Bonus: rotates a key that
+   has existed since 07-10. The GitHub secret value changing is not a downside
+   here; it is the control.
+
+4) NEGATIVE-TEST DISCIPLINE — the widened provisioning run must prove MORE than
+   T-90 did, and one T-90 technique breaks: all three registered litellm-staging
+   aliases will now be IN scope, so there is no registered-but-out-of-scope alias
+   left to probe. The battery in C5 replaces it with a typed-403 probe and makes
+   non-dispositive outcomes a hard failure, not a shrug.
+
+CONDITIONS (all must hold; deviation = stop and re-review, not a Production
+Manager unilateral call):
+
+C1. Mechanism: pre-generate the new key value locally, write it ONLY to a local
+    scratchpad file (never chat/terminal/log), `gh secret set LITELLM_EVAL_KEY`
+    from the authenticated local session, then dispatch the UPDATED
+    provision-litellm-eval-key.yml. No /key/update, no master-key curl outside
+    the workflow. Master key stays workflow_dispatch-only, permissions
+    contents:read (non-negotiable #10 posture unchanged).
+
+C2. Old-key revocation in the same run: the workflow's existing pre-delete only
+    covers same-value re-runs; a new value ORPHANS the T-90 key. Add a step that
+    revokes the prior key by alias (POST /key/delete {"key_aliases":
+    ["eval-gate-t90"]}) and VERIFIES no key with that alias remains; hard-fail if
+    revocation cannot be confirmed. Exactly one eval key must exist after the run.
+    New key_alias: eval-gate-t96 (audit logs then distinguish the scope
+    generations).
+
+C3. Rate cap (new, closes the $0-metering hole): set rpm_limit=60 on
+    /key/generate (LiteLLM supports rpm_limit/tpm_limit on key creation). 60 rpm
+    is ~2.5x what a 12-case suite at promptfoo's default concurrency of 4 needs
+    (target+judge ≈ 24 calls/run), so it cannot throttle a legitimate eval run,
+    but it converts "unmetered free-credit burn" into a slow, noticeable drip.
+
+C4. Metering probe (recorded, non-gating): after the positive test against
+    meta/llama, read the key's spend back (/key/info) and REPORT whether the call
+    incremented it. Outcome recorded in the run summary + WORK.md: it determines
+    whether the $ cap or the rpm cap is the effective bound for this alias.
+
+C5. Test battery (all through the workflow, results in the run summary):
+    a. /key/info readback: stored models == exactly [fallback-model,
+       meta/llama-3.3-70b-instruct, triage-model] (sorted), max_budget=7.0,
+       budget_duration=30d, rpm_limit=60 — STORED, not requested.
+    b. POSITIVE: key → triage-model completion, HTTP 200 (proves no regression).
+    c. POSITIVE: key → meta/llama-3.3-70b-instruct completion, HTTP 200 (proves
+       the widening took; also feeds C4).
+    d. SCOPE-POSITIVE on fallback-model: expect the FQ-70 upstream 400
+       (credit exhaustion) — and assert it is NOT a 403/key_model_access_denied.
+       A 400 proves the scope check passed and only the provider is broken; a
+       403 here means scope regressed → hard fail.
+    e. NEGATIVE (replaces T-90's registered-alias probe): key → an UNREGISTERED
+       model name (e.g. "gpt-4o"); require HTTP 403 AND error type
+       key_model_access_denied AND the error's echoed allowlist == exactly the
+       three intended aliases. LiteLLM's key-model check precedes router lookup,
+       so this is dispositive on the TYPE, not the status alone. If the response
+       is instead 404/model-not-found-class, the probe is NOT dispositive —
+       hard-fail and fall back to the contingency: register a throwaway canary
+       alias (dead upstream is fine; scope check fires before routing), probe it,
+       then delete it in the same run.
+
+C6. O1 carryover becomes binding: my 2026-07-10 sign-off flagged /key/info being
+    called with the raw key in a URL query string (?key=...) — "fix next time
+    this workflow is touched". This is that time. Use a form that keeps the key
+    out of the URL (self-info with the virtual key as its own Bearer, or key in
+    POST body) so it cannot land in Traefik/Coolify access logs.
+
+C7. Scope boundary of THIS approval: the KEY's scope/cap/provisioning only. It
+    does NOT pre-approve the model-allowlist.ts change: adding meta/llama to
+    kb_learn still requires the >95% vetting eval (TARGET=meta/llama,
+    JUDGE=triage-model, grader != target per ADR-0007 §5.3) recorded in
+    DECISIONS.md per T-79, plus the file's invariant rewrite the Evals Lead
+    entry specifies (the "listed iff it ALREADY RUNS" invariant and the
+    meta/llama "intentionally EXCLUDED" paragraph must be updated in the same
+    PR, or the file becomes self-contradictory). That PR gets normal review;
+    eval-gate-live.yml will also path-trigger on it, correctly.
+
+Handoff: Production Manager implements C1–C6 (edit provision-litellm-eval-key.yml:
+models list + OUT_OF_SCOPE probe rework + key_alias + rpm_limit + old-alias
+revocation + /key/info form; then rotate secret + dispatch), same two-step pattern
+as the T-93 DB credential. Evals Lead owns C7's vetting run afterward. No
+FOUNDER_QUEUE escalation — technical scoping decision, no business call; spend
+posture is unchanged-or-lower and staging-only.
+```
