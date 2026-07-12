@@ -5344,3 +5344,172 @@ note still stands (do NOT label M7). CLAUDE.md "Active sprint" block AND the
 parentheticals with its retro link) — keeping the compass file from going
 stale, the anti-pattern prior retros flagged.
 ```
+
+### 2026-07-12 — T-102 DONE: `monitor-litellm-internal-auth.yml` now requires 3 consecutive fails before paging; failure path proven with 4 real dispatches (Production Manager)
+
+```
+2026-07-12 [Production Manager] T-102 (Sprint 11 Track A, FQ-76 follow-up #2)
+— `monitor-litellm-internal-auth.yml` used to page on a SINGLE failed poll;
+the 07-10/07-11 self-healing hiccups (sprint-10 retro §4.2/§7) churned
+open/resolve noise on every transient blip, which is what made FQ-76's real
+3-day sustained break harder to read against the noise. FIX (PR #422,
+squash-merged `15c02be`): a consecutive-fail threshold, `FAIL_THRESHOLD: "3"`
+(env var in the workflow). Chose N=3 over N=2 — at this monitor's 15-minute
+cron cadence, N=3 pages a sustained break at ~T+30min (fail at T+0/T+15/T+30),
+inside this task's ~30-45min SLA; N=2 (T+15) would undershoot it, and N=3
+gives one extra poll of insulation against exactly the kind of single-poll
+noise that prompted this task.
+
+MECHANISM: deliberately no new secret, repo variable, or state file — a
+read-only `gh run list` run-history lookback (new "Determine consecutive-fail
+streak" step), reusing the job's existing `actions: write` permission +
+`GH_TOKEN`. Scoped two ways to prevent misfires: (1) same `github.event_name`
+as the current run, so a manual `mode=simulate-failure` verification dispatch
+can never count towards, or be counted by, the real schedule-driven prod
+streak, and vice versa; (2) `createdAt` within the last 2 hours, so old/
+unrelated dispatch runs (e.g. T-97's original 07-10 verification runs) never
+bleed into "consecutive" math that's only meaningful over a short recent
+window. The job's own exit code still reflects the true probe result on
+every run (sub-threshold fails still show as a failed Action run, preserving
+the existing GitHub failed-run-email backstop) — only the incident-OPEN call
+is gated on the threshold. Touches no credential/secret — confirmed before
+starting, so the Sprint 9 §5.1 Security Lead pre-review gate correctly does
+not apply.
+
+HARD EXIT GATE (Sprint 10 §5.1 NEW norm — proven on the FAILURE path via
+real dispatches, not YAML review, mirroring exactly how T-98's BC1 fix was
+proven): 4 real workflow_dispatch runs on branch
+`t102-litellm-monitor-fail-threshold`, via `--ref` before merge, each awaited
+to completion (`gh run watch --exit-status`) before the next was fired, so
+each run's own conclusion was settled before the next run's lookback queried
+it:
+  1. Run A (`mode=simulate-failure`) — run 29210699251, conclusion=failure
+     (probe forced to a guaranteed-404 path, as designed). Streak step found
+     0 prior same-event completed runs in the 2h window -> threshold_met=false
+     -> "Sub-threshold: only 1/3" -> NO incident opened. Confirmed by
+     positive evidence, not absence-of-mention: `gh run list --workflow
+     status-incident.yml` around this timestamp shows no dispatch.
+  2. Run B (`mode=simulate-failure`) — run 29210726416, conclusion=failure.
+     Streak step found Run A as 1 prior failure -> threshold_met=false ->
+     "Sub-threshold: only 2/3" -> NO incident opened (same status-incident.yml
+     run-list check, clean). PROVES (a): N-1=2 consecutive fails do not page.
+  3. Run C (`mode=simulate-failure`) — run 29210741763, conclusion=failure.
+     Streak step found Runs A+B as 2 prior failures -> threshold_met=true ->
+     "Streak confirmed: this is consecutive failure #3" -> incident OPENED:
+     status-incident.yml run 29210745813 -> status-content commit `77b21c7`
+     (status/content/2026-07-12-litellm-internal-auth-probe-failing-on-ops-
+     hub-pro.md, resolved: false). PROVES (b): the Nth (3rd) consecutive
+     fail DOES open a real incident.
+  4. Confirmed real prod healthy first (`curl
+     https://ops-hub-prod.inatechshell.ca/health/litellm-internal` -> 200)
+     before firing the recovery run — avoiding the failure mode where a
+     workflow_dispatch recovery attempt during a genuine live break would
+     have opened a SECOND incident instead of resolving the first (the
+     status-incident.yml resolve handler resolves by most-recent-open file,
+     not by title match, so ordering here matters).
+  5. Run D (`mode=live`) — run 29210773889, conclusion=success (real prod
+     probe, genuinely healthy). "On success -> resolve" step fired ->
+     status-content commit `6077e4e` flips the SAME file to resolved: true,
+     resolvedWhen: 2026-07-12T22:03:10Z. PROVES (c): a subsequent recovery
+     auto-resolves it.
+  6. (d) No spurious side-effects: scanned the FULL status-content branch
+     after Run D for any file still `resolved: false` -- zero found, nothing
+     left open.
+
+CI: PR #422 — Eval Gate, Lint & Type Check, Security Scan, Unit Tests,
+CodeRabbit, and `live-eval-gate` all green. `live-eval-gate` neutral-skipped
+in ~6s as expected (this PR touches only
+`.github/workflows/monitor-litellm-internal-auth.yml` — no prompt surface).
+Squash-merged to main, branch deleted.
+
+NOT DONE / FLAGGED, NOT DECIDED (per the task's explicit instruction not to
+expand scope silently): T-98's `monitor-e2e-pipeline.yml` runs 6-hourly, not
+every 15 minutes. Mechanically copying this same 2-3-consecutive-fail
+threshold there would push detection to 12-18+ hours, working directly
+against the reason T-98 exists (catch a broken downstream pipeline fast).
+Left untouched; noted in the PR body and WORK.md's T-102 row. This is a
+separate decision for a future task, owner TBD.
+
+KNOWN LIMITATION (noted in the workflow's own header comment, not fixed —
+over-engineering for this task's scope): the streak-counting signal is "did
+this run's conclusion come back failure", which conflates "the probe itself
+failed" with "the probe succeeded but the open/resolve dispatch step failed
+for an unrelated infra reason" (e.g. a `gh workflow run status-incident.yml`
+transient error). Considered rare; flagged so it isn't a silent trap for a
+future reader, not worth a dedicated fix here.
+```
+
+### 2026-07-12 — T-101: ADR-0008 authored + ACCEPTED — durable fix for the `LITELLM_URL` redeploy-orphan class (build deferred to Sprint 12) (Tech Lead)
+
+```
+2026-07-12 [Tech Lead] ADR-0008 (docs/adr/0008-litellm-url-durable-fix.md) —
+design-of-record for the LITELLM_URL suffix-rotation / redeploy-orphan failure
+class (T-71 -> FQ-69-URL -> FQ-76, 3 instances, band-aid ceiling reached). Root
+cause each time: a litellm-prod redeploy rotates its internal Docker container
+suffix; ops-hub-prod's pinned LITELLM_URL isn't re-synced; the app's internal
+LiteLLM hop throws -> /health/litellm-internal 503 "unreachable". Follows the
+ADR-0007 ADR-then-build precedent: authorship only this sprint, BUILD DEFERRED
+to Sprint 12.
+
+DECISION = Option 1: give litellm-prod a persistent Coolify network alias /
+fixed internal hostname and pin LITELLM_URL once to it, so suffix rotation
+stops orphaning the pointer. Chosen because it kills the class AT THE SOURCE
+(not merely detects it faster), adds ZERO moving parts and ZERO new credential
+surface, and is provider-neutral as a one-paragraph recipe (no app change —
+resolveLitellmTarget still reads LITELLM_URL, only the value changes).
+CONTINGENT on a feasibility spike (build-task #1): the one load-bearing fact —
+does THIS Coolify instance support a redeploy-surviving alias — is unverified
+(Docker DNS resolves full container names/aliases, NOT the stable UUID prefix;
+3 incidents + CLAUDE.md's still-standing "check docker ps after each deploy"
+are weak evidence it's not a trivial checkbox). Option 2 (automated
+post-redeploy re-sync hook, i.e. T-45's update-litellm-suffix.yml promoted to
+prod+auto) is the PRE-COMMITTED FALLBACK if the spike fails — rejected as
+primary because it automates the band-aid (reactive break-then-resync window),
+holds a standing SSH-key + Coolify-token surface, and is a monitor-the-monitor
+moving part. Option 3 (app-side service-name resolution) REJECTED: collapses
+into Option 1 (still needs a stable name) or requires docker.sock in the app
+container (container-escape-equivalent privilege escalation) / Coolify-API in
+runtime (breaks app-agnostic) — which is why Option 2, not Option 3, is the
+fallback.
+
+HARD CONSTRAINTS met as exit criteria, not prose: (a) provider-neutral /
+Project-#2 (§5); (b) verification is /health/litellm-internal -> 200 AND the
+T-97 monitor auto-resolving its own incident, NEVER generic /health (§3) —
+and the ADR flags a latent second bug: BOTH existing re-align workflows
+(fix-ops-hub-prod-litellm-url.yml, update-litellm-suffix.yml) verify the WRONG
+endpoint (/health), which the Sprint 12 build must correct; (c) credential gate
+named (§4) — Option 1 touches no secret (a point in its favor), the Option 2
+fallback triggers the Sprint 9 §5.1 Security Lead review of the concrete
+SSH/token scope BEFORE implementation. Scoped to the URL-suffix class ONLY —
+the provider-CREDENTIAL-divergence class (FQ-69's 401 master-key signature)
+stays a distinct, still-open, uncommitted carry; explicitly NOT folded in.
+
+STATUS ACCEPTED via independent review (ADR-0007 author+reviewer precedent):
+Tech Lead author + Production Manager review appended in-doc (Coolify
+feasibility + deployability). PM verdict = approved as design-of-record, no
+change to Decision/ranking; PM confirmed the feasibility fact is genuinely
+unconfirmable from static evidence (grounded in fix-litellm-network.yml's prior
+staging alias experiment, which the team wrapped in a 5-candidate probe and
+never carried to prod), validating the contingency shape. PM build conditions
+folded into ADR §6.1: prove the spike on litellm-STAGING first (free canary),
+shared-network pre-check, explicit written rollback (fall back to the break-
+glass re-align), re-check §3 against T-102's shipped resolve-threshold, size the
+T-97 wait as up to one 15-min poll cycle, and note the alias-apply likely needs
+a redeploy not a restart. SPRINT 12 BUILD sized S-M (§6): feasibility spike
+(build-task #1) -> alias config -> re-pin (delete-all-dup-rows first) -> restart
+-> deliberate-redeploy verification -> correct the break-glass verify endpoint +
+CLAUDE.md doc. No new schema, no new service, no new paid tier anticipated
+(a paid-Coolify-tier requirement would be a founder FQ, not a silent commit).
+
+Landed via PR #425 (docs-only -> live-eval-gate neutral-skips). No FOUNDER_QUEUE
+escalation: agent-owned technical design, relaxes no standing constraint,
+forces no provider switch, commits to no vendor > 12 months (the Coolify
+dependency is pre-existing and the app only ever sees a hostname). WORK.md T-101
+row updated NOT-STARTED -> DONE. PROCESS NOTE (honest): the initial ADR commit
+briefly landed on the concurrently-active t102-litellm-monitor-fail-threshold
+branch due to a shared-main-tree HEAD collision (the exact hazard the worktree-
+isolation norm exists to prevent); recovered cleanly — T-102's commit 8d6bb45
+restored intact via compare-and-swap, the ADR cherry-picked onto its own branch
+(ADR-only diff), and the rest of the work moved to an isolated worktree.
+-> ADR-0008
+```
