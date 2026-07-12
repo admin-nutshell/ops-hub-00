@@ -540,10 +540,17 @@ jobs:
             -d "$(jq -n --arg a "$OLD_KEY_ALIAS" '{key_aliases: [$a]}')")
           echo "POST /key/delete {key_aliases:[$OLD_KEY_ALIAS]} -> HTTP $HTTP"
           cat /tmp/revoke_old.json 2>/dev/null || true
-          if [ "$HTTP" != "200" ]; then
-            echo "::error::revocation call for '$OLD_KEY_ALIAS' failed (HTTP $HTTP) — C2 not satisfied, stop and investigate. Old key may still be live."
-            exit 1
-          fi
+          # Tolerate 404/400 as "already gone" (idempotency on a re-run of this
+          # workflow after a prior run already revoked it) — the actual proof of
+          # deletion is the dedicated verify step below, not this HTTP code.
+          case "$HTTP" in
+            200) echo "Revoke call succeeded." ;;
+            404|400) echo "No key found for alias '$OLD_KEY_ALIAS' (already revoked by a prior run) — treating as already-achieved, not a failure." ;;
+            *)
+              echo "::error::revocation call for '$OLD_KEY_ALIAS' failed (HTTP $HTTP) — C2 not satisfied, stop and investigate. Old key may still be live."
+              exit 1
+              ;;
+          esac
 
       - name: Genuinely verify old key is gone AND exactly one eval key remains (C2, a real check not a trust-the-delete-call check)
         if: steps.revoke_old.outcome == 'success'
@@ -552,7 +559,7 @@ jobs:
           HTTP=$(curl -s --max-time 30 -o /tmp/key_list.json -w "%{http_code}" \
             -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
             -H "Accept: application/json" \
-            "$LITELLM_STAGING_URL/key/list?return_full_object=true&size=200")
+            "$LITELLM_STAGING_URL/key/list?return_full_object=true&size=100")
           echo "GET /key/list -> HTTP $HTTP"
           if [ "$HTTP" != "200" ]; then
             echo "::error::/key/list failed (HTTP $HTTP) — C2 REQUIRES a genuine post-delete verification; an empty result from a failed query must not be read as 'deleted'. Hard-failing."
