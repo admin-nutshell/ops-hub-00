@@ -4896,3 +4896,152 @@ verify run leaves one harmless marker-tagged synthetic-tenant sentinel row by
 design (no DELETE grant); the accumulation is expected and does not affect
 re-runs (every check keys off its own freshly-returned id/run_id).
 ```
+
+### 2026-07-12 — T-98 Security Lead sign-off: `e2e_monitor` credential APPROVED (SC1 closed); monitor workflow APPROVED WITH ONE BLOCKING CONDITION (SC8 incident path unreachable) — schedule go-live decision stays with the founder
+
+```
+2026-07-12 [Security Lead] T-98 — the T-90-style final sign-off the design
+review (SC1) and the Tech Lead's harness-fix entry both gated on. Split
+verdict, stated plainly up front:
+
+  PART 1 — the e2e_monitor CREDENTIAL (role + RLS): APPROVED. SC1 is closed.
+  PART 2 — the monitor WORKFLOW (monitor-e2e-pipeline.yml): APPROVED WITH ONE
+    BLOCKING CONDITION (BC1 below — the SC8 incident path is dead code as
+    written). Do not treat the monitor as live-ready until BC1 lands.
+  PART 3 — actually turning the schedule on is NOT this review's call. It is
+    an explicit founder/user decision (recurring production automation with
+    real LLM spend), deliberately not bundled into this technical sign-off.
+
+PART 1 — CREDENTIAL SIGN-OFF. Independently verified, not taken from the
+Tech Lead's summary:
+- Pulled the RAW log of run 29205658236 (workflow_dispatch, 2026-07-12
+  19:22Z, conclusion=success) via gh — not the run description. Head SHA
+  bc211df9 is on main, and both verify-e2e-monitor-role.yml and
+  monitor-e2e-pipeline.yml are byte-identical between that SHA and current
+  main, so the log describes exactly the code under review. (The Tech Lead
+  entry cites the earlier run 29205481086 @ 260d866; 29205658236 is a later
+  re-run of the identical fixed workflow — same four-green result, and the
+  one I verified raw.)
+- (a) PASS for the right reason: literal output "0" from the prod-tenant
+  SELECT count — RLS-blind by row-count, exactly the property (a) must prove
+  given this role DOES hold a SELECT grant.
+- (b) PASS for the right reason: the log shows the literal
+  `psql:<stdin>:1: ERROR:  new row violates row-level security policy for
+  table "tickets"` line BEFORE "(b) PASS" — the grep assertion genuinely ran
+  against a real rejection. Not a masked exit-code false-pass (the
+  ON_ERROR_STOP fix is present in the executed script, visible in the log's
+  own step echo).
+- (c) PASS for the right reason: a real UUID
+  (fa8bca9d-ec55-44cb-9ec1-78e725e465e8) on its own output line, the
+  trailing "INSERT 0 1" command tag present but correctly ignored by the
+  UUID-shape grep (no "INSERT01" artifact anywhere), read-back count=1,
+  then a real "UPDATE 1".
+- (d) PASS for the right reason — the one I care most about: the step env
+  shows TICKET_ID carrying (c)'s real UUID, and the output shows the same
+  literal RLS-violation error THEN "(d) PASS". Dispositive against the
+  silent-no-op false-pass: a WHERE-miss would have been "UPDATE 0" with
+  exit 0 and tripped the FAILED branch; an RLS error here can only mean
+  WITH CHECK evaluated on a genuinely matched, visible row and rejected the
+  tenant_id rewrite. USING and WITH CHECK are both proven, on the first real
+  execution of (d).
+- Secret hygiene in that log: E2E_MONITOR_DB_URL add-mask'd and rendered ***
+  throughout; zero credential material; outputs are ids/counts/state names
+  only (SC4's log-content rule held).
+- The role/RLS itself was never touched by the harness fix (verified: the
+  fix commit touches only the workflow file) — so this green run is evidence
+  about the same migration the founder applied, not a moved target.
+CONCLUSION: e2e_monitor is structurally incapable of reading or writing any
+real tenant's rows, and cannot relocate its own rows out of scope. The SC1
+negative-test gate is satisfied. This credential may be trusted.
+
+PART 2 — WORKFLOW CONFORMANCE vs my design review (checked line-by-line
+against the file on main, not any summary):
+- A1 sentinel-upsert: CONFORMS. UPDATEs the one sentinel row back to
+  state='new'; never INSERTs a ticket; never NULLs the FreeScout FK.
+- SC1: CONFORMS. E2E_MONITOR_DB_URL only; OPS_HUB_APP_LOGIN_URL is not an
+  Actions secret (verified via gh secret list) and appears in the monitor
+  only inside the comment explaining its rejection. Noted for the record:
+  verify-t98-triage-dispatch.yml (the one-time, confirm-gated,
+  workflow_dispatch-only dispatch proof) live-fetches OPS_HUB_APP_LOGIN_URL
+  from Coolify per the pre-existing diagnostic pattern my amendment
+  explicitly contrasted with the scheduled context — within the review's
+  intent, acceptable, with the standing rule that that file must never gain
+  a schedule trigger.
+- SC2: CONFORMS in code (dedicated E2E_MONITOR_INNGEST_KEY, never the prod
+  app's key); the key itself is NOT yet provisioned — see PART 3.
+- SC3: CONFORMS. schedule + workflow_dispatch only; permissions
+  contents:read + actions:write; concurrency group, cancel-in-progress
+  false.
+- SC5: CONFORMS. 6-hourly cron, do-not-shorten note present.
+- SC7/SC10: CONFORM. Staging-stays-stopped named operating assumption and
+  the honest "does not cover FreeScout polling/intake — coverage starts at
+  event dispatch" scope note are both in the header, accurately worded.
+- SC8 incident-title distinctness: CONFORMS. "Synthetic E2E pipeline monitor
+  failing — downstream chain broken (T-98)" vs T-97's "LiteLLM internal-auth
+  probe failing on ops-hub-prod" — no collision.
+- SC8 failure path: DOES NOT CONFORM — BC1, BLOCKING. The "On failure — open
+  a status-page incident" step is gated on
+  `steps.<x>.outcome == 'failure'` expressions with NO failure()/always()
+  status function, and none of the upstream steps set continue-on-error.
+  GitHub Actions AND's an implicit success() into any if-expression lacking
+  a status function, so after reset/dispatch/poll/langfuse exits 1, the
+  incident step is SKIPPED, never run. The status-page incident half of SC8
+  is dead code for every real failure mode. T-97 does NOT have this bug —
+  its probe step never exits non-zero (set +e around curl) and the incident
+  decision is a plain output comparison under implicit success() — so
+  "mirrors T-97 exactly" is not currently true. Severity honestly stated:
+  this FAILS CLOSED (the run itself still fails, GitHub's native failed-run
+  email to repo watchers still fires, no security exposure, no data risk) —
+  it is an alerting-completeness defect, not a vulnerability. But SC8 is a
+  named condition of the approval and the incident channel is the one the
+  founder actually watches, so it blocks live-readiness. FIX (one of, owner:
+  Production Manager): (i) add `!cancelled() &&` (or failure() &&) into the
+  incident step's if-expression, or (ii) adopt T-97's shape — steps record
+  outcomes via outputs instead of exiting non-zero, and one terminal step
+  decides open/resolve/fail. Then prove it the way T-97 did: one manual
+  simulated-failure run showing the incident actually opens (and a follow-up
+  success run resolving it) BEFORE the schedule is trusted.
+- SC4: ACCEPTED DEVIATION, named. The review said step-level env for both
+  secrets; the workflow uses job-level env. Materiality is low HERE because
+  this job contains zero `uses:` steps — no third-party action code ever
+  runs with those env vars in scope; every step is an inline run script from
+  this repo. Accepted with a standing condition: if ANY marketplace/external
+  action is ever added to this job, the secrets move to step-level env in
+  the same PR. Also named: the Inngest event key rides in the URL PATH
+  (https://inn.gs/e/<key>) — that is Inngest's canonical Event API shape
+  (not a query string, which is what the T-90 O1 lesson was about), the
+  value is add-mask'd before use, and curl -s does not echo the URL.
+  Accepted as inherent to the vendor API.
+
+PART 3 — CURRENT STATE, reported not changed (this review alters nothing):
+- The `schedule:` trigger is PRESENT and ACTIVE on main — cron "0 */6 * * *",
+  not commented out; the workflow's GitHub state is "active"; and one
+  scheduled run has already fired (29204883583, 2026-07-12 18:58Z,
+  success). That run — and every run until provisioning completes — is the
+  designed dormant path: the guard found E2E_MONITOR_INNGEST_KEY and
+  E2E_SENTINEL_TICKET_ID missing and exited clean (no dispatch, no DB write,
+  no incident). So "turning the monitor on" is not a YAML edit; it is the
+  act of provisioning the two missing pieces, at which point the
+  already-live cron goes hot on its next tick. That act is the founder's/
+  user's explicit decision, OUT OF SCOPE here, and per BC1 it must not
+  happen before the SC8 fix lands and is proven.
+- Still missing, both confirmed directly: (1) E2E_MONITOR_INNGEST_KEY is not
+  in gh secret list — FQ-75 Action 2 (founder mints the dedicated key in the
+  Inngest console) remains open; (2) the E2E_SENTINEL_TICKET_ID repo
+  variable does not exist — the SC9 provisioning sequence (FreeScout test
+  conversation + sentinel ticket) has not been run. The workflow handles
+  both absences gracefully (verified in the file and in run 29204883583's
+  outcome: notice + exit 0, no incident).
+- E2E_MONITOR_DB_URL exists (set 2026-07-12 19:05Z) — FQ-75 Action 1 is
+  done, and it is the credential Part 1 just signed off.
+
+GO-LIVE CHECKLIST left for the record (in order): 1) BC1 fix merged +
+simulate-failure proof run; 2) founder decision to proceed; 3) FQ-75
+Action 2 (Inngest key); 4) SC9 provisioning + set E2E_SENTINEL_TICKET_ID;
+5) first live run observed end-to-end. Items 2–5 are not mine to execute.
+
+Scope of this sign-off: the credential and the workflow-as-designed. No
+FOUNDER_QUEUE escalation — BC1 is a technical defect with a technical owner,
+fails closed, no customer impact, no business decision required beyond the
+go-live call the founder already owns via FQ-75.
+```
