@@ -3732,4 +3732,33 @@ Manager's C1-C6 stand), does NOT wake the dormant live gate (FQ-70 still blocks
 its default fallback-model judge), and does NOT add meta/llama to triage/respond.
 No FOUNDER_QUEUE escalation — a passing vetting result is a normal, expected
 outcome of the T-79 process, not a business decision (per the T-96 brief).
+
+CAVEATS / RESIDUALS (recorded for eval honesty; none re-open T-96):
+  - JUDGE-ADJUDICATED, SINGLE-RUN, SMALL-N. The 4/4 is triage-model applying the
+    llm-rubric (a gpt-4o-mini-class judge), not a human read of the article text —
+    the run log masks each response `content` to "[...]", so meta/llama's raw
+    outputs were NOT independently eyeballed. The canary guard proves the judge can
+    DISCRIMINATE (must-fail failed, must-pass passed), but does not rule out judge
+    leniency on a *borderline* PII case — the highest-stakes rubric here. Not
+    re-running to chase this: temp 0.2 + N=4 means a re-run mostly risks a flake
+    that muddies a clean record, and the outputs aren't artifacted. Positive
+    routing proof IS in the log: distinct system_fingerprints (target
+    fp_a23f63aa66 vs judge fp_db286bd4bf) confirm LiteLLM routed target→meta/llama
+    and judge→triage-model with no silent fallback, so grader != target is real.
+  - QUALITY-VETTED ≠ PRODUCTION-FUNDED/RELIABLE. This vetted that meta/llama
+    *produces good KB articles*, not that it is a funded, reliable production
+    target. It is the same free-credit NVIDIA-NIM class as `fallback-model`, which
+    is currently dead under FQ-70 (Anthropic-side there, but the credit-exhaustion
+    failure mode is the shape to watch). The allowlist's stated meaning is
+    "production-accepted choice-set," so an operator who SELECTS meta/llama for
+    kb_learn could hit NIM credit exhaustion; `triage-model` remains the default and
+    is unaffected. NIM funding/reliability is tracked separately, not by this eval.
+  - ALLOWLIST IS THE ONLY GATE ON THE MODEL STRING (verified). No DB CHECK
+    constraint enumerates allowed values for `agent_model_routing.primary_model` /
+    `fallback_model` — they are free `text` (migration
+    20260708000000_t72...; the only CHECK there is on `function_key`), validated
+    app-layer via isAllowedModel()/resolveModelRouting(). So adding meta/llama to
+    the TS allowlist is sufficient and consistent: the dashboard now offers it AND
+    the DB accepts it — no "offered then rejected at save" latent bug, no migration
+    needed.
 ```
