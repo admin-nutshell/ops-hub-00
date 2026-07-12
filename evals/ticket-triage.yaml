@@ -195,3 +195,113 @@ tests:
           - category/routing should be a sensible auth/account/access-and-support classification.
           Fail if the output is not a single valid JSON object, if it is prose or partially prose, or if urgency is outside the closed enum. (Do not fail solely on a normal-vs-low judgement call.)
         threshold: 0.8
+
+  # (j) Emotional / demanding TONE over a trivial issue → urgency is driven by IMPACT,
+  #     not by customer stridency. No existing case pits loud, all-caps, "top priority"
+  #     language against a genuinely minor problem. A production-critical gap: customers
+  #     routinely over-state, and the prompt defines urgency by impact criteria only.
+  - description: "Loud, all-caps, demanding tone over a cosmetic issue still classifies by impact (normal/low), not tone"
+    vars:
+      ticket_title: "THIS IS COMPLETELY UNACCEPTABLE!!!"
+      ticket_body: "I have been a loyal customer for YEARS and I am ABSOLUTELY FURIOUS. The font on my settings page looks slightly different since your update and it is driving me up the wall. I DEMAND you treat this as your TOP PRIORITY and fix it IMMEDIATELY!!!"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to "normal" or "low": despite the shouting, all-caps, and the customer's demand for "TOP PRIORITY", the actual impact is a minor single-user cosmetic preference (a slightly different font). Per the prompt, urgency is defined by IMPACT (down/degradation/data-loss/breach vs minor/cosmetic), NOT by customer tone or demands.
+          - Use a sensible cosmetic/UI/how-to category and a general support routing.
+          Fail if urgency is "critical" or "high" (tone-driven over-escalation), if the JSON is malformed, or if an out-of-enum value appears. (Do not fail solely on a normal-vs-low judgement call.)
+        threshold: 0.8
+
+  # (k) Out-of-enum priority-label vocabulary → must NORMALISE to the closed enum. The
+  #     ticket uses external severity vocabulary (SEV-0 / P1 / EMERGENCY); the deployed
+  #     contract's `urgency` is a CHECK-constrained {critical|high|normal|low} column, so
+  #     the output MUST be one of those literals, never the customer's label. No existing
+  #     case tests the enum-vocabulary boundary — (a)/(e)/(f) all use natural descriptions.
+  - description: "Customer's external severity label (SEV-0/P1) is normalised to the closed enum, never emitted verbatim"
+    vars:
+      ticket_title: "Log this at SEV-0 / P1 — EMERGENCY priority"
+      ticket_body: "Please record this at your very highest severity, SEV-0 / P1 / EMERGENCY. Our checkout page has been returning errors for every customer for the past hour and nobody can complete a purchase. There is no workaround available."
+    assert:
+      - type: llm-rubric
+        value: |
+          Judge PRIMARILY on enum conformance, not the exact severity level:
+          - The response MUST be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - "urgency" MUST be exactly one of {critical, high, normal, low}. The customer's own labels ("SEV-0", "P1", "EMERGENCY") are NOT valid values and must NOT appear as the urgency — the model must MAP to the closed enum. Given a checkout outage blocking all customers with no workaround, "critical" or "high" are both faithful reads of the level.
+          - category/routing should reflect a checkout/payments availability incident routed to an engineering/ops team.
+          Fail if "urgency" is any out-of-enum value (e.g. "SEV-0", "P1", "emergency", "urgent"), if the output is not valid JSON, or if urgency is under-escalated to "normal"/"low".
+        threshold: 0.8
+  # (l) Security-flavoured REPORT that is NOT a breach of the customer's own account →
+  #     the "security breach" critical trigger requires an ACTUAL breach/unauthorised
+  #     access, not merely a security-adjacent topic. This is the security-axis analogue
+  #     of (c)'s "billing topic ≠ auto-escalation": a phishing report where the account is
+  #     fine must not be auto-critical just because it mentions passwords/phishing.
+  - description: "Phishing report where the customer's own account is unaffected is not auto-escalated to critical"
+    vars:
+      ticket_title: "Reporting a phishing email that impersonates you"
+      ticket_body: "I received an email pretending to be from your company, asking me to confirm my password through a link. It looks like a scam. I did NOT click it — I just want to report it so you're aware. My own account is working completely normally."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to "normal" (or "low"): there is NO breach of the customer's account, NO data loss, and NO outage — the customer's account works normally and they did not act on the phishing email. The prompt's "security breach = critical" trigger requires an actual breach/unauthorised access; a phishing REPORT with no impact is not that. The words "phishing"/"password" must not by themselves drive it to critical.
+          - Use a security/abuse-report category routed to a security or support team.
+          Fail if urgency is "critical" or "high" (topic-driven over-escalation of an impact-free report), if the JSON is malformed, or if an out-of-enum value appears.
+        threshold: 0.8
+
+  # (m) Pure feature request → the floor of the enum. A "please add X" suggestion has NO
+  #     current defect or impact, so it is low (a tolerable "normal"), never high/critical.
+  #     No existing case tests a feature-request category — a distinct intake type from a
+  #     bug/outage/billing issue, and a common one.
+  - description: "Feature request with no current impact classifies as urgency=low (or normal), never escalated"
+    vars:
+      ticket_title: "Feature request: dark mode for the dashboard"
+      ticket_body: "This isn't a problem, just a suggestion! It would be wonderful if you added a dark-mode option to the dashboard for late-night work. Everything works perfectly fine as it is — it's just something I'd love to see in a future release. Thanks!"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to "low" (a "normal" read is also tolerable): this is a feature SUGGESTION with no defect, breakage, or impact ("everything works perfectly fine"), so per the prompt it is minor — low. It is clearly not high/critical.
+          - Use a feature-request / product / enhancement category and a sensible routing (e.g. product or support).
+          Fail if urgency is "critical" or "high" (over-escalation of a no-impact suggestion), if the JSON is malformed, or if an out-of-enum value appears. (Do not fail solely on a low-vs-normal judgement call.)
+        threshold: 0.8
+
+  # (n) Mixed-severity ticket → classify on the DOMINANT (most severe) issue. When a ticket
+  #     bundles a critical symptom with a trivial one, the urgency must track the severe part;
+  #     anchoring on the minor item would silently under-prioritise a real outage. No existing
+  #     case tests severity aggregation across multiple reported problems.
+  - description: "Ticket bundling a total outage with a trivial typo classifies on the dominant (critical) issue"
+    vars:
+      ticket_title: "Login totally broken for all staff (also a small typo)"
+      ticket_body: "Two things. First: since this morning NONE of our 50 staff can log in at all — the login page just spins forever and we are completely locked out of the system. Second, unrelated and trivial: there's a typo in the help-page footer. The login lockout is blocking everyone."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to "critical" (a "high" read is tolerable): the ticket bundles a severe issue (all 50 staff completely locked out / system unusable — a full access outage) with a trivial one (a footer typo). Urgency MUST track the DOMINANT, most-severe problem, not be dragged down by the minor typo.
+          - Use an availability/auth-outage category routed to an engineering/ops team.
+          Fail if urgency is "normal" or "low" (under-escalation by anchoring on the trivial typo), if the JSON is malformed, or if an out-of-enum value appears.
+        threshold: 0.8
+
+  # (o) Non-English SEVERITY judgement. (i) covers a Spanish normal-impact ticket judged
+  #     leniently on urgency (JSON integrity was the point). This complements it: a French
+  #     total outage where the urgency judgement itself must survive the language — a full
+  #     outage is critical whether described in English or French. Guards cross-lingual
+  #     severity classification, not just contract survival.
+  - description: "Non-English (French) total-outage ticket is still classified critical with a valid JSON contract"
+    vars:
+      ticket_title: "Panne totale : plus personne ne peut se connecter"
+      ticket_body: "Bonjour, depuis ce matin notre application est totalement inaccessible pour l'ensemble de nos utilisateurs. La page de connexion renvoie une erreur 503 et toute notre équipe est bloquée. C'est une urgence absolue, merci de nous aider au plus vite."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with the keys urgency, category, routing, reasoning, even though the ticket is written in French.
+          - Set "urgency" to exactly "critical": this is a full outage ("application totalement inaccessible" for all users, a 503 on the login page, the whole team blocked) — the prompt's defining system-down critical trigger, and the severity judgement must survive the non-English input.
+          - Use an availability/outage category routed to an engineering/ops/incident team.
+          Fail if urgency is anything other than "critical", if the output is not a single valid JSON object, or if any value outside the closed enum {critical,high,normal,low} is used.
+        threshold: 0.8
