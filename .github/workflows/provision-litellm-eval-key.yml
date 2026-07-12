@@ -1,74 +1,83 @@
-name: T-90 — provision scoped LiteLLM eval virtual key (ADR-0007 §6 step 2 / Tech Lead C1)
+name: T-96 — re-issue widened LiteLLM eval virtual key (Security Lead C1-C6, DECISIONS.md 2026-07-11)
 
-# Provisions the budget-capped LiteLLM VIRTUAL key that T-93's future CI gate will
-# use to run live promptfoo evals against staging. This is the hard build-ordering
-# blocker on T-93's auto pull_request trigger (Tech Lead Finding 1a / Condition C1):
-# until this key exists, the live eval run must stay on workflow_dispatch, and the
-# LiteLLM MASTER key must never enter an auto-triggered job's env.
+# Re-issues the LITELLM_EVAL_KEY virtual key to widen its scope to a THIRD alias,
+# meta/llama-3.3-70b-instruct, so the standing eval gate (eval-gate-live.yml,
+# capture-eval-baseline.yml) can evaluate kb_learn against it once it clears the
+# Evals Lead's separate vetting run (T-96 / C7, NOT in scope here).
 #
-# What this workflow does NOT do: it does not wire anything into pr-checks.yml or
-# any PR-triggered workflow. That is explicitly T-93's job, gated on this landing.
+# This is a RE-ISSUE, not a widen-in-place. Per the Security Lead's 2026-07-11
+# review (DECISIONS.md, "T-96 Security Lead review: widening LITELLM_EVAL_KEY
+# scope..."), POST /key/update is explicitly REJECTED as a mechanism: changing
+# scope must mean a NEW key value, a fresh `gh secret set`, and a fresh dispatch
+# of this workflow, so the reviewed artifact (this workflow) is what enforces the
+# new scope, not an ad-hoc master-key curl. See that entry for the full rationale
+# (audit invariant, provisioning-workflow-as-reviewed-artifact, near-free rotation
+# since consumers reference the secret by NAME not value).
 #
-# Key delivery mechanics (why this looks different from configure-litellm-*.yml):
-# LiteLLM's /key/generate accepts an OPTIONAL caller-supplied `key` field (verified
-# against litellm/proxy/_types.py's GenerateKeyRequest/KeyRequestBase). Rather than
-# let LiteLLM mint a random key and then need to smuggle that value back out of a
-# masked CI log into a GitHub secret (which the default GITHUB_TOKEN cannot write
-# anyway — Actions secrets require repo-admin, which this workflow's token does not
-# have), the Production Manager pre-generates the key value locally, writes it
-# ONLY to a local scratchpad file (never printed to any terminal/chat output), sets
-# it as the `LITELLM_EVAL_KEY` repo secret directly via `gh secret set` from an
-# already-authenticated local session, and THIS workflow supplies that exact value
-# to LiteLLM's /key/generate `key` field — so the GitHub secret and the LiteLLM
-# virtual key are the same string, and the raw value is never displayed, logged,
-# or round-tripped through Actions output at any point.
+# Supersedes the original T-90 key (key_alias=eval-gate-t90, DECISIONS.md
+# 2026-07-10). That key is revoked (by alias) in this same run, AFTER this
+# workflow proves the new key works — fail-safe ordering: if new-key validation
+# fails, the old key is left intact rather than stranding the standing eval gate
+# with zero working credentials.
+#
+# Conditions implemented here (C1-C6 of the 2026-07-11 review; C7 — the
+# model-allowlist.ts vetting gate — is explicitly OUT of scope, Evals Lead's
+# follow-up):
+#   C1  - pre-generated key value, gh secret set from local session, no
+#         /key/update, no master-key curl outside this workflow.
+#   C2  - old key (eval-gate-t90) revoked by alias in this run + POSITIVELY
+#         verified gone (not just trusting the delete call's HTTP code) +
+#         positively verified the new key (eval-gate-t96) exists exactly once.
+#   C3  - rpm_limit=60 set on /key/generate (closes the $0-metering gap below).
+#   C4  - metering probe against meta/llama-3.3-70b-instruct: read the key's
+#         spend before/after the call and report (non-gating) whether LiteLLM's
+#         cost map actually meters this NIM-backed, custom openai/-prefixed
+#         alias, or prices it at $0 (in which case rpm_limit is the real bound).
+#   C5  - full verification battery: /key/info stored-config readback, positive
+#         (triage-model), positive (meta/llama), scope-positive (fallback-model
+#         — expect the KNOWN FQ-70 400 credit-exhaustion error, NOT a 403), and
+#         a genuinely dispositive negative/scope-boundary test.
+#   C6  - /key/info lookups use self-info Bearer auth (Authorization: Bearer
+#         <key>), never `?key=<raw>` in a URL query string (O1 carryover from
+#         the 2026-07-10 T-90 sign-off).
+#
+# NOTE on the negative test (condition C5, sub e): T-90's negative test used
+# meta/llama-3.3-70b-instruct as a registered-but-out-of-scope alias. That no
+# longer exists once meta/llama is IN scope — all 3 aliases currently registered
+# in litellm-staging (confirmed via a read-only dispatch of the pre-edit version
+# of this workflow, run 29179483074, 2026-07-12: triage-model, fallback-model,
+# meta/llama-3.3-70b-instruct — no fourth alias) are now in this key's scope.
+# This workflow therefore: (1) first probes a plainly unregistered alias name,
+# which is dispositive IF LiteLLM's key-scope check fires before any router/
+# registry lookup (as T-90's evidence suggests — the 403 body listed the key's
+# *entire* allowed-models set, which only the key-scope check, not a router
+# lookup, would know); (2) if that returns a non-dispositive 404 instead, falls
+# back to registering a throwaway canary alias (dead upstream, never intended to
+# be called successfully), probes THAT, then deletes it in the same run — the
+# Security Lead's specified contingency.
 #
 # Prerequisites (GitHub Actions secrets):
 #   LITELLM_MASTER_KEY — LiteLLM admin key (existing secret; used ONLY here, in a
-#                         manually-dispatched, non-PR-triggered workflow — consistent
-#                         with non-negotiable #10 and every other configure-litellm-*
-#                         workflow in this repo).
+#                         manually-dispatched, non-PR-triggered workflow).
 #   LITELLM_EVAL_KEY    — pre-set by the Production Manager (gh secret set) BEFORE
-#                         this workflow runs, containing the exact virtual-key value
-#                         this workflow will register with LiteLLM.
+#                         this workflow runs, containing the NEW virtual-key value
+#                         this workflow will register with LiteLLM. Rotating the
+#                         VALUE under the SAME secret name — no consumer change
+#                         needed in eval-gate-live.yml / capture-eval-baseline.yml.
 #
-# Scope of record (T-90 exit criteria):
-#   models        : triage-model, fallback-model
-#     - triage-model   = the eval target alias. All three product prompt evals
-#       (ticket-triage.yaml, ticket-respond.yaml, kb-learn.yaml) test the function's
-#       ACTUAL production model per src/config/model-allowlist.ts + its PROCESS
-#       comments — today that is triage-model for all three functions.
-#     - fallback-model = the judge alias. Already registered in litellm-staging as
-#       anthropic/claude-haiku-4-5-20251001 (see configure-litellm-anthropic-fallback.yml)
-#       — a Haiku-4.5-class alias, exactly ADR-0007 §4's judge-cost-model pick. No
-#       new alias needed. Distinct from the target alias, satisfying ADR §5 point 3
-#       (grader != target).
-#   max_budget    : $7.00 USD hard cap (~$10 CAD at the 2026-07-09 FX rate of
-#                   ~0.703 USD/CAD, rounded DOWN so the hard stop clears under
-#                   $10 CAD even on normal FX drift). LiteLLM's max_budget is USD.
-#   soft_budget   : $3.00 USD (~43% of the hard cap; ADR's expected full-suite cost
-#                   is ~$5.50 CAD/month ≈ $3.90 USD/month, so this fires an early
-#                   warning inside the expected-spend range, well before the $7
-#                   hard stop).
-#   budget_duration: 30d (monthly reset, matching the ADR's "$X CAD/month" framing).
-#   key_alias     : eval-gate-t90
+# Scope of record (T-96 exit criteria):
+#   models        : triage-model, fallback-model, meta/llama-3.3-70b-instruct
+#   max_budget    : $7.00 USD (unchanged — widening does not add eval traffic)
+#   soft_budget   : $3.00 USD (unchanged)
+#   budget_duration: 30d (unchanged)
+#   rpm_limit     : 60 (NEW — C3, the backstop for the meta/llama $0-metering gap)
+#   key_alias     : eval-gate-t96 (was eval-gate-t90 — new generation, new alias)
 #
-# NOTE ON ALERTING (disclosed, not assumed): soft_budget is a stored threshold on
-# the key. Whether crossing it actually PAGES anyone depends on litellm-staging
-# having an alert-delivery channel configured (Slack webhook / generic webhook).
-# This workflow checks for (but does not itself configure) such a channel and
-# reports what it finds. The max_budget HARD CAP is the real backstop regardless
-# of whether alert delivery is wired — a runaway loop cannot exceed it.
-#
-# This workflow is READ+WRITE against litellm-staging's key registry only. It does
-# not touch model registrations, Coolify, or any other infra. Idempotent: re-running
-# with the same LITELLM_EVAL_KEY secret value is safe — a pre-Register step deletes
-# any prior registration of that exact key value first, so Register always performs
-# a clean insert (same "remove then re-register" pattern used elsewhere in this repo,
-# e.g. configure-litellm-anthropic-fallback.yml). Changing SCOPE or CAP still
-# requires a new key value + a fresh `gh secret set` — this workflow only makes
-# same-value re-runs (e.g. to re-verify after an unrelated transient failure) safe,
-# it does not let a re-run silently change what the existing secret is scoped to.
+# This workflow is READ+WRITE against litellm-staging's key registry (and,
+# conditionally, a throwaway model registration for the C5e negative-test
+# contingency only). It does not touch Coolify or any other infra. Idempotent
+# for same-value re-runs of the NEW key (a pre-Register step deletes any prior
+# registration of that exact key value first).
 
 on:
   workflow_dispatch: {}
@@ -80,15 +89,19 @@ env:
   LITELLM_STAGING_URL: "https://litellm-staging.inatechshell.ca"
   EVAL_TARGET_ALIAS: "triage-model"
   EVAL_JUDGE_ALIAS: "fallback-model"
-  OUT_OF_SCOPE_ALIAS: "meta/llama-3.3-70b-instruct" # registered, but NOT in this key's models list — used for the negative scope-boundary test
+  EVAL_NVIDIA_ALIAS: "meta/llama-3.3-70b-instruct"
+  UNREGISTERED_PROBE_ALIAS: "gpt-4o-t96-unregistered-probe"
+  CANARY_ALIAS: "t96-scope-canary-do-not-call"
   MAX_BUDGET_USD: "7.00"
   SOFT_BUDGET_USD: "3.00"
   BUDGET_DURATION: "30d"
-  KEY_ALIAS: "eval-gate-t90"
+  RPM_LIMIT: "60"
+  KEY_ALIAS: "eval-gate-t96"
+  OLD_KEY_ALIAS: "eval-gate-t90"
 
 jobs:
   provision:
-    name: Provision + verify LITELLM_EVAL_KEY virtual key
+    name: Re-issue + verify widened LITELLM_EVAL_KEY virtual key
     runs-on: ubuntu-latest
     env:
       LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
@@ -100,7 +113,7 @@ jobs:
           echo "::add-mask::$LITELLM_MASTER_KEY"
           echo "::add-mask::$LITELLM_EVAL_KEY"
           [ -n "$LITELLM_MASTER_KEY" ] || { echo "::error::LITELLM_MASTER_KEY not set"; exit 1; }
-          [ -n "$LITELLM_EVAL_KEY" ] || { echo "::error::LITELLM_EVAL_KEY not set — Production Manager must gh secret set it BEFORE dispatching this workflow"; exit 1; }
+          [ -n "$LITELLM_EVAL_KEY" ] || { echo "::error::LITELLM_EVAL_KEY not set — Production Manager must gh secret set the NEW key value BEFORE dispatching this workflow"; exit 1; }
 
       - name: Verify litellm-staging health
         run: |
@@ -127,7 +140,7 @@ jobs:
           echo "Registered aliases:"
           jq -r '.data[].model_name' /tmp/model_info.json | sort -u
 
-          for ALIAS in "$EVAL_TARGET_ALIAS" "$EVAL_JUDGE_ALIAS" "$OUT_OF_SCOPE_ALIAS"; do
+          for ALIAS in "$EVAL_TARGET_ALIAS" "$EVAL_JUDGE_ALIAS" "$EVAL_NVIDIA_ALIAS"; do
             COUNT=$(jq --arg a "$ALIAS" '[.data[] | select(.model_name == $a)] | length' /tmp/model_info.json)
             echo "  $ALIAS: $COUNT entr(y/ies)"
             if [ "$COUNT" = "0" ]; then
@@ -136,36 +149,9 @@ jobs:
             fi
           done
 
-      - name: Check for a configured alert-delivery channel (key names only, never values)
+      - name: Idempotent re-run support — remove any prior registration of this exact NEW key value
         run: |
           set -euo pipefail
-          # Informational only — reports whether soft_budget crossing would page
-          # anyone, without configuring anything. Does not fail the job either way;
-          # the max_budget hard cap is the real backstop per ADR-0007 §4.
-          HTTP=$(curl -s --max-time 20 -o /tmp/alerting.json -w "%{http_code}" \
-            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-            -H "Accept: application/json" \
-            "$LITELLM_STAGING_URL/alerting/settings" || echo "000")
-          echo "GET /alerting/settings -> HTTP $HTTP"
-          if [ "$HTTP" = "200" ]; then
-            jq -r 'if (. == [] or . == {}) then "no alerting settings configured" else . end' /tmp/alerting.json 2>/dev/null || true
-          else
-            echo "Alerting settings endpoint not available/not configured (HTTP $HTTP) — treat soft_budget as a recorded threshold only, NOT a live page, until an alert channel is confirmed."
-          fi
-
-      - name: Idempotent re-run support — remove any prior registration of this exact key value
-        run: |
-          set -euo pipefail
-          # Same pattern as configure-litellm-anthropic-fallback.yml's "remove
-          # existing entries before re-registering": this workflow may need to
-          # re-run (e.g. to reach the negative test after an unrelated step
-          # failure) without a fresh LITELLM_EVAL_KEY value each time. If a key
-          # with this exact value is already registered — from a prior partial
-          # run — /key/generate would reject it as a duplicate. Delete it first
-          # (tolerant of "not found") so Register below is always a clean insert.
-          # This does NOT change scope/cap semantics: if the founder or a future
-          # run needs a DIFFERENT scope, that still requires a new key value per
-          # the header comment above.
           HTTP=$(curl -s --max-time 20 -o /tmp/predelete.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
             -H "Content-Type: application/json" \
@@ -173,12 +159,12 @@ jobs:
             -d "$(jq -n --arg k "$LITELLM_EVAL_KEY" '{keys: [$k]}')" || echo "000")
           echo "POST /key/delete (pre-register idempotency guard) -> HTTP $HTTP"
           case "$HTTP" in
-            200) echo "Removed a prior registration of this key value (expected on a re-run)." ;;
-            404|400) echo "No prior registration found for this key value (expected on a first run)." ;;
+            200) echo "Removed a prior registration of this key value (expected on a re-run of this workflow)." ;;
+            404|400) echo "No prior registration found for this key value (expected on the first run with this new value)." ;;
             *) echo "::warning::unexpected HTTP $HTTP on pre-register delete — proceeding to Register anyway; if that fails with a duplicate-key error, this is why." ;;
           esac
 
-      - name: Register the scoped, budget-capped virtual key
+      - name: Register the widened, budget-capped, rate-capped virtual key (C1, C3)
         id: register
         run: |
           set -euo pipefail
@@ -187,22 +173,26 @@ jobs:
             --arg alias "$KEY_ALIAS" \
             --arg target "$EVAL_TARGET_ALIAS" \
             --arg judge "$EVAL_JUDGE_ALIAS" \
+            --arg nvidia "$EVAL_NVIDIA_ALIAS" \
             --argjson max_budget "$MAX_BUDGET_USD" \
             --argjson soft_budget "$SOFT_BUDGET_USD" \
             --arg duration "$BUDGET_DURATION" \
+            --argjson rpm "$RPM_LIMIT" \
             '{
               key: $key,
               key_alias: $alias,
-              models: [$target, $judge],
+              models: [$target, $judge, $nvidia],
               max_budget: $max_budget,
               soft_budget: $soft_budget,
               budget_duration: $duration,
+              rpm_limit: $rpm,
               metadata: {
-                purpose: "T-90 / ADR-0007 real eval gate — CI live-run credential",
-                ticket: "T-90",
+                purpose: "T-96 / Security Lead 2026-07-11 review — widened real eval gate CI live-run credential",
+                ticket: "T-96",
+                supersedes_key_alias: "eval-gate-t90",
                 never_the_master_key: true,
                 provisioned_by: "production_manager",
-                provisioned_date: "2026-07-09"
+                provisioned_date: "2026-07-12"
               }
             }')
 
@@ -213,7 +203,6 @@ jobs:
             "$LITELLM_STAGING_URL/key/generate" -d "$PAYLOAD")
           echo "POST /key/generate -> HTTP $HTTP"
 
-          # Redact the key field before ever printing the response.
           jq 'del(.key) | del(.token)' /tmp/key_gen.json > /tmp/key_gen_redacted.json 2>/dev/null || echo "(response not JSON or already empty)"
           cat /tmp/key_gen_redacted.json 2>/dev/null || true
 
@@ -221,18 +210,22 @@ jobs:
             echo "::error::/key/generate failed (HTTP $HTTP)"
             exit 1
           fi
-          echo "Registered key_alias=$KEY_ALIAS scoped to [$EVAL_TARGET_ALIAS, $EVAL_JUDGE_ALIAS]"
+          echo "Registered key_alias=$KEY_ALIAS scoped to [$EVAL_TARGET_ALIAS, $EVAL_JUDGE_ALIAS, $EVAL_NVIDIA_ALIAS], rpm_limit=$RPM_LIMIT"
 
-      - name: Verify stored key config via /key/info (proves the cap + scope actually took)
+      - name: Verify stored key config via self-info Bearer auth (C5a, C6 — no raw key in a URL query string)
+        id: key_info_verify
         run: |
           set -euo pipefail
+          # C6 / O1 fix: self-info lookup using the virtual key's OWN Bearer token,
+          # never `/key/info?key=<raw>` (which would put the raw key in a URL query
+          # string that can leak into proxy/access logs).
           HTTP=$(curl -s --max-time 30 -o /tmp/key_info.json -w "%{http_code}" \
-            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
             -H "Accept: application/json" \
-            "$LITELLM_STAGING_URL/key/info?key=$LITELLM_EVAL_KEY")
-          echo "GET /key/info -> HTTP $HTTP"
+            "$LITELLM_STAGING_URL/key/info")
+          echo "GET /key/info (self, Bearer auth) -> HTTP $HTTP"
           if [ "$HTTP" != "200" ]; then
-            echo "::error::/key/info failed (HTTP $HTTP) — cannot confirm stored scope/cap"
+            echo "::error::self /key/info failed (HTTP $HTTP) — cannot confirm stored scope/cap"
             cat /tmp/key_info.json 2>/dev/null || true
             exit 1
           fi
@@ -245,15 +238,32 @@ jobs:
           STORED_MAX_BUDGET=$(jq -r '.info.max_budget // .max_budget // empty' /tmp/key_info.json 2>/dev/null || echo "")
           STORED_SOFT_BUDGET=$(jq -r '.info.soft_budget // .soft_budget // empty' /tmp/key_info.json 2>/dev/null || echo "")
           STORED_DURATION=$(jq -r '.info.budget_duration // .budget_duration // empty' /tmp/key_info.json 2>/dev/null || echo "")
+          STORED_RPM=$(jq -r '.info.rpm_limit // .rpm_limit // empty' /tmp/key_info.json 2>/dev/null || echo "")
+          STORED_SPEND=$(jq -r '.info.spend // .spend // 0' /tmp/key_info.json 2>/dev/null || echo "0")
 
-          echo "models=$STORED_MODELS max_budget=$STORED_MAX_BUDGET soft_budget=$STORED_SOFT_BUDGET budget_duration=$STORED_DURATION"
+          echo "models=$STORED_MODELS max_budget=$STORED_MAX_BUDGET soft_budget=$STORED_SOFT_BUDGET budget_duration=$STORED_DURATION rpm_limit=$STORED_RPM spend=$STORED_SPEND"
+          echo "spend_baseline=$STORED_SPEND" >> "$GITHUB_OUTPUT"
 
-          EXPECTED_MODELS=$(printf "%s\n%s" "$EVAL_TARGET_ALIAS" "$EVAL_JUDGE_ALIAS" | sort | paste -sd, -)
+          EXPECTED_MODELS=$(printf "%s\n%s\n%s" "$EVAL_TARGET_ALIAS" "$EVAL_JUDGE_ALIAS" "$EVAL_NVIDIA_ALIAS" | sort | paste -sd, -)
           [ "$STORED_MODELS" = "$EXPECTED_MODELS" ] || { echo "::error::stored models list ($STORED_MODELS) != expected ($EXPECTED_MODELS)"; exit 1; }
-          [ "$STORED_MAX_BUDGET" = "$MAX_BUDGET_USD" ] || echo "::warning::stored max_budget ($STORED_MAX_BUDGET) != requested ($MAX_BUDGET_USD) — verify manually"
-          echo "Scope + budget confirmed stored, not just requested."
 
-      - name: POSITIVE test — LITELLM_EVAL_KEY can call the target alias
+          # C5a: numeric compare on max_budget (T-90 saw a cosmetic 7.0 vs 7.00
+          # string mismatch on the exact same value — compare as numbers (awk,
+          # not a string match) so this is a real assertion, not a hand-waved
+          # warning.
+          BUDGET_MATCH=$(awk -v s="$STORED_MAX_BUDGET" -v e="$MAX_BUDGET_USD" 'BEGIN { print (s+0 == e+0) ? "yes" : "no" }')
+          if [ "$BUDGET_MATCH" != "yes" ]; then
+            echo "::error::stored max_budget ($STORED_MAX_BUDGET) != expected ($MAX_BUDGET_USD) numerically"
+            exit 1
+          fi
+          echo "max_budget confirmed numerically equal: stored=$STORED_MAX_BUDGET expected=$MAX_BUDGET_USD"
+
+          # C3: rpm_limit is mandatory — hard-gate this one, no soft warning.
+          [ "$STORED_RPM" = "$RPM_LIMIT" ] || { echo "::error::stored rpm_limit ($STORED_RPM) != expected ($RPM_LIMIT) — C3 not satisfied"; exit 1; }
+
+          echo "Scope + budget + rpm_limit confirmed stored, not just requested."
+
+      - name: POSITIVE test — LITELLM_EVAL_KEY can call the target alias (triage-model)
         id: pos_target
         continue-on-error: true
         run: |
@@ -271,137 +281,386 @@ jobs:
           fi
           echo "POSITIVE test PASS: $(jq -r '.choices[0].message.content // empty' /tmp/pos.json 2>/dev/null)"
 
-      - name: POSITIVE test — LITELLM_EVAL_KEY can call the judge alias
-        id: pos_judge
-        # Control-flow fix (this pass): a failure here (e.g. the judge alias's
-        # upstream provider being unavailable/exhausted) must NOT prevent the
-        # NEGATIVE test below from running — that is the actual scope-boundary
-        # proof this task needs, and it does not depend on the judge alias's
-        # provider being healthy. continue-on-error lets the job proceed; the
-        # final Summary step below still reports this step's real outcome and
-        # gates on it explicitly rather than silently swallowing a failure.
+      - name: Read spend BEFORE the meta/llama call (C4 baseline, self-info Bearer)
+        id: spend_before
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/spend_before.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/key/info")
+          SPEND=$(jq -r '.info.spend // .spend // 0' /tmp/spend_before.json 2>/dev/null || echo "0")
+          echo "GET /key/info (self) -> HTTP $HTTP, spend_before=$SPEND"
+          echo "spend=$SPEND" >> "$GITHUB_OUTPUT"
+
+      - name: POSITIVE test — LITELLM_EVAL_KEY can call the newly-widened NVIDIA NIM alias (meta/llama-3.3-70b-instruct)
+        id: pos_nvidia
         continue-on-error: true
         run: |
           set -euo pipefail
-          HTTP=$(curl -s --max-time 60 -o /tmp/pos_judge.json -w "%{http_code}" -X POST \
+          HTTP=$(curl -s --max-time 60 -o /tmp/pos_nvidia.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_STAGING_URL/chat/completions" \
+            -d "$(jq -n --arg m "$EVAL_NVIDIA_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
+          echo "POST /chat/completions (model=$EVAL_NVIDIA_ALIAS, key=LITELLM_EVAL_KEY) -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::positive test FAILED — the widened eval key could not call meta/llama-3.3-70b-instruct (HTTP $HTTP). The widening did not take, or the NVIDIA upstream is down."
+            cat /tmp/pos_nvidia.json 2>/dev/null || true
+            exit 1
+          fi
+          echo "POSITIVE test PASS: $(jq -r '.choices[0].message.content // empty' /tmp/pos_nvidia.json 2>/dev/null)"
+
+      - name: Read spend AFTER the meta/llama call, with a settle delay (C4 result, recorded not gating)
+        id: spend_after
+        if: always()
+        run: |
+          set -euo pipefail
+          # LiteLLM's spend accounting runs via a background logging task, not
+          # synchronously with the response — an immediate read-back can show
+          # $0 purely from lag, which is a DIFFERENT finding than "this alias is
+          # truly unmetered". Wait briefly, then read, and report both readings
+          # with that caveat rather than asserting a bare conclusion.
+          sleep 12
+          HTTP=$(curl -s --max-time 30 -o /tmp/spend_after.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/key/info")
+          SPEND=$(jq -r '.info.spend // .spend // 0' /tmp/spend_after.json 2>/dev/null || echo "0")
+          echo "GET /key/info (self, ~12s after the meta/llama call) -> HTTP $HTTP, spend_after=$SPEND"
+          echo "spend=$SPEND" >> "$GITHUB_OUTPUT"
+
+      - name: SCOPE-POSITIVE test — fallback-model still IN scope (expect FQ-70's known 400, NOT a 403)
+        id: scope_pos_fallback
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/scope_pos.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
             -H "Content-Type: application/json" \
             "$LITELLM_STAGING_URL/chat/completions" \
             -d "$(jq -n --arg m "$EVAL_JUDGE_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
           echo "POST /chat/completions (model=$EVAL_JUDGE_ALIAS, key=LITELLM_EVAL_KEY) -> HTTP $HTTP"
-          if [ "$HTTP" != "200" ]; then
-            echo "::error::positive test FAILED — the eval key could not call the judge alias (HTTP $HTTP)"
-            cat /tmp/pos_judge.json 2>/dev/null || true
+          cat /tmp/scope_pos.json 2>/dev/null || true
+
+          if [ "$HTTP" = "403" ]; then
+            echo "::error::SCOPE REGRESSION — fallback-model returned 403 for the widened key. This alias must remain in scope; a 403 here is a hard fail, not a known/tracked issue."
             exit 1
           fi
-          echo "POSITIVE test PASS: $(jq -r '.choices[0].message.content // empty' /tmp/pos_judge.json 2>/dev/null)"
 
-      - name: Confirm OUT_OF_SCOPE_ALIAS is itself healthy (master key, read-only, informational)
-        if: always()
-        run: |
-          set -euo pipefail
-          # Establishes that a REJECTED response on the negative test below means
-          # "scope enforcement worked", not "the alias itself is broken/exhausted
-          # for an unrelated reason (masking what we're actually testing)". This
-          # is exactly the class of problem that hit the judge-alias test above
-          # (Anthropic credit exhaustion) — check the negative test's alias for
-          # the same class of issue BEFORE relying on its result as proof.
-          HTTP=$(curl -s --max-time 60 -o /tmp/oos_health.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
-            -H "Content-Type: application/json" \
-            "$LITELLM_STAGING_URL/chat/completions" \
-            -d "$(jq -n --arg m "$OUT_OF_SCOPE_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
-          echo "POST /chat/completions (model=$OUT_OF_SCOPE_ALIAS, key=MASTER, health check only) -> HTTP $HTTP"
           if [ "$HTTP" = "200" ]; then
-            echo "OUT_OF_SCOPE_ALIAS ($OUT_OF_SCOPE_ALIAS) is healthy — the negative test below is dispositive."
+            echo "SCOPE-POSITIVE test PASS (better than expected): fallback-model succeeded — Anthropic billing (FQ-70) appears resolved. Scope confirmed either way."
+          elif [ "$HTTP" = "400" ]; then
+            REASON=$(jq -r '.error.message // .error // empty' /tmp/scope_pos.json 2>/dev/null || true)
+            echo "SCOPE-POSITIVE test PASS: HTTP 400, reason: $REASON"
+            echo "$REASON" | grep -qi "credit balance is too low" \
+              && echo "Matches the known FQ-70 Anthropic credit-exhaustion signature exactly." \
+              || echo "::warning::HTTP 400 but message doesn't match the known FQ-70 signature verbatim — inspect /tmp/scope_pos.json; scope check still passed (not a 403), so this does not gate, but the specific cause may differ from FQ-70."
           else
-            echo "::warning::OUT_OF_SCOPE_ALIAS ($OUT_OF_SCOPE_ALIAS) is NOT healthy via the master key (HTTP $HTTP) — a REJECTED response on the negative test below would be ambiguous (could be scope enforcement OR this alias's own provider issue). Inspect /tmp/oos_health.json before treating the negative test as dispositive."
-            cat /tmp/oos_health.json 2>/dev/null || true
+            echo "::warning::unexpected HTTP $HTTP (neither 200, 400, nor 403) on the scope-positive test — inspect /tmp/scope_pos.json. Not treated as a scope regression (only 403 is), but flagged for review."
           fi
 
-      - name: NEGATIVE test — LITELLM_EVAL_KEY is REJECTED for an out-of-scope, but registered, alias
-        id: neg_test
+      - name: NEGATIVE test, attempt 1 — plainly unregistered alias name (C5e)
+        id: neg_unregistered
         if: always()
         run: |
           set -euo pipefail
-          HTTP=$(curl -s --max-time 60 -o /tmp/neg.json -w "%{http_code}" -X POST \
+          HTTP=$(curl -s --max-time 60 -o /tmp/neg_unreg.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
             -H "Content-Type: application/json" \
             "$LITELLM_STAGING_URL/chat/completions" \
-            -d "$(jq -n --arg m "$OUT_OF_SCOPE_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
-          echo "POST /chat/completions (model=$OUT_OF_SCOPE_ALIAS, key=LITELLM_EVAL_KEY) -> HTTP $HTTP"
-          cat /tmp/neg.json 2>/dev/null || true
+            -d "$(jq -n --arg m "$UNREGISTERED_PROBE_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
+          echo "POST /chat/completions (model=$UNREGISTERED_PROBE_ALIAS [unregistered], key=LITELLM_EVAL_KEY) -> HTTP $HTTP"
+          cat /tmp/neg_unreg.json 2>/dev/null || true
+          echo "http_code=$HTTP" >> "$GITHUB_OUTPUT"
 
-          # A 404/model-not-found would prove nothing about scoping (the alias IS
-          # registered — we confirmed that above with the master key). We require
-          # an access-denied class response (401/403), NOT any 2xx.
-          if [ "$HTTP" = "200" ]; then
-            echo "::error::NEGATIVE test FAILED — the eval key was able to call an out-of-scope alias ($OUT_OF_SCOPE_ALIAS). Model-scoping is NOT enforced. Do not proceed — flag as a design deviation, this is not a Production Manager unilateral call."
+          if [ "$HTTP" = "403" ]; then
+            ERR_TYPE=$(jq -r '.error.type // empty' /tmp/neg_unreg.json 2>/dev/null || echo "")
+            if [ "$ERR_TYPE" = "key_model_access_denied" ]; then
+              echo "dispositive=true" >> "$GITHUB_OUTPUT"
+              echo "Unregistered-alias probe is DISPOSITIVE: HTTP 403, type=key_model_access_denied."
+            else
+              echo "dispositive=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::HTTP 403 but error type ('$ERR_TYPE') != key_model_access_denied — treating as non-dispositive, falling back to the canary probe."
+            fi
+          else
+            echo "dispositive=false" >> "$GITHUB_OUTPUT"
+            echo "Unregistered-alias probe returned HTTP $HTTP (not 403) — non-dispositive per the Security Lead's review (a 404/model-not-found class response proves nothing about scope enforcement). Falling back to the canary-alias contingency."
+          fi
+
+      - name: NEGATIVE test contingency — register a throwaway canary alias (only if attempt 1 was non-dispositive)
+        id: canary_register
+        if: always() && steps.neg_unregistered.outputs.dispositive != 'true'
+        run: |
+          set -euo pipefail
+          echo "Registering throwaway canary alias '$CANARY_ALIAS' (dead upstream — never intended to be called successfully; the key-scope check fires before any router/provider dispatch, per T-90's own evidence)."
+          PAYLOAD=$(jq -n --arg name "$CANARY_ALIAS" '{
+            model_name: $name,
+            litellm_params: {
+              model: "openai/gpt-4o-mini",
+              api_base: "https://canary.invalid.example/v1",
+              api_key: "sk-canary-unused-not-a-real-credential"
+            },
+            model_info: {
+              purpose: "T-96 C5e negative-test canary — registered read-only-scope probe, deleted same run"
+            }
+          }')
+          HTTP=$(curl -s --max-time 30 -o /tmp/canary_register.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_STAGING_URL/model/new" -d "$PAYLOAD")
+          echo "POST /model/new (canary) -> HTTP $HTTP"
+          cat /tmp/canary_register.json 2>/dev/null || true
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "::error::could not register the canary alias (HTTP $HTTP) — cannot complete the C5e contingency"
             exit 1
           fi
+
+          # Look up the canary's model_info.id so it can be precisely deleted later.
+          HTTP2=$(curl -s --max-time 30 -o /tmp/canary_lookup.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/model/info")
+          CANARY_ID=$(jq -r --arg n "$CANARY_ALIAS" '.data[] | select(.model_name == $n) | .model_info.id' /tmp/canary_lookup.json 2>/dev/null | head -1)
+          echo "canary_id=$CANARY_ID" >> "$GITHUB_OUTPUT"
+          echo "Canary registered, model_info.id=$CANARY_ID"
+
+      - name: NEGATIVE test contingency — probe the canary alias (only if attempt 1 was non-dispositive)
+        id: canary_probe
+        if: always() && steps.neg_unregistered.outputs.dispositive != 'true'
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/canary_probe.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_STAGING_URL/chat/completions" \
+            -d "$(jq -n --arg m "$CANARY_ALIAS" '{model:$m,max_tokens:10,temperature:0,messages:[{role:"user",content:"Reply with the single word: ok"}]}')")
+          echo "POST /chat/completions (model=$CANARY_ALIAS [registered, out-of-scope canary], key=LITELLM_EVAL_KEY) -> HTTP $HTTP"
+          cat /tmp/canary_probe.json 2>/dev/null || true
+          echo "http_code=$HTTP" >> "$GITHUB_OUTPUT"
+
+      - name: NEGATIVE test contingency — delete the canary alias (cleanup, always runs if it was registered)
+        if: always() && steps.canary_register.outcome == 'success'
+        run: |
+          set -euo pipefail
+          CANARY_ID="${{ steps.canary_register.outputs.canary_id }}"
+          if [ -z "$CANARY_ID" ] || [ "$CANARY_ID" = "null" ]; then
+            echo "::warning::no canary_id captured — cannot precisely delete the canary alias. Manual cleanup of '$CANARY_ALIAS' in litellm-staging may be required."
+            exit 0
+          fi
+          HTTP=$(curl -s --max-time 30 -o /tmp/canary_delete.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_STAGING_URL/model/delete" \
+            -d "$(jq -n --arg id "$CANARY_ID" '{id: $id}')")
+          echo "POST /model/delete (canary cleanup, id=$CANARY_ID) -> HTTP $HTTP"
+          cat /tmp/canary_delete.json 2>/dev/null || true
+
+          # Genuinely verify removal, not just trust the delete call's HTTP code.
+          HTTP2=$(curl -s --max-time 30 -o /tmp/canary_recheck.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/model/info")
+          REMAINING=$(jq --arg n "$CANARY_ALIAS" '[.data[] | select(.model_name == $n)] | length' /tmp/canary_recheck.json 2>/dev/null || echo "unknown")
+          echo "Canary alias remaining registrations after delete: $REMAINING"
+          if [ "$REMAINING" != "0" ]; then
+            echo "::error::canary alias '$CANARY_ALIAS' still registered after delete (count=$REMAINING) — manual cleanup required. This is a hygiene issue, does not by itself invalidate the negative-test PROOF already captured, but must be resolved before this run is considered fully clean."
+            exit 1
+          fi
+          echo "Canary alias cleanup verified: 0 registrations remain."
+
+      - name: Determine final negative-test outcome + assert dispositive PASS (C5e gate)
+        id: neg_final
+        if: always()
+        run: |
+          set -euo pipefail
+          DISPOSITIVE="${{ steps.neg_unregistered.outputs.dispositive }}"
+          if [ "$DISPOSITIVE" = "true" ]; then
+            echo "C5e satisfied via the unregistered-alias probe (HTTP 403, type=key_model_access_denied)."
+            echo "outcome=pass" >> "$GITHUB_OUTPUT"
+            echo "source=unregistered-alias-probe" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CANARY_HTTP="${{ steps.canary_probe.outputs.http_code }}"
+          if [ -z "$CANARY_HTTP" ]; then
+            echo "::error::negative test not satisfied — unregistered-alias probe was non-dispositive AND the canary probe did not run/produce a result."
+            echo "outcome=fail" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "$CANARY_HTTP" != "403" ]; then
+            echo "::error::negative test FAILED — canary-alias probe returned HTTP $CANARY_HTTP, not 403. Model-scoping may not be enforced. This is not a Production Manager unilateral call — stop and re-review."
+            echo "outcome=fail" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "C5e satisfied via the canary-alias contingency (HTTP 403)."
+          echo "outcome=pass" >> "$GITHUB_OUTPUT"
+          echo "source=canary-alias-contingency" >> "$GITHUB_OUTPUT"
+
+      - name: Extract + assert the echoed allowlist matches the widened scope exactly (C5e, set-compare)
+        if: always()
+        run: |
+          set -euo pipefail
+          # The 403 body embeds a Python-list repr, e.g.:
+          #   models=['triage-model', 'fallback-model', 'meta/llama-3.3-70b-instruct']
+          # Order may follow insertion, not sort — compare as a SET, not a string.
+          SRC_FILE="/tmp/neg_unreg.json"
+          if [ "${{ steps.neg_unregistered.outputs.dispositive }}" != "true" ]; then
+            SRC_FILE="/tmp/canary_probe.json"
+          fi
+          if [ ! -f "$SRC_FILE" ]; then
+            echo "::warning::no negative-test response file found ($SRC_FILE) — skipping allowlist echo check."
+            exit 0
+          fi
+          MSG=$(jq -r '.error.message // empty' "$SRC_FILE" 2>/dev/null || echo "")
+          echo "Echoed error message: $MSG"
+          ECHOED=$(echo "$MSG" | grep -oP "models=\[\K[^\]]*" | tr -d "'" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sort | paste -sd, -)
+          EXPECTED=$(printf "%s\n%s\n%s" "$EVAL_TARGET_ALIAS" "$EVAL_JUDGE_ALIAS" "$EVAL_NVIDIA_ALIAS" | sort | paste -sd, -)
+          echo "Echoed allowlist (sorted): $ECHOED"
+          echo "Expected allowlist (sorted): $EXPECTED"
+          if [ -z "$ECHOED" ]; then
+            echo "::warning::could not parse an echoed models=[...] list from the error message — cannot confirm the allowlist content, only that access was denied (403/key_model_access_denied already confirmed above)."
+          elif [ "$ECHOED" != "$EXPECTED" ]; then
+            echo "::error::echoed allowlist ($ECHOED) != expected widened scope ($EXPECTED)"
+            exit 1
+          else
+            echo "Echoed allowlist matches the widened 3-alias scope exactly."
+          fi
+
+      - name: Revoke the OLD key (eval-gate-t90) by alias — ONLY after the new key's core checks pass (C2)
+        id: revoke_old
+        if: steps.pos_target.outcome == 'success' && steps.neg_final.outputs.outcome == 'pass'
+        run: |
+          set -euo pipefail
+          echo "New key (key_alias=$KEY_ALIAS) core checks passed — safe to revoke the old key now (fail-safe ordering: never strand the standing eval gate with zero working credentials)."
+          HTTP=$(curl -s --max-time 30 -o /tmp/revoke_old.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Content-Type: application/json" \
+            "$LITELLM_STAGING_URL/key/delete" \
+            -d "$(jq -n --arg a "$OLD_KEY_ALIAS" '{key_aliases: [$a]}')")
+          echo "POST /key/delete {key_aliases:[$OLD_KEY_ALIAS]} -> HTTP $HTTP"
+          cat /tmp/revoke_old.json 2>/dev/null || true
+          # Tolerate 404/400 as "already gone" (idempotency on a re-run of this
+          # workflow after a prior run already revoked it) — the actual proof of
+          # deletion is the dedicated verify step below, not this HTTP code.
           case "$HTTP" in
-            401|403)
-              REASON=$(jq -r '.error.message // .error // .detail // empty' /tmp/neg.json 2>/dev/null || true)
-              echo "NEGATIVE test PASS: HTTP $HTTP (access-denied), reason: $REASON"
-              ;;
+            200) echo "Revoke call succeeded." ;;
+            404|400) echo "No key found for alias '$OLD_KEY_ALIAS' (already revoked by a prior run) — treating as already-achieved, not a failure." ;;
             *)
-              echo "::warning::unexpected HTTP $HTTP on the negative test — not a clean 401/403 access-denied. Inspect /tmp/neg.json output above before relying on this as scope proof."
+              echo "::error::revocation call for '$OLD_KEY_ALIAS' failed (HTTP $HTTP) — C2 not satisfied, stop and investigate. Old key may still be live."
+              exit 1
               ;;
           esac
+
+      - name: Genuinely verify old key is gone AND exactly one eval key remains (C2, a real check not a trust-the-delete-call check)
+        if: steps.revoke_old.outcome == 'success'
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/key_list.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/key/list?return_full_object=true&size=100")
+          echo "GET /key/list -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::/key/list failed (HTTP $HTTP) — C2 REQUIRES a genuine post-delete verification; an empty result from a failed query must not be read as 'deleted'. Hard-failing."
+            cat /tmp/key_list.json 2>/dev/null || true
+            exit 1
+          fi
+
+          # Defensive shape handling: LiteLLM's /key/list has returned either a
+          # bare array or {"keys": [...]} across versions.
+          jq 'if (.keys? != null) then .keys elif (type == "array") then . else [] end' /tmp/key_list.json > /tmp/key_list_array.json 2>/dev/null || echo '[]' > /tmp/key_list_array.json
+
+          OLD_COUNT=$(jq --arg a "$OLD_KEY_ALIAS" '[.[] | select(.key_alias == $a)] | length' /tmp/key_list_array.json 2>/dev/null || echo "unknown")
+          NEW_COUNT=$(jq --arg a "$KEY_ALIAS" '[.[] | select(.key_alias == $a)] | length' /tmp/key_list_array.json 2>/dev/null || echo "unknown")
+          echo "key_alias=$OLD_KEY_ALIAS remaining count: $OLD_COUNT"
+          echo "key_alias=$KEY_ALIAS remaining count: $NEW_COUNT"
+
+          if [ "$OLD_COUNT" != "0" ]; then
+            echo "::error::C2 NOT satisfied — old key ('$OLD_KEY_ALIAS') still present after the revoke call ($OLD_COUNT entr(y/ies)). Revocation did not actually take."
+            exit 1
+          fi
+          if [ "$NEW_COUNT" != "1" ]; then
+            echo "::error::C2 NOT satisfied — expected exactly ONE key with alias '$KEY_ALIAS' after this run, found $NEW_COUNT. (Could indicate a stranded duplicate from a partial prior run.)"
+            exit 1
+          fi
+          echo "C2 confirmed: old key alias '$OLD_KEY_ALIAS' genuinely gone (0 remaining), new key alias '$KEY_ALIAS' present exactly once. Exactly one eval key exists after this run."
 
       - name: Summary + explicit exit-criteria gate (no secret values, ever)
         if: always()
         env:
           POS_TARGET_OUTCOME: ${{ steps.pos_target.outcome }}
-          POS_JUDGE_OUTCOME: ${{ steps.pos_judge.outcome }}
-          NEG_TEST_OUTCOME: ${{ steps.neg_test.outcome }}
+          POS_NVIDIA_OUTCOME: ${{ steps.pos_nvidia.outcome }}
+          SCOPE_POS_FALLBACK_OUTCOME: ${{ steps.scope_pos_fallback.outcome }}
+          NEG_FINAL_OUTCOME: ${{ steps.neg_final.outputs.outcome }}
+          NEG_FINAL_SOURCE: ${{ steps.neg_final.outputs.source }}
+          REVOKE_OLD_OUTCOME: ${{ steps.revoke_old.outcome }}
+          SPEND_BEFORE: ${{ steps.spend_before.outputs.spend }}
+          SPEND_AFTER: ${{ steps.spend_after.outputs.spend }}
         run: |
           echo "============================================================"
-          echo " T-90 — LITELLM_EVAL_KEY provisioning summary"
+          echo " T-96 — widened LITELLM_EVAL_KEY re-issue: provisioning summary"
           echo "============================================================"
-          echo " key_alias      : $KEY_ALIAS"
-          echo " models in scope: $EVAL_TARGET_ALIAS (target), $EVAL_JUDGE_ALIAS (judge)"
-          echo " max_budget     : \$$MAX_BUDGET_USD USD (~\$10 CAD hard cap, rounded down)"
-          echo " soft_budget    : \$$SOFT_BUDGET_USD USD (early-warning threshold)"
-          echo " budget_duration: $BUDGET_DURATION"
-          echo " stored as      : GitHub Actions secret LITELLM_EVAL_KEY (already set before this run)"
-          echo " out-of-scope test alias: $OUT_OF_SCOPE_ALIAS"
+          echo " key_alias (new) : $KEY_ALIAS   (supersedes: $OLD_KEY_ALIAS)"
+          echo " models in scope : $EVAL_TARGET_ALIAS, $EVAL_JUDGE_ALIAS, $EVAL_NVIDIA_ALIAS"
+          echo " max_budget      : \$$MAX_BUDGET_USD USD / soft_budget \$$SOFT_BUDGET_USD USD / $BUDGET_DURATION (unchanged)"
+          echo " rpm_limit       : $RPM_LIMIT (NEW — C3 backstop for the meta/llama \$0-metering gap)"
+          echo " stored as       : GitHub Actions secret LITELLM_EVAL_KEY (same name, rotated value)"
           echo ""
+          echo " ------------------------------------------------------------"
+          echo " C4 — metering probe on meta/llama-3.3-70b-instruct (recorded, non-gating):"
+          echo "   spend before call : $SPEND_BEFORE"
+          echo "   spend after call  : $SPEND_AFTER (read ~12s after, to allow async spend-logging to settle)"
+          echo "   NOTE: a \$0 reading here is consistent with EITHER true \$0/unknown"
+          echo "   cost-map pricing for this custom openai/-prefixed NIM alias, OR"
+          echo "   spend-logging lag beyond the settle delay used here. Either way,"
+          echo "   rpm_limit=$RPM_LIMIT (C3) is the effective backstop for this alias"
+          echo "   regardless of which explanation holds."
           echo " ------------------------------------------------------------"
           echo " Per-check results (each gated independently, not fail-fast):"
           echo " ------------------------------------------------------------"
-          echo "   register + /key/info verify   : PASS (job would already have hard-failed above otherwise)"
-          echo "   positive test — target alias   : $POS_TARGET_OUTCOME"
-          echo "   positive test — judge alias     : $POS_JUDGE_OUTCOME"
-          echo "   negative test — scope boundary  : $NEG_TEST_OUTCOME"
+          echo "   register + self /key/info verify (C1,C5a,C3,C6) : PASS (job would already have hard-failed above otherwise)"
+          echo "   positive test — target alias (triage-model)      : $POS_TARGET_OUTCOME"
+          echo "   positive test — meta/llama-3.3-70b-instruct       : $POS_NVIDIA_OUTCOME"
+          echo "   scope-positive test — fallback-model (expect 400/200, NOT 403) : $SCOPE_POS_FALLBACK_OUTCOME"
+          echo "   negative/scope-boundary test (C5e)                : $NEG_FINAL_OUTCOME (source: $NEG_FINAL_SOURCE)"
+          echo "   old-key revocation + genuine re-verify (C2)        : $REVOKE_OLD_OUTCOME"
           echo ""
 
           GATE_FAIL=false
 
           if [ "$POS_TARGET_OUTCOME" != "success" ]; then
-            echo "::error::T-90 exit criteria NOT met — the eval key cannot call its own target alias ($EVAL_TARGET_ALIAS). This is a real defect, not a known/tracked issue."
+            echo "::error::T-96 exit criteria NOT met — the widened key cannot call its own target alias ($EVAL_TARGET_ALIAS)."
             GATE_FAIL=true
           fi
 
-          if [ "$NEG_TEST_OUTCOME" != "success" ]; then
-            echo "::error::T-90 exit criteria NOT met — the scope-boundary (negative) test did not pass. This is the core proof T-90 needs; investigate before sign-off."
+          if [ "$POS_NVIDIA_OUTCOME" != "success" ]; then
+            echo "::error::T-96 exit criteria NOT met — the widened key cannot call meta/llama-3.3-70b-instruct. The widening did not take, or the NVIDIA upstream is unavailable."
             GATE_FAIL=true
           fi
 
-          if [ "$POS_JUDGE_OUTCOME" != "success" ]; then
-            echo "::warning::judge-alias ($EVAL_JUDGE_ALIAS) positive test failed. Known cause as of this run: Anthropic account credit exhaustion on litellm-staging (HTTP 400, 'Your credit balance is too low') — a founder/billing issue, NOT a key-scoping defect and NOT something this workflow or the Production Manager fixes. Tracked separately in WORK.md / FOUNDER_QUEUE.md as needed. Does NOT gate T-90's core exit criteria (key scope + negative-test proof), since the key IS correctly scoped to include $EVAL_JUDGE_ALIAS — the alias's own provider is what's unavailable."
+          if [ "$SCOPE_POS_FALLBACK_OUTCOME" != "success" ]; then
+            echo "::error::T-96 exit criteria NOT met — the fallback-model scope-positive test failed (likely a 403 scope regression; see the dedicated step above for detail)."
+            GATE_FAIL=true
+          fi
+
+          if [ "$NEG_FINAL_OUTCOME" != "pass" ]; then
+            echo "::error::T-96 exit criteria NOT met — the negative/scope-boundary test (C5e) did not pass. This is core proof; investigate before sign-off."
+            GATE_FAIL=true
+          fi
+
+          if [ "$REVOKE_OLD_OUTCOME" != "success" ]; then
+            echo "::error::T-96 exit criteria NOT met — C2 (old-key revocation + exactly-one-key verification) did not complete successfully."
+            GATE_FAIL=true
           fi
 
           echo ""
-          echo " This workflow does NOT wire LITELLM_EVAL_KEY into any PR-triggered job."
-          echo " That is T-93's job, gated on this landing (Tech Lead C1)."
-          echo ""
-          echo " Still required before T-90 is fully DONE: Security Lead sign-off on"
-          echo " this scope/cap (per ADR-0007 deciders list + WORK.md T-90 exit criteria)."
+          echo " This workflow does NOT touch src/config/model-allowlist.ts (C7 —"
+          echo " Evals Lead's follow-up, requires its own >95% vetting eval run)."
           echo "============================================================"
 
           if [ "$GATE_FAIL" = "true" ]; then
-            echo "::error::T-90 core exit criteria not met — see errors above."
+            echo "::error::T-96 exit criteria not met — see errors above."
             exit 1
           fi
-          echo "T-90 core exit criteria met (target callable + scope-boundary proven)."
+          echo "T-96 exit criteria met: widened scope proven (target + NVIDIA callable, fallback-model still in scope, scope boundary dispositive), old key revoked and verified gone, exactly one eval key remains."
