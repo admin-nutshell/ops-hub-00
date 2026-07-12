@@ -33,6 +33,54 @@ name: Monitor — LiteLLM internal-auth path (T-97 / FQ-69 follow-up)
 #   curls a path guaranteed to 404, to prove the open/resolve dispatch logic
 #   itself fires correctly WITHOUT touching prod's real credential or state.
 #   See DECISIONS.md T-97 entry for the run that used this to verify.
+#
+# T-102 (Sprint 11, FQ-76 follow-up #2 — docs/retros/sprint-10.md §4.2/§7):
+# this workflow used to page on a SINGLE failed poll. The 07-10/07-11
+# self-healing hiccups churned open/resolve noise on every transient blip,
+# which is exactly what made FQ-76's real 3-day sustained break harder to
+# read at a glance against the noise. Fix: a consecutive-fail threshold
+# (FAIL_THRESHOLD below) — the first (FAIL_THRESHOLD - 1) consecutive fails
+# self-clear silently (no incident opened, no page); only the Nth CONSECUTIVE
+# fail opens a real incident; a subsequent 200 still auto-resolves
+# immediately (that half was never the problem). Chose N=3 over N=2: at this
+# workflow's 15-minute cron cadence, 3 consecutive fails (T+0, T+15, T+30)
+# opens the incident at T+30 — inside the ~30-45 minute SLA this task set,
+# whereas N=2 (pages at T+15) undershoots that range.
+#
+# MECHANISM — deliberately no new secret/var/state file (this change touches
+# neither credentials nor secrets, so the Sprint 9 §5.1 Security Lead gate
+# does not apply): a read-only GitHub Actions run-history lookback via
+# `gh run list` (the "Determine consecutive-fail streak" step below), reusing
+# the SAME `actions: write` permission + GH_TOKEN this job already holds for
+# its status-incident.yml dispatches. Scoped two ways so it can't misfire or
+# cross-contaminate real prod paging with manual verification runs:
+#   - same `github.event_name` as the current run (schedule vs
+#     workflow_dispatch) — a manual mode=simulate-failure verification
+#     dispatch can never count towards, or be counted by, the real
+#     prod schedule-driven streak, and vice versa.
+#   - createdAt within the last 2 hours — old/unrelated dispatch runs (e.g.
+#     T-97's original verification runs from 07-10) never bleed into
+#     "consecutive" math that is only meaningful over a short recent window.
+# The job's own exit code still reflects the true probe result on every run —
+# sub-threshold fails still show as a failed Action run, preserving the
+# existing GitHub failed-run-notification-email backstop this design already
+# relied on. Only the INCIDENT-OPEN call is gated on the threshold.
+#
+# KNOWN LIMITATION (noted, not fixed — over-engineering for this task): the
+# streak-counting signal is "did this run's conclusion come back failure",
+# which conflates "the probe itself failed" with "the probe succeeded but the
+# open/resolve dispatch step failed for an unrelated infra reason". A flaky
+# `gh workflow run status-incident.yml` call could in theory nudge the streak
+# count. Considered rare and not worth a dedicated fix here; flagging so it
+# isn't a silent trap for a future reader.
+#
+# T-98's monitor-e2e-pipeline.yml runs 6-hourly, not every 15 minutes —
+# mechanically copying this same threshold there would push detection to
+# 12-18+ hours, working against the entire reason T-98 exists (catch a broken
+# pipeline fast). Deliberately NOT touched by this change; see WORK.md's
+# T-102 row / this change's PR description for the explicit carry-not-decided
+# note — that is a separate decision for a future task, not a silent scope
+# expansion.
 
 on:
   schedule:
@@ -56,6 +104,9 @@ concurrency:
 env:
   PROD_URL: "https://ops-hub-prod.inatechshell.ca"
   INCIDENT_TITLE: "LiteLLM internal-auth probe failing on ops-hub-prod"
+  # T-102: consecutive-fail threshold before this monitor pages. See the
+  # header comment block above for the full rationale and mechanism.
+  FAIL_THRESHOLD: "3"
 
 jobs:
   probe:
@@ -103,12 +154,44 @@ jobs:
           cat /tmp/probe_body.json 2>/dev/null || true
           echo ""
 
-      - name: On failure — open a status-page incident + fail the run
+      - name: Determine consecutive-fail streak (read-only run-history lookback)
+        id: streak
         if: steps.probe.outputs.http_status != '200'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::error::LiteLLM internal-auth probe returned HTTP ${{ steps.probe.outputs.http_status }} — the app's real LITELLM_MASTER_KEY path may be failing (FQ-69 failure mode) or the endpoint is unreachable."
+          NEED=$((FAIL_THRESHOLD - 1))
+          EVENT="${{ github.event_name }}"
+          RUN_ID="${{ github.run_id }}"
+          CUTOFF=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
+          echo "This run's probe failed. A real incident only pages once this is the ${FAIL_THRESHOLD}th CONSECUTIVE failure. Checking whether the previous $NEED completed run(s) of this workflow (same trigger event=$EVENT, created since $CUTOFF, excluding this in-progress run $RUN_ID) were ALSO failures."
+          echo "Scoping to the same event type keeps mode=simulate-failure verification dispatches (event=workflow_dispatch) from ever mixing with the real schedule-driven prod streak, and vice versa. Scoping to the last 2 hours keeps old/unrelated dispatch runs out of the 'consecutive' math."
+
+          RUNS_JSON=$(gh run list --repo "${{ github.repository }}" --workflow monitor-litellm-internal-auth.yml \
+            --json databaseId,conclusion,status,createdAt,event --limit 30)
+
+          PREV=$(echo "$RUNS_JSON" | jq --arg cur "$RUN_ID" --arg ev "$EVENT" --arg cutoff "$CUTOFF" \
+            '[.[] | select((.databaseId|tostring) != $cur and .status == "completed" and .event == $ev and .createdAt >= $cutoff)] | sort_by(.createdAt) | reverse | .[0:'"$NEED"']')
+          PREV_COUNT=$(echo "$PREV" | jq 'length')
+          FAIL_COUNT=$(echo "$PREV" | jq '[.[] | select(.conclusion == "failure")] | length')
+
+          echo "Previous completed same-event runs considered (need $NEED): $PREV_COUNT. Of those, $FAIL_COUNT were failures."
+          echo "$PREV" | jq -r '.[] | "  run \(.databaseId): conclusion=\(.conclusion) createdAt=\(.createdAt)"'
+
+          if [ "$PREV_COUNT" -ge "$NEED" ] && [ "$FAIL_COUNT" -eq "$NEED" ]; then
+            echo "threshold_met=true" >> "$GITHUB_OUTPUT"
+            echo "Streak confirmed: this is consecutive failure #$FAIL_THRESHOLD — opening a real incident."
+          else
+            echo "threshold_met=false" >> "$GITHUB_OUTPUT"
+            echo "Sub-threshold: only $((FAIL_COUNT + 1))/$FAIL_THRESHOLD consecutive failures so far (or insufficient recent same-event run history) — self-clearing silently. No incident opened, no page."
+          fi
+
+      - name: On failure (threshold met) — open a status-page incident + fail the run
+        if: steps.probe.outputs.http_status != '200' && steps.streak.outputs.threshold_met == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::error::LiteLLM internal-auth probe returned HTTP ${{ steps.probe.outputs.http_status }} for the ${FAIL_THRESHOLD}th consecutive check — the app's real LITELLM_MASTER_KEY path may be failing (FQ-69 failure mode) or the endpoint is unreachable."
           # --repo is required: this job has no actions/checkout step (deliberately —
           # the probe itself needs no repo contents), so `gh` has no local git remote
           # to infer the target repo from and would otherwise fail with
@@ -118,6 +201,12 @@ jobs:
             -f title="$INCIDENT_TITLE" \
             -f affected="Ops Hub Production,LiteLLM Production" \
             -f severity=down
+          exit 1
+
+      - name: On failure (sub-threshold) — self-clear silently, no page
+        if: steps.probe.outputs.http_status != '200' && steps.streak.outputs.threshold_met != 'true'
+        run: |
+          echo "::warning::LiteLLM internal-auth probe returned HTTP ${{ steps.probe.outputs.http_status }} but the T-102 consecutive-fail threshold (FAIL_THRESHOLD=$FAIL_THRESHOLD) has not been met yet — self-clearing silently, no status-page incident opened, no page sent. If this repeats until $FAIL_THRESHOLD consecutive failures, the next run's run-history lookback will open a real incident."
           exit 1
 
       - name: On success — resolve any open incident from this monitor
