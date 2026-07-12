@@ -3878,3 +3878,76 @@ NOT done (correctly out of scope): T-95 docs reconciliation (CLAUDE.md "Eval-gat
   (founder click); dropping the caveat before enforcement would re-introduce the
   exact drift ADR-0007 exists to close.
 ```
+
+### 2026-07-12 — T-95: docs reconciled — the "Eval-gated" constraint is honest again; Sprint 9 Track A COMPLETE (Evals Lead)
+
+```
+2026-07-12 [Evals Lead] T-95 DONE. Reconciled the docs now that FQ-74 is resolved
+  and `live-eval-gate` is a required, merge-blocking status check on `main`
+  (verified via `gh api repos/admin-nutshell/ops-hub-00/branches/main/protection/
+  required_status_checks` → contexts = ['Lint & Type Check','Security Scan','Unit
+  Tests','Eval Gate','live-eval-gate']). → ADR-0007 §6 step 7 + §8.
+
+This closes the exact "constraint says X, system does Y" drift that MOTIVATED the
+  entire ADR-0007 build: CLAUDE.md asserted a live >95% eval gate while CI ran only
+  schema validation. That is now true, so the doc says so.
+
+Three edits (docs/process/comments ONLY — no alias-list or prompt change):
+
+1. CLAUDE.md "Eval-gated" standing constraint — dropped the T-86 interim caveat
+   ("CI Eval Gate is schema-validation-only; the real LLM-rubric gate is pending
+   ADR-0007/T-87"). Now states plainly: enforced by TWO required merge-blocking
+   checks — (1) the hermetic "Eval Gate" schema check (`promptfoo validate`, every
+   PR, since T-17/T-58) and (2) the live `live-eval-gate` LLM-rubric gate (ADR-0007,
+   T-89–T-95, live 2026-07-12) that runs the real evals against each function's
+   production LiteLLM target alias on prompt-touching PRs (grader != target,
+   baseline-relative — blocks on any regression vs last green baseline), neutral-
+   skipping green on non-prompt PRs. The >95% policy bar is RECONCILED, not deleted
+   (it's still the manual-vetting bar in the allowlist PROCESS + the charter number);
+   deleting it would create a fresh internal contradiction. Worded to describe the
+   gate's MECHANISM (not an unconditional "every change is verified" guarantee) so it
+   does not silently become the next stale caveat during a judge outage.
+
+2. src/config/model-allowlist.ts PROCESS block — the now-live gate is the PRIMARY
+   admission path: register the alias in LiteLLM → vet via the shared runner
+   (scripts/eval/live-run.sh, T-89 + T-91 guards) dispatched at TARGET=<new alias>,
+   JUDGE != target (§5.3), >95%, persisted to eval_gate_runs + linked in DECISIONS.md
+   → add to the list in the same PR (ADR §8). Worked example cited: T-96
+   (meta/llama-3.3-70b-instruct → kb_learn, run 29180466358, 4/4). MECHANICALLY-HONEST
+   nuance kept so this reconciliation does not itself inject drift: the gate's AUTO
+   pull_request trigger runs the DEFAULT target to catch REGRESSIONS in existing
+   prompts — it does NOT by itself evaluate a newly-added alias; that needs the
+   targeted dispatch. Did NOT transcribe ADR §8's cleaner "the PR that adds the alias
+   auto-runs its eval" narrative, because that is not the mechanism. Manual local
+   `promptfoo eval` RETAINED as a documented fallback (ADR §8 "coexist"), not deleted.
+   Also corrected the file's stale present-tense WHY-block claim ("Today that CI gate
+   is schema-validation-only ... there is no live model-quality gate") → the live gate
+   now exists but is a PR-time check that a runtime dashboard click bypasses, so the
+   allowlist stays load-bearing as the selection constraint between CI runs (two
+   layers). The gate AUTOMATES the allowlist's manual admission step; it does NOT
+   replace the allowlist (ADR §8) — the T-79 runtime-swap-bypass mitigation is not
+   relaxed.
+
+3. Did NOT touch the actual alias lists (triage/respond/kb_learn) — task is doc/
+   process/comment only, not a model-selection change. No web/ mirror to update:
+   web/ imports src/config/model-allowlist.ts directly across the tsconfig boundary
+   (ModelRoutingForm.tsx / ModelRoutingSection.tsx), so the header's "must MIRROR if
+   it can't import" condition is not triggered.
+
+Own-PR gate behaviour (verified, NOT assumed — the task flagged the stated
+  expectation to confirm): the task predicted a neutral-skip, but that is
+  mechanically wrong. eval-gate-live.yml STEP 0.5 greps the PR's changed files
+  against a FILE-granular list that includes `^src/config/model-allowlist\.ts$`; it
+  cannot tell "only comments changed," so this PR sets should_run=true and runs the
+  FULL metered gate (target=triage-model, judge=fallback-model, all 3 product evals)
+  vs the latest green baseline. Since the PR touches no prompt body (src/inngest/*.ts)
+  or eval (evals/*.yaml), the expected result is a real GATE PASS (zero regressions),
+  not a skip — the system working as designed. [Run link recorded on the PR.]
+
+SPRINT 9 TRACK A COMPLETE. T-95 is the last task in the eval-gate track (T-89 shared
+  runner → T-90 scoped virtual key → T-91 calibration guards → T-92 baseline store →
+  T-93 CI wiring + DB persistence → T-94 nightly + required-check registration → T-95
+  docs reconciliation). The whole ADR-0007 "real LLM-rubric eval gate" build — spanning
+  this entire session — is done: the "eval-gated" constraint is enforced by a live,
+  calibration-guarded, required merge check, not by process + a schema check alone.
+```
