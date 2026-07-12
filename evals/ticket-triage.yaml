@@ -109,3 +109,89 @@ tests:
           - Give a one-sentence reasoning consistent with a minor cosmetic request.
           Fail if urgency is "critical" or "high" (gross over-escalation), if the JSON is malformed, or if an out-of-enum value appears.
         threshold: 0.8
+
+  # (e) Security breach → critical. The prompt lists "security breach" as a defining
+  #     critical trigger, but every existing critical/high case tests only the
+  #     outage/availability axis. This exercises the SECURITY axis of critical.
+  - description: "Suspected unauthorized-access security breach classifies as urgency=critical"
+    vars:
+      ticket_title: "Possible breach — unfamiliar logins on our admin account"
+      ticket_body: "We are seeing several active sessions on our company admin account from IP addresses and locations none of our staff recognise, starting late last night. We believe someone gained unauthorised access to our data. Please advise urgently."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to exactly "critical": suspected unauthorised access / a security breach is one of the prompt's three defining critical triggers (alongside system-down and data-loss), independent of any outage.
+          - Use a security/incident-oriented category and route to a security/engineering/incident team (NOT billing or a generic queue).
+          - Give a one-sentence reasoning that references the unauthorised access / security concern.
+          Fail if urgency is anything other than "critical", if the output is not valid JSON, or if any enum value outside {critical,high,normal,low} is used.
+        threshold: 0.8
+
+  # (f) Data loss → critical. The third of the prompt's critical triggers ("data loss"),
+  #     untested until now. Deliberately worded as irrecoverable loss, not mere degradation,
+  #     to exercise the data-loss axis rather than the availability one.
+  - description: "Irrecoverable loss of created records classifies as urgency=critical"
+    vars:
+      ticket_title: "All of last week's records have vanished"
+      ticket_body: "This morning every record our team created last week is gone from the system — hundreds of entries have simply disappeared and we cannot find them anywhere. Nothing we try brings them back, and our operations are stalled without that data."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to exactly "critical": irrecoverable loss of customer data is the prompt's "data loss" critical trigger. It is NOT merely "high" degradation — the data is gone, not slow.
+          - Use a data-loss / data-integrity oriented category and route to an engineering/ops/incident team.
+          - Give a one-sentence reasoning consistent with lost/deleted data.
+          Fail if urgency is "high"/"normal"/"low" (under-escalation of data loss), if the JSON is malformed, or if an out-of-enum value appears.
+        threshold: 0.8
+
+  # (g) Uncertain / low-signal ticket → the prompt's explicit "If uncertain" default of
+  #     urgency=normal. No existing test exercises the fallback branch of the instruction.
+  - description: "Vague low-signal ticket falls back to urgency=normal per the uncertain-default rule"
+    vars:
+      ticket_title: "A quick heads up"
+      ticket_body: "Hi there. I had a bit of an issue earlier and I'm honestly not sure what happened — it might be fine now. Just wanted to flag it in case it matters. Let me know if you need anything from me. Thanks!"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to "normal": the ticket carries no clear severity or impact signal, so the prompt's explicit "If uncertain: urgency=normal, category=support, routing=support" default applies. ("low" is a tolerable read of a minor flag, but the uncertain-default is normal.)
+          - Not over-escalate an ambiguous, low-information message.
+          Fail if urgency is "critical" or "high" (over-escalation of a vague, no-impact ticket), if the JSON is malformed, or if an out-of-enum value appears.
+        threshold: 0.8
+
+  # (h) Broad impact BUT a workaround exists → normal, not high. Directly probes the
+  #     high/normal boundary the prompt draws on "no workaround" (high) vs "workaround
+  #     available" (normal) — a different boundary than (b)'s no-workaround high case.
+  - description: "Team-wide inconvenience with a working workaround classifies as urgency=normal, not high"
+    vars:
+      ticket_title: "Dashboard charts not rendering, but CSV export still works"
+      ticket_body: "The graphs on our main dashboard have stopped rendering for our whole team since this morning. It is inconvenient, but we can still pull the exact same numbers with the export-to-CSV button, so nobody is blocked — we just hope you can fix the charts when you get a chance."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to exactly "normal": although the whole team is affected, a workaround explicitly exists (CSV export) and nobody is blocked, which is the prompt's definition of normal ("limited impact, workaround available"). It is NOT "high" — high requires NO workaround — and clearly not critical.
+          - Give a one-sentence reasoning that acknowledges the stated workaround.
+          Fail if urgency is "high" or "critical" (over-escalation despite the stated workaround), if the JSON is malformed, or if an out-of-enum value appears.
+        threshold: 0.8
+
+  # (i) Non-English input → the JSON output contract must survive regardless of input
+  #     language. Guards robustness of the machine-parseable contract on realistic
+  #     multilingual intake; urgency judged leniently (JSON integrity is the point).
+  - description: "Non-English (Spanish) ticket still yields the valid JSON contract with a closed-enum urgency"
+    vars:
+      ticket_title: "No puedo iniciar sesión en mi cuenta"
+      ticket_body: "Hola, llevo desde ayer intentando entrar en mi cuenta y me aparece un error cada vez que introduzco mi contraseña. Lo he probado varias veces sin éxito. ¿Me pueden ayudar a recuperar el acceso, por favor?"
+    assert:
+      - type: llm-rubric
+        value: |
+          Judge PRIMARILY on the output contract surviving non-English input:
+          - The response MUST be ONLY a single valid JSON object with the keys urgency, category, routing, reasoning, even though the ticket is written in Spanish.
+          - "urgency" MUST be one of exactly {critical, high, normal, low}. The ticket is a single user unable to log in (a limited-impact access problem), so "normal" or "low" is the faithful read; "critical" or "high" would be over-escalation.
+          - category/routing should be a sensible auth/account/access-and-support classification.
+          Fail if the output is not a single valid JSON object, if it is prose or partially prose, or if urgency is outside the closed enum. (Do not fail solely on a normal-vs-low judgement call.)
+        threshold: 0.8
