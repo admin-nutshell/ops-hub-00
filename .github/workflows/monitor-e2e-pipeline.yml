@@ -120,6 +120,104 @@ name: Monitor — Synthetic-ticket downstream E2E pipeline (T-98)
 #   failure path (a deliberately-wrong value in a manual test invocation,
 #   never the real credential's real scope). See DECISIONS.md for the run
 #   that used this to verify.
+#
+# T-111 / SC7 OPTION (ii) — STAGING-STOPPED GUARD (added 2026-07-13, DECISIONS.md):
+# closes the residual timing race T-108's own SC7 re-review named but did not
+# close (docs/adr/0010-staging-deploy-trigger-sc7.md lines ~122-126): T-108's
+# start-then-stop (option i) restores ops-hub-staging to STOPPED after every
+# main-deploy.yml run, but staging can be TRANSIENTLY running (mid start-then-
+# stop, or from a manual/other trigger) exactly when this monitor's scheduled
+# run fires — and staging's OWN 5-minute sweepNewTickets/sweepRespondedTickets/
+# sla-monitor crons are GUC'd to this monitor's SAME synthetic tenant/project
+# (SC7's named operating assumption, header above), so they'd double-process
+# the sentinel ticket ahead of or alongside this run's own dispatch, corrupting
+# the read. New first-class step "Guard — ops-hub-staging must be STOPPED
+# before this run proceeds (SC7 option ii, T-111)" (id: staging_guard) queries
+# ops-hub-staging's ACTUAL container state via SSH `docker ps` (authoritative —
+# not the Coolify status field; same technique t107-check-staging-status.yml
+# already proved) BEFORE "Reset sentinel ticket" runs. Reuses EXISTING repo
+# secrets only (VPS_HOST, SSH_PRIVATE_KEY — already used by
+# t107-check-staging-status.yml and a dozen other diagnose-*/fix-*.yml
+# workflows for this exact SSH-to-Coolify-VPS pattern); no new credential.
+# Strictly READ-ONLY — this guard never stops/starts/mutates anything; it only
+# decides whether THIS run may proceed.
+#
+# DESIGN DECISION (three sub-cases, each considered deliberately, not defaulted
+# into — see DECISIONS.md 2026-07-13 "T-111" entry for the full option
+# comparison):
+#   1. staging confirmed STOPPED → proceed=true, the run continues exactly as
+#      before this guard existed.
+#   2. staging confirmed RUNNING → proceed=false, `::warning::` annotated,
+#      SKIP CLEANLY (exit 0, job stays GREEN) — deliberately mirrors this
+#      file's own existing "monitor dormant" idiom (missing-secrets guard,
+#      above) rather than failing the job red. Rationale: this monitor's own
+#      header states its purpose is catching "a green health signal while the
+#      real path is broken" — a transiently-running staging (most likely mid a
+#      legitimate main-deploy.yml start-then-stop window, which self-resolves
+#      within minutes) is NOT that; it is "this run can't take a clean
+#      measurement right now," the same semantic class as the pre-existing
+#      dormant/missing-secrets case, not a downstream-pipeline failure. Making
+#      a benign, self-healing, infrequent deploy-overlap go RED would train
+#      watchers to discount this monitor's red runs — exactly the signal this
+#      monitor cannot afford to be noisy about. NO status-page incident is
+#      opened for this case (SC8 stays reserved for a confirmed downstream-
+#      chain break via reset/dispatch/poll/langfuse failure, not an internal
+#      precondition miss) — this falls out for free, untouched: the "On
+#      failure" step's existing `steps.guard.outputs.ready == 'true'`
+#      condition is never true when "Guard — required credentials" itself
+#      never runs (see gating below), so no code in that step needed
+#      touching. Detecting staging left running across MANY consecutive
+#      cycles (a real operational problem, distinct from one benign overlap)
+#      is the STILL-UNDECIDED T-98 consecutive-fail-threshold carry
+#      (WORK.md Sprint 15 "Explicitly deferred" list) — deliberately NOT
+#      rebuilt here; this guard is a single-run precondition check only.
+#   3. the SSH check ITSELF fails (VPS/SSH unreachable, can't confirm either
+#      way) → proceed=false, FAIL THE JOB (exit 1, job goes RED) — the one
+#      deliberate asymmetry from case 2. Fail-closed: never proceed on an
+#      unconfirmed state. Red (not a quiet skip) because, unlike a
+#      transiently-running staging, an unreachable VPS/SSH path does NOT
+#      self-heal — if it silently skip-clean-green'd like case 2, a rotated
+#      key or VPS network change could persist unnoticed for cycle after
+#      cycle, silently zeroing out this monitor's downstream-chain coverage
+#      while it kept reporting green — precisely the "green while the real
+#      path is broken" failure mode this monitor exists to catch, this time
+#      in its own precondition check. Still no status-page incident (SC8
+#      stays reserved for a confirmed downstream-pipeline break, not an
+#      SSH/VPS-reachability problem outside this monitor's own scope) — but a
+#      genuinely red, notification-generating CI run, which case 2
+#      deliberately is not.
+#
+# GATING: only ONE existing line changes — "Guard — required credentials +
+# sentinel ticket id all present" (id: guard) gets `if:
+# steps.staging_guard.outputs.proceed == 'true'` added. When staging_guard
+# sets proceed=false (either exit path), the credentials-guard step does not
+# run, so `steps.guard.outputs.ready` is never set — every existing
+# downstream step (already gated on `steps.guard.outputs.ready == 'true'`)
+# cascades to skipped without any of their own conditions needing to change,
+# and the already-BC1-fixed incident-open/resolve steps' existing conditions
+# are untouched and correctly stay skipped. No grace/polling window: the
+# guard makes one authoritative read and decides — proceeding is unsafe for
+# the SAME correctness reason (sentinel-ticket sweep collision) regardless of
+# WHY staging is running, so waiting to distinguish "legitimate deploy" from
+# "left running by mistake" would add latency and its own race without
+# changing what this run should do either way.
+#
+# mode=simulate-failure is DELIBERATELY UNCHANGED by this guard — its "Reset
+# sentinel ticket" target is always a guaranteed-nonexistent id, never the
+# SC7-protected sentinel row, so it is unaffected by staging's cron activity
+# either way; gating it behind staging_guard would only add friction to an
+# already-independent, already-proven failure-path test. staging_guard exits
+# proceed=true immediately (untouched) when MODE=simulate-failure.
+#
+# mode=simulate-staging-running (NEW, manual verification only — never on the
+#   schedule): forces staging_guard to treat ops-hub-staging as RUNNING
+#   WITHOUT querying real SSH/Coolify state at all — proves the case-2
+#   skip-clean abort branch fires for real (Reset/Dispatch/Poll/LangFuse and
+#   the incident-open step all stay skipped, job stays green) without
+#   requiring staging to actually be left running or touching any live
+#   infrastructure. Same "extend the existing mode input, don't invent a
+#   second one" pattern as mode=simulate-failure. See DECISIONS.md for the
+#   run that used this to verify.
 
 on:
   schedule:
@@ -128,8 +226,8 @@ on:
     inputs:
       mode:
         type: choice
-        options: [live, simulate-failure]
-        description: "live = real scheduled behavior; simulate-failure = verification-only, forces the 'reset' step to fail via a guaranteed-nonexistent ticket id against the real (already-signed-off) DB credential, without touching the real sentinel row or the real Inngest key"
+        options: [live, simulate-failure, simulate-staging-running]
+        description: "live = real scheduled behavior; simulate-failure = verification-only, forces the 'reset' step to fail via a guaranteed-nonexistent ticket id against the real (already-signed-off) DB credential, without touching the real sentinel row or the real Inngest key; simulate-staging-running = verification-only, forces the SC7 staging-guard to treat ops-hub-staging as RUNNING without querying real infra, proving the guard's skip-clean abort branch (T-111)"
         default: live
 
 permissions:
@@ -148,6 +246,11 @@ env:
   # refining this threshold once real run-time data exists; not tuned here.
   POLL_MAX_ATTEMPTS: "30"
   POLL_INTERVAL_SECONDS: "20"
+  # T-111 / SC7 option (ii): same pinned Coolify app UUID main-deploy.yml uses
+  # (that file's own comment, T-54/WORK.md: pinned by UUID, not name, because
+  # ops-hub-prod's app happens to share the display name "ops-hub-app" in a
+  # different Coolify project — a name lookup would match both).
+  OPS_HUB_STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
 
 jobs:
   monitor:
@@ -161,11 +264,66 @@ jobs:
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       SENTINEL_TICKET_ID: ${{ vars.E2E_SENTINEL_TICKET_ID }}
     steps:
+      # ── T-111 / SC7 option (ii): staging-stopped guard ─────────────────────
+      # Must run before anything else in this job (including "Install psql") —
+      # see the header comment block above for the full design rationale.
+      - name: Setup SSH key (SC7 staging-guard)
+        if: env.MODE == 'live'
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Guard — ops-hub-staging must be STOPPED before this run proceeds (SC7 option ii, T-111)
+        id: staging_guard
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          if [ "$MODE" = "simulate-failure" ]; then
+            echo "::notice title=T-111 SC7 guard N/A in simulate-failure mode::mode=simulate-failure always targets a guaranteed-nonexistent ticket id in the 'Reset sentinel ticket' step, never the SC7-protected sentinel row, so it is unaffected by staging's cron activity either way. Not gating that independent, already-proven failure-path test behind this guard."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$MODE" = "simulate-staging-running" ]; then
+            echo "::notice title=T-111 monitor SIMULATE-STAGING-RUNNING mode::Manual verification-only run (never scheduled). Forces this guard to treat ops-hub-staging as RUNNING WITHOUT querying real SSH/Coolify state, proving that Reset/Dispatch/Poll/LangFuse and the incident-open step all correctly stay skipped when the guard trips — without needing to actually leave staging running (this guard is read-only and never starts/stops anything itself)."
+            echo "::warning title=T-111 SC7 guard SIMULATED — treating ops-hub-staging as RUNNING::This is a forced verification run (mode=simulate-staging-running), not a real reading of infrastructure state. See DECISIONS.md for the run that used this to prove the guard's abort branch."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Checking ops-hub-staging's ACTUAL container state via SSH (authoritative — not the Coolify status field; same technique as t107-check-staging-status.yml's 'AUTHORITATIVE container state' step)..."
+          OUT=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${OPS_HUB_STAGING_UUID} --format '{{.Names}}'" 2>&1) && RC=0 || RC=$?
+          if [ "$RC" -ne 0 ]; then
+            echo "$OUT"
+            echo "::error title=T-111 SC7 guard: could not verify ops-hub-staging's state::SSH check failed (exit $RC). Fail-closed: this run cannot confirm ops-hub-staging is stopped, so it will NOT touch the sentinel ticket — proceeding blind would defeat the point of this guard. Deliberately a genuine job failure (not a quiet skip): unlike a transiently-running staging (self-resolving within minutes via main-deploy.yml's start-then-stop), an unreachable VPS/SSH path does not self-heal and could otherwise persist unnoticed, silently removing this monitor's downstream-chain coverage every 6 hours. No status-page incident opened by this step (SC8 is reserved for a confirmed downstream-chain break, not an SSH/VPS-reachability problem)."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          if [ -n "$OUT" ]; then
+            echo "::warning title=T-111 SC7 guard: ops-hub-staging is RUNNING ($OUT) — skipping this cycle::SC7's named operating assumption (this file's header) is that ops-hub-staging stays STOPPED between deploys; it is running right now. Could be main-deploy.yml's legitimate start-then-stop window still in flight, or staging left running by mistake — either way, staging's own sweepNewTickets/sweepRespondedTickets/sla-monitor crons are GUC'd to this monitor's SAME synthetic tenant/project and would double-process the sentinel ticket if this run proceeded (synthetic-tenant LiteLLM spend, duplicate FreeScout notes, KB pollution, and a corrupted read on this monitor's own signal). Skipping this run's downstream-chain assertion cleanly rather than risk that — not a job failure, not a status-page incident. The next scheduled run (6h) or a manual dispatch will re-check. A staging left running across MANY consecutive cycles is a real operational problem, but detecting that pattern is the still-undecided T-98 consecutive-fail-threshold carry (WORK.md) — deliberately not rebuilt here."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Confirmed: no running ops-hub-staging container. SC7 default state intact — proceeding."
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Cleanup SSH key (SC7 staging-guard)
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+      # ── end T-111 / SC7 option (ii) guard ──────────────────────────────────
+
       - name: Install psql
         run: sudo apt-get install -y postgresql-client
 
       - name: Guard — required credentials + sentinel ticket id all present
         id: guard
+        if: steps.staging_guard.outputs.proceed == 'true'
         run: |
           if [ "$MODE" = "simulate-failure" ]; then
             echo "::notice title=T-98 monitor SIMULATE-FAILURE mode::Manual verification-only run (never scheduled). Forces the 'reset' step to fail for real against the already-signed-off, RLS-scoped E2E_MONITOR_DB_URL by targeting a guaranteed-nonexistent ticket id — proving the BC1-fixed incident-opening wiring without touching the real sentinel row, the real Inngest key, or requiring E2E_SENTINEL_TICKET_ID/FQ-75 to be fully provisioned."
