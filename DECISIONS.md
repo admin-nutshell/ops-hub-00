@@ -6204,3 +6204,136 @@ one-off.
 
 Full account: `docs/deploys/2026-07-13-t107-staging-litellm-url-repin.md`.
 
+---
+
+### 2026-07-13 — T-107 systemic finding: `main-deploy.yml` auto-starts ops-hub-staging on every non-doc merge, colliding with T-98 SC7 (Tech Lead + Production Manager JOINT REVIEW → T-108)
+
+```
+2026-07-13 [Tech Lead + Production Manager] JOINT REVIEW of the systemic CI/CD
+finding T-107 surfaced during execution (docs/deploys/2026-07-13-t107-staging-
+litellm-url-repin.md, "The systemic finding" section). FINDING, verified against
+the workflow file, not the summary: main-deploy.yml triggers on
+push:branches:[main] and filters with a paths-ignore DENYLIST (status/**,
+docs/**, WORK.md, DECISIONS.md, FOUNDER_QUEUE.md, CLAUDE.md) that omits
+.github/workflows/** and every other non-doc path. Consequence: EVERY merge to
+main that isn't purely one of those doc paths silently builds+pushes an image,
+PATCHes ops-hub-staging's image tag, and POST /start's ops-hub-staging for real
+(then Inngest-syncs staging's functions). It fired accidentally during T-107 —
+merging workflow-file-only PR #444 started staging, confirmed via SSH docker ps
+(container ...-145648391091 Up 5 minutes) — and by construction has been firing
+on every app-code-or-workflow-touching merge (T-104's ~seven PRs, T-105's PRs,
+#444) since T-98 shipped SC7 in Sprint 10. Newly NOTICED, not new: prior tasks
+had no reason to check staging's live state. This collides with T-98's SC7 named
+operating assumption ("ops-hub-staging stays stopped; restarting it — or
+repointing staging's POLLING_* env — requires a T-98 re-review first"; DECISIONS
+2026-07-12, Ruling 1 Correction 2 + SC7).
+
+BLAST-RADIUS CONFIRMED STAGING-ONLY: main-deploy.yml is the ONLY push:main
+workflow that mutates ops-hub-staging state (targets OPS_HUB_STAGING_UUID +
+POST /start). The other three push:main workflows are stateless w.r.t. the app:
+prod-deploy.yml is workflow_dispatch-only (prod never auto-deploys);
+deploy-status.yml publishes the GitHub-Pages status site (no Coolify call);
+eval-gate-live.yml runs evals against LiteLLM targets (zero POST-to-/applications).
+So this is confined to staging — prod is untouched by the finding.
+
+ROOT INSIGHT — two decisions that never reconciled, not a bug in either.
+Staging-auto-deploy-on-merge is FOUNDATIONAL (2026-06-18 CI/CD lock: "staging
+auto-deploy on merge to main via Coolify webhook, prod manual promotion only").
+SC7 arrived LATER (Sprint 10 / T-98) and assumed staging was stopped-and-staying-
+stopped for its synthetic-tenant-inertness design, unaware the pipeline restarts
+staging on every qualifying merge. Neither is wrong on its own terms; they were
+simply never held against each other. That is the systemic defect — a governance
+gap between two correct-in-isolation decisions — which is why it needs a decision,
+not a silent one-line patch.
+
+OPTIONS WEIGHED (both lenses — CI/CD design AND operating-assumption):
+- (a) Widen paths-ignore to also exclude .github/workflows/** (+ other non-product
+  paths). CORRECT ON ITS OWN TERMS from the CI/CD lens: a change to a GitHub
+  Actions workflow file cannot change the ops-hub application image, so it should
+  never trigger an app rebuild+deploy. But NECESSARY-NOT-SUFFICIENT from the
+  operating-assumption lens: any merge touching real app code (src/**, Dockerfile,
+  package.json, pnpm-lock.yaml, tsconfig) will STILL build+start staging — which
+  is precisely SC7's forbidden transition. (a) reduces the FREQUENCY of SC7
+  violations (docs- and workflow-only merges become inert) but does not eliminate
+  them. Design nuance flagged for the build, not decided here: a paths-ignore
+  DENYLIST is inherently fragile — every future non-product path added to the repo
+  silently re-opens the gap. A paths ALLOWLIST (deploy only when genuine product
+  source changes) is fail-safe: unlisted paths default to not-deploying. Its
+  trade-off is opposite — an allowlist fails toward UNDER-deploying (a real change
+  could silently miss staging), whereas the current denylist fails toward
+  OVER-deploying. For a staging whose currently-desired state is "mostly stopped,"
+  failing toward under-deploying is the safer direction — so the allowlist is
+  likely preferable, but the exact path set + allowlist-vs-denylist call is left to
+  the build task with Production Manager sign-off.
+- (b) Re-review/loosen SC7 to accept that staging deploys on every qualifying
+  merge (redefine "stays stopped," or make the T-98 monitor tolerate a transiently-
+  running staging). Necessary as the RECONCILIATION half, but insufficient ALONE:
+  it would leave workflow-file merges pointlessly rebuilding+deploying the app
+  image, which (a) fixes for free and correctly.
+- (c) Combination. PREFERRED.
+- (do-nothing) Rejected: the contradiction is live and will bite the moment the
+  T-98 monitor goes live (see sequencing below).
+
+DECISION: (c). (a) NOW as the correct immediate narrowing (workflow-file changes
+must not rebuild+deploy the app; strongly consider converting to an allowlist
+while there), PLUS a MANDATORY SC7 re-review to finish the reconciliation, because
+(a) alone cannot close the app-code-merge path. The SC7 re-review's decision space
+(NOT pre-committed here — that is the re-review's job, jointly with Production
+Manager on deploy mechanics + Security Lead on the monitor's safety assumption):
+(i) START-THEN-STOP — main-deploy.yml deploys, health-checks, then POST /stop's
+staging, restoring SC7 while KEEPING the "does main still build a bootable image"
+canary that pr-checks (lint/type/unit) does not cover; (ii) MONITOR TOLERATES
+TRANSIENT STAGING — the T-98 monitor asserts/enforces staging-stopped before each
+run, or scopes the sentinel so staging's sweep cannot double-grab it; (iii)
+WORKFLOW_DISPATCH-ONLY STAGING — drop staging auto-deploy entirely (as prod
+already is), making "stopped" the literal default and removing the contradiction
+at its root, at the cost of the build-a-bootable-image canary (option (i) is the
+way to keep that canary if (iii) is chosen for the trigger). This may warrant a
+short ADR at re-review time; not pre-authored here so as not to pre-empt the
+re-review's option selection.
+
+SEQUENCING — this is why T-108 is NOT open-ended backlog. Today the T-98 monitor
+is DORMANT (monitor-e2e-pipeline.yml guards on E2E_MONITOR_DB_URL +
+E2E_SENTINEL_TICKET_ID and exits clean while FQ-75/SC9 are unprovisioned), so a
+transiently-running staging causes no live harm right now — that is the
+non-escalation basis and it holds. But the moment FQ-75's secrets + SC9's sentinel
+land, the monitor resets the sentinel to state='new' every 6h, and a running
+staging's sweepNewTickets (GUC'd to the synthetic tenant 00…0010, staging's HOME
+scope) will double-grab it — the exact SC7 harm (staging LiteLLM spend, duplicate
+FreeScout-staging notes, 24h auto-resolve → kb-learn → synthetic KB pollution),
+all confined to the synthetic tenant. THEREFORE T-108 must land BEFORE the T-98
+monitor goes live, OR the SC9 provisioning runbook must enforce "staging stopped"
+as a hard precondition. That ordering is the concrete prioritization hook.
+
+PROD-INFRA GATE (§5.1 category b): modifying main-deploy.yml's trigger changes
+WHEN production-adjacent auto-deploys happen — exactly the kind of deploy-path
+change that needs the user's OWN direct go-ahead before execution. This review
+therefore SCOPES AND RECOMMENDS ONLY; it implements no trigger change. Filed as
+T-108 (WORK.md Sprint 13 deferred/flagged), NOT started. When T-108 is picked up,
+its exit criteria carry the pause-and-ask for the trigger edit + Production Manager
+(deploy mechanics) + Security Lead (SC7/monitor assumption) sign-off.
+
+FOUNDER_QUEUE CALL: NOT escalating — routine engineering backlog, not a
+customer-impacting incident. Reasoning: ops-hub-staging is non-customer-facing
+(verified, not assumed: prod auto-deploy does not exist — prod-deploy.yml is
+workflow_dispatch-only; staging polls freescout-STAGING; staging's POLLING_* is
+the synthetic pair 00…0001/00…0010; RLS is fail-closed and tenant-scoped, so
+staging structurally cannot read or write the prod tenant 00…0030; the T-54(B)
+Inngest fan-out that once let staging touch prod was permanently closed by PR #239's
+split app-ids "ops-hub" vs "ops-hub-staging"). The only realized effects of an
+errant staging start are internal: bounded free-tier LiteLLM spend and
+synthetic-tenant pollution — no customer data, no data leak, no security-boundary
+crossing. SC7 is a MONITOR-CORRECTNESS operating assumption, not a security
+control. This meets none of CLAUDE.md's escalation triggers (feature scope /
+pricing-SLA / customer-impacting incident / sprint-slip>1wk / security incident);
+it is a technical CI/CD design gap, agent-owned. This EXPLICITLY OVERRIDES the
+incident doc's own "Recommend filing this to FOUNDER_QUEUE" line: that
+recommendation over-weighted "it touches a safety invariant (SC7)," but SC7 guards
+a synthetic internal tenant / monitor correctness, not customer data or a security
+boundary — so the reconciliation is a design decision for the team, not a business
+decision for the founder. (SEPARATE and NOT part of this finding: T-107's own
+PROCESS incident — the self-confirmed STOP after the accidental start — and the
+repin closeout are already held for the user's review under §5.1; that hold stands
+on its own and is not an FQ business item, and nothing here resolves or closes it.)
+-> docs/deploys/2026-07-13-t107-staging-litellm-url-repin.md ; WORK.md T-108
+```
