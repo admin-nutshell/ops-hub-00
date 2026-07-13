@@ -1,0 +1,171 @@
+name: T-104 PRODUCTION — finish cutover (re-pin ops-hub-prod only)
+
+# Follow-up to t104-apply-verify-litellm-prod-alias.yml run 29215316106: the
+# alias apply + redeploy + alias-presence check all PASSED (litellm-prod
+# rotated hlik1d96uvkkjzpbxa3azhcv-140935289661 -> ...-002550568858, and
+# 'litellm-prod' was confirmed present in that container's coolify-network
+# aliases). The GATE step's single-shot completion smoke test hit HTTP 502
+# ~1s after the redeploy was reported "finished" -- the same class of
+# premature-check timing artifact seen on litellm-staging (T-104 staging run:
+# HTTP 000 on the first probe, HTTP 200 on retry ~10s later, confirmed by
+# reading litellm-staging's own logs mid-Prisma-init at probe time). A
+# manual re-check just now (this session, no workflow needed --
+# GET /health/readiness, no auth) confirms litellm-prod is NOW healthy:
+# HTTP 200.
+#
+# Re-running the FULL apply workflow would trigger a SECOND unnecessary
+# litellm-prod redeploy (more churn, more delay) when the alias is already
+# correctly in place on the currently-running container. This workflow picks
+# up exactly where the aborted run left off: gate on litellm-prod's real
+# health again (fresh, not reused) as the safety check, then complete ONLY
+# the ops-hub-prod cutover (steps 6-7 of the parent workflow) -- because
+# ops-hub-prod's LITELLM_URL is currently STALE (pointed at the now-gone
+# ...-140935289661 container), this is the exact FQ-76 failure window,
+# deliberately reproduced and now being closed as fast as possible.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'finish-prod-cutover' to confirm"
+        required: true
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_PROD_EXTERNAL_URL: "https://litellm-prod.inatechshell.ca"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  OPS_HUB_PROD_URL: "https://ops-hub-prod.inatechshell.ca"
+  PROD_ALIAS: "litellm-prod"
+
+jobs:
+  finish:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+    steps:
+      - name: Confirm input
+        run: |
+          if [ "${{ inputs.confirm }}" != "finish-prod-cutover" ]; then
+            echo "::error::Confirmation mismatch"; exit 1
+          fi
+
+      - name: Fresh GATE — litellm-prod real completion smoke test (retried, not single-shot)
+        run: |
+          for i in $(seq 1 8); do
+            HTTP=$(curl -s --max-time 20 -o /tmp/chat.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $MASTER_KEY" -H "Content-Type: application/json" \
+              "$LITELLM_PROD_EXTERNAL_URL/chat/completions" \
+              -d '{"model":"triage-model","messages":[{"role":"user","content":"reply with the single word OK"}],"max_tokens":5,"temperature":0}')
+            echo "Attempt $i: POST /chat/completions -> HTTP $HTTP"
+            jq -r '.choices[0].message.content // .error // .' /tmp/chat.json 2>/dev/null
+            [ "$HTTP" = "200" ] && { echo "GATE PASS"; break; }
+            sleep 8
+          done
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::litellm-prod still not healthy after retries -- STOPPING. Do not proceed with ops-hub-prod cutover."
+            exit 1
+          fi
+
+      - name: Delete all existing LITELLM_URL rows on ops-hub-prod
+        run: |
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Deleting $COUNT existing LITELLM_URL row(s)..."
+          for eu in $(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs/$eu")
+            echo "  DELETE $eu -> HTTP $DEL"
+          done
+
+      - name: Set LITELLM_URL to the stable alias
+        run: |
+          NEW_URL="http://${PROD_ALIAS}:4000"
+          HTTP=$(curl -s --max-time 30 -o /tmp/set.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$NEW_URL" '{key:$k,value:$v}')")
+          echo "POST LITELLM_URL=$NEW_URL -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set LITELLM_URL"; cat /tmp/set.json; exit 1
+          fi
+
+      - name: Read-back — exactly one row, correct value
+        run: |
+          curl -s --max-time 30 -o /tmp/rb2.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/rb2.json 2>/dev/null)
+          VALUE=$(jq -r '[.[] | select(.key == "LITELLM_URL") | .value] | join(", ")' /tmp/rb2.json 2>/dev/null)
+          echo "LITELLM_URL row count: $COUNT, value(s): $VALUE"
+          if [ "$COUNT" != "1" ]; then
+            echo "::error::Expected exactly 1 row, found $COUNT"; exit 1
+          fi
+
+      - name: Restart ops-hub-prod
+        id: restart_opshub
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ro.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/restart")
+          echo "POST /restart -> HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/ro.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for restart + generic health
+        run: |
+          DEP="${{ steps.restart_opshub.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then sleep 30; else
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) break ;;
+                failed|error) echo "ERROR: restart failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$OPS_HUB_PROD_URL/health" || echo "000")
+            [ "$HTTP" = "200" ] && { echo "ops-hub-prod generic /health OK"; break; }
+            echo "Attempt $i: HTTP $HTTP — waiting"; sleep 10
+          done
+
+      - name: VERIFY — GET /health/litellm-internal (the real path)
+        run: |
+          for i in $(seq 1 15); do
+            HTTP=$(curl -s --max-time 15 -o /tmp/verify.json -w "%{http_code}" "$OPS_HUB_PROD_URL/health/litellm-internal" || echo "000")
+            echo "Attempt $i: /health/litellm-internal -> HTTP $HTTP"
+            cat /tmp/verify.json 2>/dev/null
+            echo ""
+            [ "$HTTP" = "200" ] && { echo "VERIFIED"; break; }
+            sleep 10
+          done
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Did not reach 200 -- ROLLBACK: re-run fix-ops-hub-prod-litellm-url.yml"
+            echo "with confirm_container_name= the current litellm-prod suffixed name."
+            exit 1
+          fi
+
+      - name: Sync Inngest functions
+        run: curl -s --max-time 30 -X PUT "$OPS_HUB_PROD_URL/api/inngest" || true
+
+      - name: Immediate T-97 monitor confirmation dispatch (mode=live)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run monitor-litellm-internal-auth.yml --repo "${{ github.repository }}" --ref main -f mode=live
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "T-104 PRODUCTION cutover completed. New LITELLM_URL: http://${PROD_ALIAS}:4000"
