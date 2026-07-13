@@ -106,6 +106,27 @@ jobs:
           echo "Current LITELLM_URL row count: $COUNT"
           jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' /tmp/envs.json 2>/dev/null
 
+      - name: ops-hub-staging — AUTHORITATIVE container state via SSH (T-98 SC7 check — is it ACTUALLY running, not just the Coolify status field)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          echo "Looking for a running ops-hub-staging container (filter: $OPS_HUB_STAGING_UUID)..."
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${OPS_HUB_STAGING_UUID} --format '{{.Names}}\t{{.Status}}'" \
+            | tee /tmp/opshub_ps.txt
+          if [ -s /tmp/opshub_ps.txt ]; then
+            echo "::warning::ops-hub-staging HAS a running container right now (see above). This is an SC7 concern (T-98 named operating assumption: ops-hub-staging stays STOPPED) if unexpected."
+            echo "OPSHUB_RUNNING=true" >> "$GITHUB_ENV"
+          else
+            echo "No running ops-hub-staging container found via docker ps -- consistent with SC7 (stays stopped)."
+            echo "OPSHUB_RUNNING=false" >> "$GITHUB_ENV"
+          fi
+          echo "--- Also checking exited/stopped containers for this UUID (for context) ---"
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps -a --filter name=${OPS_HUB_STAGING_UUID} --format '{{.Names}}\t{{.Status}}'" || true
+
       - name: Cleanup SSH key
         if: always()
         run: rm -f ~/.ssh/id_ed25519
