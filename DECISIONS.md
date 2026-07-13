@@ -7008,3 +7008,184 @@ as the boundary, not assumed away.
    closes) ; t107-check-staging-status.yml (the SSH docker-ps technique this
    reuses, proven live in T-107's own DECISIONS.md entries)
 ```
+
+### 2026-07-13 — T-110: triage case (i) "Non-English (Spanish) ticket" de-flaked at the ROOT (fixture tightening), NOT by softening the gate — IMPLEMENTED, PR open, awaiting user merge authorization (Evals Lead diagnosis + fix; Tech Lead independent review)
+
+```
+2026-07-13 [Evals Lead] T-110 DIAGNOSIS + FIX. Anchor of Sprint 15. Closes the one
+live risk T-109's own post-merge baseline capture surfaced (DECISIONS.md 2026-07-13
+"Sprint 14 closeout"): triage case (i) is a FLAKY live-eval-gate case, frozen into
+the baseline in a lucky-PASS state. Build only — NOT merged (governance gate below).
+
+THE DIAGNOSIS (form a real opinion, defend it to a reviewer):
+Case (i) ("Non-English (Spanish) ticket", evals/ticket-triage.yaml) tested a single
+user who "can't log in since yesterday, tried several times without success" — a total
+lockout with NO stated workaround. The production triage-model classified this
+urgency=high on ~50% of temp=0 runs and normal/low on the other half (DECISIONS.md
+2026-07-13 T-109 follow-up finding; live run 29271330987 rolled 'high', two earlier
+runs rolled normal/low). I diagnosed WHY the split is ~50/50, and it is NOT grader
+noise: it is genuine AMBIGUITY in the ticket FIXTURE against the triage prompt's own
+taxonomy (src/inngest/ticket-triage.ts lines 104-108). The prompt defines
+"high: major degradation, MULTIPLE users blocked, no workaround" and
+"normal: limited impact, workaround available". The OLD ticket — single user (points
+to normal/low) but a total lockout with no stated workaround (pulls toward high) —
+straddles that boundary, so the model legitimately wanders across it run to run. An
+independent grader that read a 'high' output for THIS ticket called it over-escalation
+on its OWN merits (pass:false, score:0.6, "over-escalation for a single user unable to
+log in") — i.e. 'high' is the model WANDERING, not a defensible alternate read the gate
+was wrong to reject. Within the suite's own logic the faithful read is normal (limited
+impact, single user), low tolerable — exactly what the rubric author wrote and what
+case (h) (team-wide + workaround -> normal, NOT high) rewards.
+
+REJECTED a tempting third option (widen case (i)'s deterministic ALLOWED-set from
+{normal,low} to {normal,low,high}, only blocking 'critical'). Rejected for TWO
+independent reasons, either fatal:
+  (1) It would not even DE-FLAKE the case. honor-pass (ADR-0009 guardrail 2) NEVER
+      overrides a grader-declared pass:false; the grader independently calls 'high'
+      over-escalation here, so a 'high' run still fails the rubric component no matter
+      what the deterministic allowed-set permits. Widening the allowed-set alone
+      changes nothing — the case would keep flapping.
+  (2) It would DELETE the only case in the suite guarding that a single-user login
+      problem stays out of 'high'. Case (o) (the other non-English case) is
+      ALLOWED=['critical'] — a French TOTAL OUTAGE, all users blocked, 503 — a
+      genuinely DIFFERENT axis (critical/outage across a language), not the
+      single-user/high boundary. Widening (i) = a real coverage loss = exactly the
+      "soften the gate to pass on a case that's genuinely over-escalating" outcome
+      T-110's own hard constraint forbids. (An advisor pass caught me starting down
+      this path; banked here as the miss it was, not silently dropped.)
+
+THE FIX (option (a) from DECISIONS.md's own 2026-07-13 follow-up finding — fixture
+tightening, NOT a mechanism change, NOT a gate softening):
+Rewrote case (i)'s ticket_title/ticket_body (Spanish) so the "limited impact,
+workaround available" reading is UNAMBIGUOUS — removing the ambiguity at its ROOT
+rather than teaching the gate to tolerate 'high'. The new ticket: a user who forgot
+their password, has NOT yet tried the self-service "recuperar contraseña" reset link
+on the login screen, AND explicitly states continued access via their phone's app
+("Mientras tanto sigo entrando sin problema desde la aplicación de mi móvil, así que
+no es nada urgente" = "meanwhile I keep getting in fine from my phone's app, so it's
+not urgent at all"). That supplies the exact defeater for every 'high' criterion
+(single user; an active workaround already in use; a second self-service workaround
+not-yet-tried; self-declared non-urgency) — textbook "normal" (or tolerable "low"),
+both inside ALLOWED. The deterministic javascript assertion's ALLOWED=['normal','low']
+(C6's strict, grader-independent escalation gate) is UNCHANGED — verified byte-
+identical in the diff (only vars: + the llm-rubric prose changed; the JS block logic
+is untouched). This TIGHTENS the case: the new rubric prose ALSO adds "critical/high"
+as an explicit rubric-level fail (the old prose only failed on JSON/enum), so a 'high'
+output now double-fails (rubric pass:false AND the C6 deterministic gate). Drop-don't-
+weaken preserved — every change is a fail-condition ADDED, none removed.
+
+WHY THE C6 "TENSION" THE PM FLAGGED IS ONLY APPARENT (closes DECISIONS.md ~L6783's
+open question, Tech Lead review N1): C6's strict {normal,low} and case (i)'s
+deliberately-lenient design operate on DIFFERENT AXES. C6 is LENIENT on the
+normal-vs-low axis (both allowed — the "do not fail solely on a normal-vs-low
+judgement call" idiom is honored) and strict ONLY on the escalation axis (critical/
+high trapped). There is no actual conflict, which is why keeping C6 unchanged is
+CORRECT, not a compromise — a case built lenient-on-{normal,low} was never built
+lenient-on-{high}, and C6 never made it so.
+
+THE REAL MODEL FINDING, BANKED NOT DISSOLVED (drop-don't-weaken corollary — a genuine
+quality problem must be FLAGGED, not hidden by the fixture edit): the production
+triage-model over-escalates AMBIGUOUS single-user lockouts to 'high' on ~50% of temp=0
+runs because it under-applies the prompt's "MULTIPLE users blocked" qualifier for
+'high'. That is a PRODUCT / prompt-quality signal about src/inngest/ticket-triage.ts's
+system prompt (its "high" bullet is arguably underspecified for the single-user-total-
+lockout case), NOT something this fixture edit resolves. Fixing it there would be a
+prompt-touching change needing its own full eval-gate + governance treatment — a
+distinct future task. Filed as a candidate for a monthly-coverage-review / triage-
+prompt look; NOT in T-110's scope (which is the eval fixture only). This separation is
+what makes the fix a genuine DE-FLAKE (remove the ambiguity that let the model wander),
+not a paper-over (make the test accept the wandering).
+
+DE-FLAKE IS STRUCTURALLY SOUND EVEN IF THE MODEL ISN'T PERFECTLY CONVERGED (Tech Lead
+review N2): the OLD ticket's variance straddled the ALLOWED boundary (high vs
+normal/low -> gate red ~50%); the NEW ticket's residual variance now sits INSIDE
+ALLOWED (normal vs low — both pass, the idiom forgives the split), so the gate
+de-flakes even if the model still wobbles within normal/low. The only way it still
+reds is a critical/high output, which the explicit-workaround + "no es nada urgente"
+framing makes unlikely. Named contingency if CI still flaps: option (b) (split case
+(i)'s JSON-survival purpose from its escalation-judgement purpose into two cases).
+
+VERIFIED IN THIS ENVIRONMENT:
+- YAML parses, still 16 tests (python yaml.safe_load).
+- node scripts/eval/test-triage-deterministic.mjs — ALL 70 checks pass, including
+  "(i) escalation urgency=critical FAILS" (the escalation-fail probe the harness
+  auto-derives from case (i)'s own ALLOWED array — proves C6 still traps
+  over-escalation grader-independently, drop-don't-weaken intact). ADDED a T-110
+  NAME-PINNED regression lock: `case (i) ALLOWED is exactly ['normal','low']` — the
+  generic per-case loop only proves "over-escalation fails for whatever set THIS case
+  declares", so it would silently accept a FUTURE widening of case (i) to include
+  'high'; the name-pinned assertion trips on exactly the drop-don't-weaken violation
+  this task exists to prevent (extending T-109's own test in its own pattern, per the
+  task's "extend, don't invent" mandate).
+- python3 test_apply_honor_pass.py (17) + test_compare_baseline.py (11) +
+  test-kb-deterministic.mjs (7) — all green (mechanism unaffected by a fixture edit;
+  ran them to confirm no collateral breakage).
+
+COULD NOT VERIFY LOCALLY (no promptfoo / LiteLLM / API keys / network in this env —
+CLAUDE.md non-negotiable #10: CI has no prod LLM keys, and neither does this worktree):
+the LIVE convergence of the model on the new ticket text. IMPORTANT — do NOT read this
+PR's live-eval-gate result as the convergence proof, and do NOT read its RED as a
+convergence FAILURE: I changed case (i)'s `description` (and vars), and compare-baseline.py
+keys every entry by `<eval>::<description>` (compare-baseline.py lines ~28-32, 190-194;
+its own docstring: "Editing a test's description is a DELIBERATE re-baseline of that
+test"). So on THIS PR the `main` baseline's OLD case-(i) description is PASSING-and-ABSENT
+-> `[REGRESSION: DROPPED]` -> GATE FAIL, while the NEW description is `[new/passing]`
+(or a non-blocking `[new/FAILING]` warning). The live-eval-gate WILL be RED here, for the
+edited-baselined-case fail-close reason — mechanically identical to what T-109 hit, and
+absorbed by the exact same flow (user admin-override merge -> post-merge re-baseline on
+`main`). The PR gate also yields at most ONE sample of the new ticket, so it CANNOT
+confirm convergence (convergence is a many-sample property). What actually closes the
+lucky-freeze problem is the STRUCTURAL argument (N2): the new ticket's residual model
+variance sits ENTIRELY INSIDE ALLOWED {normal,low} (both pass, the idiom forgives the
+split), so BOTH a lucky and an unlucky post-merge re-baseline capture PASS — that is the
+de-flake, not a re-rolled coin. Live behavior is then re-checked by the post-merge
+re-baseline capture and subsequent gate runs on unrelated PRs.
+
+RE-BASELINE — REQUIRED FIRST POST-MERGE ACTION ON `main`, NOT done in this task, NOT a
+pre-merge branch dispatch. Same C3/C4 ordering discipline T-109 used and documented
+(DECISIONS.md 2026-07-13 T-109 "RE-BASELINE ORDERING CORRECTION"): the gate selects
+its baseline via `gh run list --workflow=capture-eval-baseline.yml --status=success
+--limit 1` with NO branch filter, so dispatching capture-eval-baseline.yml against THIS
+branch would poison the global baseline for every other in-flight PR. Correct order:
+user authorizes merge (own words + admin override of the required live-eval-gate) ->
+merge -> recapture on `main` -> confirm the gate re-enforces green with case (i)'s new
+text. Running the recapture is itself a §5.1 cat-a shared-safety-net action.
+
+GOVERNANCE GATE (§5.1 category a — NAMED, do NOT self-merge): T-110 edits
+evals/ticket-triage.yaml, a fixture the required, merge-blocking live-eval-gate check
+reads DIRECTLY, and its landing requires a re-baseline — categorically the SAME
+shared-safety-net class as T-109 (PM correction, DECISIONS.md 2026-07-13 MISTAKE-2,
+~L6765). Its merge requires the user's OWN direct, in-the-moment authorization;
+standing self-merge does NOT cover it, a coordinator relay does NOT satisfy it, and it
+may NOT be self-manufactured. PR opened, held for the user's own go-ahead. No new DB
+schema, no new service, no new credential — the Sprint 9 §5.1 credential gate does not
+fire (this is a fixture text edit).
+-> evals/ticket-triage.yaml (case (i), lines ~304-367 — vars + rubric prose changed,
+   C6 javascript ALLOWED-set UNCHANGED) ; scripts/eval/test-triage-deterministic.mjs
+   (68 checks green, unchanged) ; WORK.md Sprint 15 T-110 row (updated) ;
+   src/inngest/ticket-triage.ts lines 104-108 (the taxonomy the diagnosis is grounded
+   in — NOT changed here; the over-escalation finding is filed against it for a future
+   task) ; DECISIONS.md 2026-07-13 T-109 follow-up finding (~L6490, the raw evidence) +
+   PM correction (~L6740, the scoping)
+```
+
+**Tech Lead Review (T-110) — case (i) fixture-tightening de-flake**
+
+- **Reviewer:** Tech Lead (CI + Architecture) — independent review, ADR-0009 / T-106 / T-109 author+reviewer precedent.
+- **Date:** 2026-07-13
+- **Scope:** the fixture edit under review (`evals/ticket-triage.yaml`, case (i)), grounded against the actual diff, the triage system prompt (`src/inngest/ticket-triage.ts` lines 104–108), the deterministic-assertion harness (`scripts/eval/test-triage-deterministic.mjs`), ADR-0009's C6 design, and the DECISIONS.md evidence trail (2026-07-13 follow-up finding ~L6490; PM correction ~L6740). The grading-mechanism *design* (honor-pass / C6) is settled by ADR-0009 and not re-litigated; this review judges whether this fixture edit de-flakes the case without softening the gate.
+- **Verdict: APPROVE-WITH-NITS.** Option (a) (tighten the fixture) is the correct remediation, the diff is clean and scoped, drop-don't-weaken holds (the change is a *tightening*, not a loosening), and C6's deterministic gate is verifiably untouched. The nits are record-completeness items, not blockers.
+
+- **Findings (each verified against the repo, not taken from the diagnosis):**
+  1. **The new Spanish ticket is unambiguously limited-impact against the prompt's own taxonomy — CONFIRMED.** The prompt defines `high: major degradation, multiple users blocked, no workaround` and `normal: limited impact, workaround available`. The new ticket supplies, explicitly, the exact defeaters for every `high` criterion: single user (`mi cuenta`), an active workaround already in use (`sigo entrando sin problema desde la aplicación de mi móvil`), a second self-service workaround not-yet-tried (`recuperar contraseña`), and a self-declared non-urgency (`no es nada urgente`). Textbook `normal` (or tolerable `low`) — both inside ALLOWED. No residual pull to `high`/`critical`. A genuine root fix, not a mask.
+  2. **C6 deterministic allowed-set is byte-identical — VERIFIED via the diff, not the author's claim.** The only `+ALLOWED` hit is inside a comment; the `- type: javascript` `value:` block (`ALLOWED = ['normal','low']`, strict) is context, not a changed line. The assertion still hard-fails `critical`/`high` grader-independently, and the harness auto-derives its escalation-fail probe from `const ALLOWED`, so case (i) is still proven to trap over-escalation.
+  3. **Drop-don't-weaken holds — the rubric prose change is a *tightening*.** The old rubric fail-line listed only JSON/enum failures; the new one *adds* `or if urgency is "critical" or "high"` as an explicit rubric-level fail. All additions are fail-conditions; the normal-vs-low idiom is orthogonal to and consistent with the added critical/high fail. Under honor-pass a `high` output now double-fails (rubric `pass:false` + C6 deterministic) — correct.
+  4. **Flagging the ~50/50 over-escalation as a separate triage-prompt finding is the right scope call — CONFIRMED.** The target-model variance is a product/prompt-quality question in `src/inngest/ticket-triage.ts` (whose `high` bullet is arguably underspecified for single-user total-lockout); fixing it there would be a prompt-touching change requiring its own eval-gate + governance treatment. Banking it (not dissolving it) is correct; going further would be scope creep on a shared-safety-net-adjacent change. Aligns with the PM's MISTAKE-1 (case (i) is target-output variance, not grader scatter — so multi-sample was never the fit).
+  5. **No coverage loss — VERIFIED against case (o).** Case (o) is `ALLOWED=['critical']` (French total outage, all users blocked, 503) — a different axis, so case (i) genuinely is the sole guard that a single-user access problem stays out of `high`. Tightening the fixture *preserves* (arguably strengthens) that guard.
+
+- **Nits (none block; record-completeness):**
+  - **N1 — the PM's C6-tension flag is closed explicitly:** C6's strictness and the lenient-design operate on different axes (lenient on normal-vs-low, strict only on escalation), so there is no actual conflict — keeping C6 unchanged is correct, not a compromise. *(Folded into the diagnosis entry above.)*
+  - **N2 — the de-flake is structurally sound even absent live confirmation:** the old ticket's variance straddled the ALLOWED boundary (gate red ~50%); the new ticket's residual variance sits inside ALLOWED (normal vs low — both pass), so the gate de-flakes even if the model isn't perfectly converged. Fallback if CI still flaps: option (b) (split JSON-survival from escalation-judgement into two cases). *(Folded in above.)*
+  - **N3 (cosmetic, no change requested):** `no consigo iniciar sesión con ella` retains a faint "blocked" flavor, decisively neutralized by the following workaround clauses; noted only as the sole residual pull should CI show any flap.
+
+- **Residual (accepted, standing) — governance boundary:** this is technical approval of the fixture edit ONLY, NOT merge clearance. T-110 edits a fixture the required `live-eval-gate` check reads directly and re-captures the baseline → Sprint 12 §5.1 **category-(a)** shared-safety-net action, same class as T-109. Its merge requires the user's **own direct, in-the-moment authorization** — standing self-merge does not carry, and a relay of *this review* does not satisfy it. This review completes the author+reviewer technical gate; the merge gate is separate and the user's to open.
