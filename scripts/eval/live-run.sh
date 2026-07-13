@@ -89,7 +89,22 @@ PRODUCT_EXIT=0
 PRODUCT_EXIT="${PIPESTATUS[0]}"
 echo "::endgroup::"
 
-echo "=== Pass-rate summary for $BASENAME (promptfoo exit $PRODUCT_EXIT) ==="
+# --- T-109 honor-pass (ADR-0009): re-decide each rubric row by the grader's OWN pass
+# within a floor, and STAMP the verdict into the results JSON's success/gradingResult.pass
+# IN PLACE. Runs HERE — after the product run, before token-band/canary/compare read the
+# file — so every downstream reader sees the honored verdict (the ADR C3 write-point). The
+# per-assertion `threshold:0.8` is now removed from evals/*.yaml, so promptfoo surfaces the
+# grader's unmodified {pass,score}; this re-decides locally (zero added metered cost). A
+# harness/shape fault (a passing rubric row with no verdict to honor) is a HARD ERROR here.
+echo "::group::T-109 honor-pass re-decision (ADR-0009) — $BASENAME"
+if [ -f "$RESULTS_JSON" ]; then
+  python3 "$SCRIPT_DIR/apply-honor-pass.py" --results-json "$RESULTS_JSON"
+else
+  echo "(no results JSON produced — nothing for honor-pass to re-decide; token-band/canary guards below will hard-error on the missing/empty run)"
+fi
+echo "::endgroup::"
+
+echo "=== Pass-rate summary for $BASENAME (promptfoo exit $PRODUCT_EXIT; NOTE: post-honor-pass verdict lives in $RESULTS_JSON, which is what compare-baseline gates on — PRODUCT_EXIT is promptfoo's pre-honor-pass exit, informational only) ==="
 if [ -f "$RESULTS_JSON" ] && command -v jq >/dev/null 2>&1; then
   jq '.results.stats // .results.table.stats // "no .stats key at this path — see log tail below"' \
     "$RESULTS_JSON" 2>/dev/null || echo "(could not jq-parse results JSON — see log tail below)"
@@ -137,6 +152,15 @@ python3 "$SCRIPT_DIR/gen-live-config.py" \
 # aborting the script; calibration-guards.py canary-check reads the JSON to decide.
 { npx -y "promptfoo@$PROMPTFOO_VERSION" eval -c "$CANARY_LIVE" --no-cache \
     -o "$CANARY_RESULTS" 2>&1 | tee "$CANARY_LOG"; } || true
+# T-109: apply honor-pass to the CANARY results too (ADR-0009 C4/C5), so canary-check reads
+# the SAME verdict the product tests are judged by. Load-bearing for the rubber-stamp guard:
+# the must-fail canary must fail via the grader's own pass:false (its impossible-sentinel
+# rubric), never via the removed `threshold:0.8` gap — under honor-pass a grader pass:false
+# fails at any score, so the must-fail canary still fails (verified: canary rubrics use the
+# sentinel, not a borderline score).
+if [ -f "$CANARY_RESULTS" ]; then
+  python3 "$SCRIPT_DIR/apply-honor-pass.py" --results-json "$CANARY_RESULTS"
+fi
 python3 "$SCRIPT_DIR/calibration-guards.py" canary-check --results-json "$CANARY_RESULTS"
 echo "::endgroup::"
 
