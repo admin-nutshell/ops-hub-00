@@ -85,6 +85,12 @@ jobs:
 
       - name: Wait for restart + verify health
         run: |
+          # T-104 (ADR-0008 SS3): verify via /health/litellm-internal, NEVER the
+          # generic /health -- /health returns 200 as soon as the app process is
+          # up, regardless of whether the internal LiteLLM hop actually works.
+          # That blind spot is exactly what let FQ-69/FQ-76 go undetected; this
+          # break-glass workflow's own wrong verify endpoint was flagged as a
+          # latent bug by ADR-0008 SS3 and is corrected here.
           DEP="${{ steps.restart.outputs.dep_uuid }}"
           if [ -n "$DEP" ]; then
             for i in $(seq 1 30); do
@@ -101,8 +107,8 @@ jobs:
             sleep 30
           fi
           for i in $(seq 1 12); do
-            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "https://ops-hub-prod.inatechshell.ca/health" || echo "000")
-            echo "Attempt $i: /health -> HTTP $HTTP"
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "https://ops-hub-prod.inatechshell.ca/health/litellm-internal" || echo "000")
+            echo "Attempt $i: /health/litellm-internal -> HTTP $HTTP"
             [ "$HTTP" = "200" ] && break
             sleep 10
           done

@@ -5737,3 +5737,105 @@ itself.
   whoever, if anyone, picks up the fabrication axis), diagnostic branch deleted. No founder
   escalation — routine confirm-before-scope coverage work per the WORK.md T-105-sub row.
 ```
+
+### 2026-07-13 — T-104 DONE: durable `LITELLM_URL` fix LIVE in production — Option 1 (persistent Coolify alias) landed, Option 2 never needed (Production Manager)
+
+```
+2026-07-13 [Production Manager] T-104 DONE. Executes ADR-0008's build (docs/adr/0008-litellm-url-
+  durable-fix.md), authorized this session by the user for the exact sequence: staging spike, then
+  (contingent on success) apply alias to litellm-prod, re-pin LITELLM_URL, deliberately redeploy to
+  verify. Isolated worktree from commit #1 (Sprint 11 §5.1). Full account, all evidence, and the
+  honest mid-deploy detour: docs/deploys/2026-07-13-t104-litellm-url-durable-fix.md.
+
+  OPTION LANDED: Option 1 (persistent network alias). The staging spike succeeded outright on the
+  first mechanism tried — Option 2 (automated re-sync hook) and its Sprint 9 §5.1 Security Lead
+  gate were never triggered.
+
+  MECHANISM (verified, not assumed): custom_network_aliases is a genuine, persisted column on
+  Coolify's own `applications` table (confirmed by reading coollabsio/coolify's public source
+  directly — ApplicationDeploymentJob.php ~L3132-3148 merges it into the generated docker-compose
+  `networks.<net>.aliases` on EVERY deployment job run; Application.php ~L52/194/380-433 confirms
+  the field's storage/accessor shape). This is re-applied by Coolify itself on every future
+  redeploy -- not a one-time SSH `docker network connect --alias` that would evaporate on the next
+  one (the false-positive trap the ADR's PM review flagged as the central risk). Also confirmed
+  from routes/api.php: POST /applications/{uuid}/start maps to action_deploy (a REAL redeploy via
+  queue_application_deployment) while /restart maps to action_restart (restart_only:true,
+  deliberately lighter) -- both staging and prod cutovers used /start specifically so "survives a
+  redeploy" was tested against the actual historical trigger class (T-71/FQ-69/FQ-76), not a
+  lighter restart that might not even recreate the container.
+
+  STAGING PROOF (runs 29214692340, 29214888465): applied custom_network_aliases=litellm-staging,
+  triggered a real /start redeploy, container suffix ACTUALLY ROTATED
+  (...021121385843 -> ...000816715467 -- proving this was a genuine redeploy trigger, not a no-op),
+  alias confirmed present via docker inspect NetworkSettings.Networks.coolify.Aliases, DNS
+  resolution confirmed via nslookup (same IP as the suffixed name), HTTP reachability confirmed
+  (200 on retry -- first probe hit HTTP 000 ~1s post-redeploy, read the container's own logs
+  mid-Prisma-init at that exact timestamp to confirm this was a boot-timing artifact, not a
+  mechanism failure, before treating it as anything else).
+
+  PROD CUTOVER (runs 29215316106, 29216346731 + supporting diagnostics): applied
+  custom_network_aliases=litellm-prod, redeployed for real (suffix rotated
+  ...140935289661 -> ...002550568858, alias confirmed present), re-pinned ops-hub-prod's
+  LITELLM_URL to http://litellm-prod:4000 (delete-all-dup-rows-then-post pattern), restarted, and
+  verified the REAL path: GET https://ops-hub-prod.inatechshell.ca/health/litellm-internal -> HTTP
+  200 {"status":"ok","litellm_internal":"reachable_and_authenticated"} (confirmed 3x by direct
+  curl), plus a clean T-97 monitor mode=live dispatch (run 29216438660, conclusion=success) --
+  never the generic /health (FQ-69's exact blind spot).
+
+  MID-DEPLOY DETOUR, resolved (not left open, not silently worked around): a completions-based
+  health gate using the GH Actions secrets.LITELLM_MASTER_KEY got a CONSISTENT HTTP 401
+  token_not_found_in_db across 8 retries. This is litellm-prod's own real auth-rejection signature
+  -- the same shape as FQ-69's master-key-rejection class -- and had to be taken seriously rather
+  than waved off. A read-only diagnostic (t104-diagnose-key-divergence.yml; key values NEVER
+  printed or echoed anywhere, including a self-correction after the harness's own safety classifier
+  correctly blocked an earlier draft that would have echoed a masked key prefix) tested every
+  existing LITELLM_MASTER_KEY row actually configured on ops-hub-prod directly against litellm-
+  prod: both rows (a separate, pre-existing dup-row instance, not touched by this task) returned
+  HTTP 200. Conclusion: the GH Actions repo secret is simply a different/stale value than what
+  ops-hub-prod runs with in production -- a flaw in THIS deploy's own gate design (testing against
+  the wrong credential), not the FQ-69 class re-firing and not a live incident. The gate was
+  corrected to the unauthenticated /health/readiness endpoint (needs no key, sidesteps the
+  ambiguity entirely). FQ-69's provider-credential-divergence carry (WORK.md line 21) remains
+  separate, still-uncommitted, and its trigger still has not genuinely fired.
+
+  ALSO FOUND, handled inline: a single POST /envs call double-wrote 2 identical LITELLM_URL rows
+  on ops-hub-prod (both correct value) -- the known Coolify append-not-upsert dup-row footgun,
+  now confirmed to happen from a single API call, not only repeated UI Saves. No functional risk
+  (both rows held the same correct value), converged to exactly 1 row before restarting; the
+  finish-cutover workflow now self-heals this case going forward (deletes extras ONLY when every
+  existing value already matches the intended target -- refuses to auto-delete on any mismatch).
+  Two transient GitHub Actions runner network timeouts (curl exit 28) also hit unrelated
+  read-only/idempotent steps mid-session; neither mutated anything before failing, both were
+  simply re-dispatched, and the GATE step's error handling was hardened (set +e around the retry
+  loop -- bash -e's default killed the loop on the first timeout before it could retry).
+
+  BUILD ITEMS ALSO COMPLETED (ADR §6.2d, task steps 3-4):
+    - fix-ops-hub-prod-litellm-url.yml and update-litellm-suffix.yml: corrected verify step from
+      generic /health -> /health/litellm-internal (ADR §3's flagged latent bug in both break-glass
+      workflows).
+    - CLAUDE.md tech-stack table: updated to state prod's LITELLM_URL no longer rotates (stable
+      alias), while being explicit that staging's OWN LITELLM_URL was not re-pinned (see residual).
+
+  PROVIDER-NEUTRAL / NO APP CHANGE: resolveLitellmTarget() (src/inngest/ticket-triage.ts) is
+  unchanged -- it still reads LITELLM_URL from env; only the VALUE changed from a rotating
+  container name to a stable alias. Recipe carries to Project #2 unchanged (assign a persistent
+  alias to its internal service, pin <SERVICE>_URL to it).
+
+  NO PAID TIER: custom_network_aliases required no Coolify plan change: confirmed empirically
+  (the field already existed, unset, on the current instance) -- no FOUNDER_QUEUE escalation
+  needed.
+
+  RESIDUAL, explicitly not done: ops-hub-staging's own LITELLM_URL was NOT re-pinned to the
+  (proven-working) litellm-staging alias. Out of T-104's authorized scope (the user's
+  authorization covered litellm-prod's alias + re-pin + redeploy specifically) -- staging still
+  carries the URL-suffix-rotation exposure today. Flagged as a cheap Sprint 13+ follow-up (same
+  proven mechanism, near-zero incremental risk), not silently done and not silently dropped.
+
+  Seven PRs, all self-merged once CI green per the standing self-merge authorization: #430
+  (staging spike), #432 (staging apply+verify), #433 (staging disambiguation diagnostic), #434
+  (prod apply+verify), #436 (finish cutover), #437 (key-divergence diagnostic), #438 (dedupe +
+  complete cutover -- the version that actually finished the job).
+
+  Feature Adaptation: not triggered (internal infra/reliability fix, no product surface change,
+  matching T-97/T-102's own precedent).
+```

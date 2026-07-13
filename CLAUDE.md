@@ -21,7 +21,7 @@ An **app-agnostic, AI-native operations platform** that detects, triages, resolv
 | App runtime | Node.js 20 + TypeScript (pnpm) | Coolify — `ops-hub-staging.inatechshell.ca` |
 | Workflow orchestration | Inngest Cloud (free tier) | Cloud → synced at `/api/inngest` |
 | LLM routing | LiteLLM | Coolify — `litellm-staging.inatechshell.ca` |
-| LLM internal URL | `http://h12xz8887fxvbvjts2hac8if-032924269444:4000` | Docker network — use this, not sslip.io. **Suffix changes on every LiteLLM redeploy** — check `docker ps \| grep h12xz8887fxvbvjts2hac8if` after each deploy. |
+| LLM internal URL | **PROD:** `http://litellm-prod:4000` (stable Coolify `custom_network_aliases`, T-104/ADR-0008, live 2026-07-12) | Docker network — use this, not sslip.io. **PROD no longer rotates**: `litellm-prod` is a persistent network alias re-applied by Coolify on every redeploy (proven surviving a real redeploy, `hlik1d96uvkkjzpbxa3azhcv-140935289661` → `-002550568858`, both aliased) — the old "check `docker ps` after each deploy" ritual is retired for prod. **Staging still uses the rotating suffix** (`http://h12xz8887fxvbvjts2hac8if-<suffix>:4000` — check `docker ps \| grep h12xz8887fxvbvjts2hac8if` after a staging redeploy); the alias mechanism is proven there too (T-104 spike) but ops-hub-staging's own `LITELLM_URL` was not yet re-pinned to it — flagged as a cheap Sprint 13+ follow-up, not done in T-104's authorized scope (prod only). |
 | Observability | LangFuse Cloud (free tier) | Cloud |
 | Database | Supabase PostgreSQL | Project `yocoljutbiizdbfraapx` — Canada Central |
 | Secret store | Supabase Vault | Same project |
