@@ -17,7 +17,13 @@ name: T-107 check — litellm-staging alias survival + ops-hub-staging state (re
 #      it requires a T-98 re-review FIRST, distinct from a normal
 #      already-running restart which needs no such review).
 #
-# Mutates nothing. No confirmation input required.
+# The `check` job mutates nothing and needs no confirmation input. This file
+# also carries a confirm-gated `repin_and_restore_stopped` job (see below) —
+# added same-day to fix an accidental T-98 SC7 violation caused by merging an
+# earlier version of this same file (see docs/deploys/2026-07-13-t107-staging-
+# litellm-url-repin.md). Dispatching that job REQUIRES a human to type the
+# exact confirmation string into the workflow_dispatch input by hand — never
+# supply it programmatically/on an agent's own authorization.
 
 on:
   workflow_dispatch:
