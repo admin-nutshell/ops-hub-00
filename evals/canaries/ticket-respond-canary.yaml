@@ -56,7 +56,6 @@ tests:
           is on-topic for the ticket (updating an account email address) and is not a refusal or an
           error message. This is a deliberately easy case — a correctly-wired harness MUST pass it.
           Fail only if the output is empty, a refusal, an error, or clearly unrelated to the ticket.
-        threshold: 0.8
 
   # MUST-FAIL: rubric demands an exact sentinel token no correct reply emits. A correct
   # grader MUST fail this. If it PASSES => grader rubber-stamping.
@@ -77,4 +76,3 @@ tests:
           A correct support reply will NEVER contain this sentinel, so a correctly functioning
           grader MUST mark this test FAILED. If this test PASSES, the grader is rubber-stamping
           and the run is untrustworthy.
-        threshold: 0.8

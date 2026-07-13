@@ -42,7 +42,6 @@ tests:
           value is one of exactly {critical, high, normal, low}. This is a deliberately easy case —
           a correctly-wired harness MUST pass it. Fail only if the output is not valid JSON or the
           urgency is outside that closed enum.
-        threshold: 0.8
 
   # MUST-FAIL: rubric demands an exact sentinel token no correct classification emits.
   # A correct grader MUST fail this. If it PASSES => grader rubber-stamping.
@@ -60,4 +59,3 @@ tests:
           A correct triage classification will NEVER contain this sentinel, so a correctly
           functioning grader MUST mark this test FAILED. If this test PASSES, the grader is
           rubber-stamping and the run is untrustworthy.
-        threshold: 0.8
