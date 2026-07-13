@@ -6899,19 +6899,39 @@ framing makes unlikely. Named contingency if CI still flaps: option (b) (split c
 
 VERIFIED IN THIS ENVIRONMENT:
 - YAML parses, still 16 tests (python yaml.safe_load).
-- node scripts/eval/test-triage-deterministic.mjs — ALL 68 checks pass, including
+- node scripts/eval/test-triage-deterministic.mjs — ALL 70 checks pass, including
   "(i) escalation urgency=critical FAILS" (the escalation-fail probe the harness
   auto-derives from case (i)'s own ALLOWED array — proves C6 still traps
-  over-escalation grader-independently, drop-don't-weaken intact).
+  over-escalation grader-independently, drop-don't-weaken intact). ADDED a T-110
+  NAME-PINNED regression lock: `case (i) ALLOWED is exactly ['normal','low']` — the
+  generic per-case loop only proves "over-escalation fails for whatever set THIS case
+  declares", so it would silently accept a FUTURE widening of case (i) to include
+  'high'; the name-pinned assertion trips on exactly the drop-don't-weaken violation
+  this task exists to prevent (extending T-109's own test in its own pattern, per the
+  task's "extend, don't invent" mandate).
 - python3 test_apply_honor_pass.py (17) + test_compare_baseline.py (11) +
   test-kb-deterministic.mjs (7) — all green (mechanism unaffected by a fixture edit;
   ran them to confirm no collateral breakage).
 
 COULD NOT VERIFY LOCALLY (no promptfoo / LiteLLM / API keys / network in this env —
 CLAUDE.md non-negotiable #10: CI has no prod LLM keys, and neither does this worktree):
-the LIVE convergence of the model on the new ticket text. That is CI's live-eval-gate
-job on this PR (or a human running it against staging). The structural argument (N2
-above) is why the residual risk is low regardless.
+the LIVE convergence of the model on the new ticket text. IMPORTANT — do NOT read this
+PR's live-eval-gate result as the convergence proof, and do NOT read its RED as a
+convergence FAILURE: I changed case (i)'s `description` (and vars), and compare-baseline.py
+keys every entry by `<eval>::<description>` (compare-baseline.py lines ~28-32, 190-194;
+its own docstring: "Editing a test's description is a DELIBERATE re-baseline of that
+test"). So on THIS PR the `main` baseline's OLD case-(i) description is PASSING-and-ABSENT
+-> `[REGRESSION: DROPPED]` -> GATE FAIL, while the NEW description is `[new/passing]`
+(or a non-blocking `[new/FAILING]` warning). The live-eval-gate WILL be RED here, for the
+edited-baselined-case fail-close reason — mechanically identical to what T-109 hit, and
+absorbed by the exact same flow (user admin-override merge -> post-merge re-baseline on
+`main`). The PR gate also yields at most ONE sample of the new ticket, so it CANNOT
+confirm convergence (convergence is a many-sample property). What actually closes the
+lucky-freeze problem is the STRUCTURAL argument (N2): the new ticket's residual model
+variance sits ENTIRELY INSIDE ALLOWED {normal,low} (both pass, the idiom forgives the
+split), so BOTH a lucky and an unlucky post-merge re-baseline capture PASS — that is the
+de-flake, not a re-rolled coin. Live behavior is then re-checked by the post-merge
+re-baseline capture and subsequent gate runs on unrelated PRs.
 
 RE-BASELINE — REQUIRED FIRST POST-MERGE ACTION ON `main`, NOT done in this task, NOT a
 pre-merge branch dispatch. Same C3/C4 ordering discipline T-109 used and documented

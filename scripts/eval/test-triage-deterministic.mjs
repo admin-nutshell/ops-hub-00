@@ -132,6 +132,25 @@ check(
   run(cases[0].js, '```json\n{"urgency":"critical"}\n```').pass === true
 );
 
+// T-110 NAME-PINNED REGRESSION LOCK for case (i) ("Non-English (Spanish) ticket").
+// The generic loop above only proves "over-escalation fails for whatever ALLOWED set
+// this case declares" — it would silently accept a FUTURE widening of case (i) to
+// include 'high' (it would just re-derive {normal,low,high} and test that 'critical'
+// fails). T-110's whole point is that widening case (i) to accept 'high' is a
+// drop-don't-weaken violation (honor-pass can't de-flake it, and it deletes the only
+// single-user/high guard — case (o) is the critical/outage axis). Pin the exact set by
+// NAME so any future edit that loosens THIS case's escalation gate trips this test.
+const spanish = cases.find((c) => /Non-English \(Spanish\)/.test(c.desc));
+check("case (i) is present and name-matched", !!spanish);
+if (spanish) {
+  const sm = spanish.js.match(/const ALLOWED = (\[[^\]]*\]);/);
+  const sAllowed = sm ? JSON.parse(sm[1].replace(/'/g, '"')) : null;
+  check(
+    "case (i) ALLOWED is exactly ['normal','low'] (over-escalation to high/critical stays a hard fail)",
+    JSON.stringify(sAllowed) === JSON.stringify(["normal", "low"])
+  );
+}
+
 console.log(
   failures === 0 ? "\nALL DETERMINISTIC-ASSERTION CHECKS PASSED" : `\n${failures} FAILURE(S)`
 );
