@@ -5673,3 +5673,67 @@ worktree from the first commit, applying Sprint 11's newly-banked §5.1 norm to
 itself.
 -> docs/retros/sprint-11.md
 ```
+
+### 2026-07-12 — T-105-sub: dropped respond "three-questions" case re-run n=5 — finding REFUTED, no Sprint 13 completeness candidate (Evals Lead)
+
+```
+2026-07-12 [Evals Lead] T-105-sub DONE — DIAGNOSTIC ONLY, confirm-before-scope. No prompt change,
+  no permanent eval change, no PR to evals/**. The throwaway branch t105-sub-respond-diag (never
+  merged, deleted after the runs) carried a single diagnostic case; DECISIONS/WORK.md updates
+  landed via a separate docs-only PR. Isolated worktree from commit #1 (Sprint 11 §5.1).
+
+  WHAT WAS TESTED. T-103 dropped a ticket-respond case that scored 0.6 on a single judge run
+  (n=1) and logged it as a candidate "completeness cue for multi-question tickets" finding. The
+  EXACT case was recovered verbatim (not reconstructed) from the T-103 strict_new run 29210913514
+  log — target request body + grader rubric both — so this is a true re-run of the SAME case, not
+  an approximation:
+    desc: "Ticket with three distinct questions → reply addresses all of them, fabricating no specifics"
+    ticket: normal/how-to/support, "A few questions about my plan" — (1) upgrade to annual,
+            (2) add a second team member, (3) downloadable invoices. Rubric (threshold 0.8):
+            address ALL THREE + do not fabricate specific menu paths/capabilities as verified fact.
+
+  METHOD. Re-run against the CURRENT (unchanged) ticket-respond prompt via live-eval-gate
+  workflow_dispatch, strict_new=true (the T-99/T-103 pattern — the plain gate is baseline-relative
+  so a NEW failing test is non-blocking; only strict_new prints a per-test score for a not-in-
+  baseline case). Every counted run was confirmed VERIFIED-HEALTHY before its score was read:
+  judge preflight HTTP 200 (grader=fallback-model ≠ target=triage-model, §5.3), token-band PASS
+  ×3 evals, canary PASS ×3 evals.
+
+  SCORE DISTRIBUTION (5 healthy data points; threshold 0.8):
+    - run 29210913514 (T-103 original, n=1) ...... 0.6   FAIL
+    - run 29214391802 ............................ 0.75  FAIL
+    - run 29214681469 ............................ 0.65  FAIL
+    - run 29214846047 ............................ 0.65  FAIL
+    - run 29215005180 ............................ 1.0   PASS
+  DISCARDED (not a data point): run 29214352591 neutral-skipped — judge preflight HTTP 000
+  (transient reachability blip, the documented 000/429 first-dispatch flake). Correctly NOT
+  counted as a pass; the gate's neutral-skip design caught it (dormant ≠ pass).
+  Summary: 4/5 sub-threshold, tight cluster 0.6-0.65 + one 0.75 + one 1.0 outlier, mean ≈0.71.
+
+  DISPOSITION — finding REFUTED (NOT "ordinary judge variance", NOT "stable-real completeness gap").
+  The named hypothesis — "the prompt does not reliably ADDRESS every question" — is refuted by
+  mechanism, not by noise: in EVERY run, including the four failing ones, the grader's own reason
+  explicitly states the reply addressed all three questions. The completeness dimension never
+  failed once. The sub-threshold scores come entirely from a DIFFERENT axis — the reply asserting
+  specific UI paths ('Billing section', 'Team management') as verified fact — i.e. the anti-
+  FABRICATION rule, which varies stochastically at the production temp 0.3: when the target names
+  concrete menu paths it is docked (0.6-0.75); when it gives general/hedged guidance it passes (1.0).
+  Therefore:
+    - CLOSE the multi-question-completeness finding. It is not a real defect.
+    - NO Sprint 13 "completeness cue" candidate is filed. The prescribed fix would harden a
+      non-defect and could not have moved these scores (the reply already answers all three).
+    - The residual (mild fabrication-of-menu-paths sensitivity on multi-part how-to replies at
+      temp 0.3) is ALREADY GATED by existing anti-fabrication coverage — case (h) "How do I export
+      my invoices?" rubric ("NOT fabricate ... a definitive product capability/menu path stated as
+      verified truth it cannot know") and case (d), both green in the 42/42 baseline. It is a
+      watch item / known temp-0.3 output variance on an already-covered dimension, NOT a new named
+      fix task. If it ever recurs as a real regression it surfaces on the existing (h)/(d) locks.
+  Scientific note: labelling this "variance" would have been wrong (4/5 sub-threshold is not
+  symmetric noise around 0.8); labelling it "stable-real completeness gap → file the candidate"
+  would also have been wrong (completeness is not what fails). Recovering the exact case + reading
+  each grader's REASON, not just the number, is what separated the two. This is why the DIAGNOSTIC
+  sub-task existed: one n=1 datapoint would have mis-scoped a Sprint 13 prompt change against the
+  wrong axis. No prompt touched, no permanent eval added (that is a separate scoping decision for
+  whoever, if anyone, picks up the fabrication axis), diagnostic branch deleted. No founder
+  escalation — routine confirm-before-scope coverage work per the WORK.md T-105-sub row.
+```
