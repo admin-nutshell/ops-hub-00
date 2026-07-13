@@ -116,16 +116,32 @@ jobs:
             echo "ERROR: failed to set LITELLM_URL"; cat /tmp/set.json; exit 1
           fi
 
-      - name: Read-back — exactly one row, correct value
+      - name: Read-back — converge to exactly one row (Coolify can double-write a single POST into 2 identical rows)
         run: |
+          NEW_URL="http://${PROD_ALIAS}:4000"
           curl -s --max-time 30 -o /tmp/rb2.json \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
           COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/rb2.json 2>/dev/null)
           VALUE=$(jq -r '[.[] | select(.key == "LITELLM_URL") | .value] | join(", ")' /tmp/rb2.json 2>/dev/null)
           echo "LITELLM_URL row count: $COUNT, value(s): $VALUE"
-          if [ "$COUNT" != "1" ]; then
-            echo "::error::Expected exactly 1 row, found $COUNT"; exit 1
+          if [ "$COUNT" = "1" ]; then
+            echo "Already exactly 1 row."
+          else
+            MISMATCH=$(jq -r --arg v "$NEW_URL" '[.[] | select(.key == "LITELLM_URL" and .value != $v)] | length' /tmp/rb2.json)
+            if [ "$MISMATCH" != "0" ]; then
+              echo "::error::A LITELLM_URL row does NOT match $NEW_URL -- refusing to auto-delete, needs manual review."
+              jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' /tmp/rb2.json
+              exit 1
+            fi
+            echo "All $COUNT rows already match $NEW_URL (known Coolify single-POST double-write) -- converging to 1."
+            KEEP=$(jq -r '[.[] | select(.key == "LITELLM_URL")][0].uuid' /tmp/rb2.json)
+            for eu in $(jq -r --arg keep "$KEEP" '.[] | select(.key == "LITELLM_URL" and .uuid != $keep) | .uuid' /tmp/rb2.json); do
+              DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs/$eu")
+              echo "  dedup DELETE $eu -> HTTP $DEL"
+            done
           fi
 
       - name: Restart ops-hub-prod
