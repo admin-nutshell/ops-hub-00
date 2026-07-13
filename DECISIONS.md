@@ -6486,13 +6486,14 @@ docs/adr/0010-staging-deploy-trigger-sc7.md.
 PROD-INFRA GATE (§5.1 category b, Sprint 12 norm, reaffirmed Sprint 13 T-107's
 own incident: authorization cannot be self-manufactured) — NOT SELF-MERGED.
 This edits WHEN production-adjacent auto-deploys fire on real infrastructure.
-PR opened, CI green, explicitly held for the user's OWN direct, in-the-moment
-go-ahead before merge — naming exactly what's being authorized: (1) the
-paths-ignore->paths allowlist conversion, (2) the added start-then-stop step,
-and (3) the chosen SC7 reconciliation approach (option (i) now + option (ii)
-bound to SC9 provisioning later). No coordinator relay, no self-supplied
-dispatch-input confirmation — the user's own words only, per the Sprint 13
-§5.1 teaching moment.
+PR #448 opened (https://github.com/admin-nutshell/ops-hub-00/pull/448),
+explicitly held for the user's OWN direct, in-the-moment go-ahead before
+merge — naming exactly what's being authorized: (1) the paths-ignore->paths
+allowlist conversion, (2) the added start-then-stop step, and (3) the chosen
+SC7 reconciliation approach (option (i) now + option (ii) bound to SC9
+provisioning later). No coordinator relay, no self-supplied dispatch-input
+confirmation — the user's own words only, per the Sprint 13 §5.1 teaching
+moment.
 -> docs/adr/0010-staging-deploy-trigger-sc7.md ; .github/workflows/main-deploy.yml ;
-   WORK.md T-108 row (now "implemented, PR open, awaiting user merge authorization")
+   PR #448 ; WORK.md T-108 row (now "implemented, PR open, awaiting user merge authorization")
 ```
