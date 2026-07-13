@@ -6126,4 +6126,28 @@ BUILD's §5.1-gated merge (a governance boundary the Sprint 14 build task must n
 not a business decision the design forces). This ADR is docs-only ->
 live-eval-gate neutral-skips -> self-mergeable; authored in an isolated worktree
 from commit #1 (Sprint 11 §5.1). -> docs/adr/0009-eval-gate-grader-robustness.md
+
+2026-07-13 [Evals Lead] ADR-0009 ADDENDUM (same-day, post-acceptance) — a final
+adversarial pass over constraint (b) surfaced a hole neither the author's §(b)
+nor the Tech Lead review caught: honor-pass makes malformed-JSON/out-of-enum
+grader-independent, but OVER-ESCALATION is semantic and had no deterministic
+backstop, so under honor-pass a grader that ERRONEOUSLY returns pass:true/0.65
+on an over-escalating output would PASS (old rule: 0.65<0.8 -> FAIL; the removed
+0.8 threshold was incidentally guarding grader over-leniency). §(b)'s original
+"over-escalation yields pass:false" quietly assumed the grader is correct — not
+"regardless," the word the exit criterion used. FIX (C6, folded into §4.iii,
+§(b), §3-build-step-2, + an Author Addendum section): extend the deterministic
+split to encode EACH CASE'S OWN over/under-escalation allowed-set as a
+deterministic urgency-membership assertion (fail-if-critical/high -> {normal,low};
+fail-if-not-critical -> {critical}; fail-if-normal/low -> {critical,high}; plus
+case-(p)'s category!=vip / routing!=executives). A wrong escalation then hard-fails
+OUTSIDE the grading mechanism, grader-independently, exactly like the JSON check;
+honor-pass is confined to the genuinely subjective residue. This is a STRENGTHENING
+in the direction the Tech Lead already approved (the deterministic-split technique,
+C5) — not a design reversal; it changes no option selection, guardrail, or cost/
+latency profile, so it rides the existing independent review. With C6 the
+deterministic layer covers all three named hard-fail classes (over-escalation,
+malformed, out-of-enum) grader-independently; constraint (b) is met "regardless of
+the grader." Landed as a follow-up docs PR on the same self-merge path (touches no
+gate mechanism). -> docs/adr/0009-eval-gate-grader-robustness.md
 ```
