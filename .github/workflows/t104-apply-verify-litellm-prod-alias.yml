@@ -1,0 +1,362 @@
+name: T-104 PRODUCTION — apply durable network alias + re-pin LITELLM_URL (ADR-0008 build)
+
+# ADR-0008 build, prod half. Mechanism PROVEN on litellm-staging first
+# (t104-spike + t104-apply-verify-litellm-staging-alias, both merged/run
+# 2026-07-12/13): `custom_network_aliases` is a real, persisted Coolify
+# application field, re-applied by Coolify's OWN deployment job into the
+# generated docker-compose `networks.<net>.aliases` on EVERY deploy -- not a
+# one-time SSH command. On staging the alias survived a genuine /start
+# redeploy that rotated the container suffix, resolved via Docker DNS, and
+# answered a real HTTP request.
+#
+# AUTHORIZATION: user explicitly authorized this exact sequence this session
+# (2026-07-12) -- "staging spike + prod change": apply network alias to
+# litellm-prod, re-pin LITELLM_URL, deliberately redeploy litellm-prod to
+# verify. This workflow executes that authorization, scoped to the
+# URL-suffix class ONLY (T-71/FQ-69-URL/FQ-76) -- NOT the separate,
+# still-uncommitted provider-credential-divergence carry (FQ-69's 401
+# master-key class, WORK.md line 21).
+#
+# ORDER (deliberately sequenced to minimize the internal-hop gap -- there is
+# no zero-gap design without an app-code change, which is out of scope):
+#   1. Capture BEFORE state (container name, image ref, current LITELLM_URL
+#      on ops-hub-prod) -- makes the rollback concrete, not hypothetical.
+#   2. PATCH custom_network_aliases on litellm-prod (inert until the next
+#      deploy -- zero risk alone).
+#   3. Trigger the REAL redeploy (POST /start = action_deploy, not /restart
+#      -- confirmed via Coolify's own routes/api.php that these map to
+#      different controller actions; /restart is deliberately lighter and
+#      would not exercise the actual suffix-rotation trigger this fix targets).
+#   4. Confirm: suffix rotated + 'litellm-prod' alias present on the new
+#      container (SSH docker inspect) -- a false "pass" from a redeploy that
+#      didn't recreate the container would be meaningless.
+#   5. GATE: real external completion smoke test against litellm-prod's OWN
+#      health (external URL + master key, same pattern as
+#      restart-verify-litellm-staging.yml) -- confirms litellm-prod itself
+#      came up healthy post-redeploy BEFORE we touch ops-hub-prod at all.
+#      litellm-prod runs a FLOATING tag (ghcr.io/berriai/litellm:main-stable)
+#      so this redeploy could in principle pull a newer image than is
+#      currently running -- this gate is what makes the rollback real. If
+#      this fails, the workflow ABORTS before any ops-hub-prod change, and
+#      prints the captured BEFORE image ref for a manual rollback redeploy.
+#   6. Only if step 5 passes: re-pin ops-hub-prod's LITELLM_URL to the new
+#      stable alias (delete-all-dup-rows-then-post, the known Coolify
+#      append-not-upsert footgun) and restart ops-hub-prod (POST /restart --
+#      an env-var-only change, matching fix-ops-hub-prod-litellm-url.yml's
+#      existing precedent; no need for a full ops-hub-prod redeploy).
+#   7. Verify the REAL path: GET /health/litellm-internal -> 200 (never the
+#      generic /health -- FQ-69's exact blind spot), then an immediate manual
+#      mode=live dispatch of the T-97 monitor for a fast confirmation, PLUS a
+#      scan for whether the monitor opened any incident during the cutover
+#      gap (a sub-threshold blip that self-clears is expected and fine per
+#      T-102; a real open would need investigating, not ignoring).
+#
+# ROLLBACK (written before dispatch, per PRODUCTION.md / ADR-0008 finding-6):
+#   - If step 5's litellm-prod health gate fails: litellm-prod itself is
+#     unhealthy post-redeploy (NOT an alias problem -- the alias check in
+#     step 4 already passed by this point). Do not proceed. Roll litellm-prod
+#     back by pinning docker_registry_image_tag to the BEFORE image ref
+#     captured in step 1 and redeploying again. This is a manual follow-up
+#     dispatch, not auto-executed here, so a human/agent can confirm the
+#     right target before acting.
+#   - If step 6/7 fails (ops-hub-prod doesn't come back healthy on the new
+#     URL): re-run the existing break-glass `fix-ops-hub-prod-litellm-url.yml`
+#     with litellm-prod's CURRENT suffixed container name (from step 4's
+#     output) -- restores the pre-ADR-0008 known-good pattern immediately.
+#     Mean rollback time target < 15 min; this break-glass path takes ~2-3 min.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'apply-prod-alias' to confirm this is a deliberate PRODUCTION change"
+        required: true
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_PROD_UUID: "hlik1d96uvkkjzpbxa3azhcv"
+  LITELLM_PROD_EXTERNAL_URL: "https://litellm-prod.inatechshell.ca"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  OPS_HUB_PROD_URL: "https://ops-hub-prod.inatechshell.ca"
+  PROD_ALIAS: "litellm-prod"
+
+jobs:
+  apply-prod:
+    name: Apply alias + deliberate redeploy + gated cutover
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+    steps:
+      - name: Confirm input safety check
+        run: |
+          if [ "${{ inputs.confirm }}" != "apply-prod-alias" ]; then
+            echo "::error::Confirmation input did not match 'apply-prod-alias' -- refusing to proceed against production."
+            exit 1
+          fi
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      # ── 1. BEFORE state ───────────────────────────────────────────────────
+      - name: BEFORE — litellm-prod container name + image ref (rollback anchor)
+        id: before
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          NAME=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_PROD_UUID} --format '{{.Names}}'" | head -1)
+          IMAGE_REF=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker inspect '$NAME' --format '{{.Image}}'" 2>/dev/null || echo "unknown")
+          echo "litellm-prod container BEFORE : $NAME"
+          echo "litellm-prod image ID BEFORE  : $IMAGE_REF"
+          echo "container_name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+
+      - name: BEFORE — current LITELLM_URL on ops-hub-prod (for the deploy record)
+        id: before_url
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/before_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          echo "GET /envs -> HTTP $HTTP"
+          CURRENT=$(jq -r '[.[] | select(.key == "LITELLM_URL") | .value] | join(", ")' /tmp/before_envs.json 2>/dev/null)
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/before_envs.json 2>/dev/null || echo 0)
+          echo "Current LITELLM_URL value(s) on ops-hub-prod ($COUNT row(s)): $CURRENT"
+          echo "current_url=$CURRENT" >> "$GITHUB_OUTPUT"
+
+      - name: Baseline health check (before any change)
+        run: |
+          HTTP=$(curl -s --max-time 15 -o /tmp/baseline.json -w "%{http_code}" "$OPS_HUB_PROD_URL/health/litellm-internal")
+          echo "Baseline GET /health/litellm-internal -> HTTP $HTTP"
+          cat /tmp/baseline.json 2>/dev/null
+
+      # ── 2. Apply alias (inert until next deploy) ──────────────────────────
+      - name: PATCH custom_network_aliases on litellm-prod
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_PROD_UUID" \
+            -d "$(jq -n --arg v "$PROD_ALIAS" '{custom_network_aliases: $v}')")
+          echo "PATCH custom_network_aliases=$PROD_ALIAS -> HTTP $HTTP"
+          cat /tmp/patch.json | jq . 2>/dev/null || cat /tmp/patch.json
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: PATCH failed -- stopping before any deploy is triggered."; exit 1
+          fi
+
+      - name: Read-back confirm
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/rb.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_PROD_UUID")
+          GOT=$(jq -r '.custom_network_aliases // empty' /tmp/rb.json 2>/dev/null)
+          echo "Read-back custom_network_aliases: $GOT"
+          if [ "$GOT" != "$PROD_ALIAS" ]; then
+            echo "ERROR: read-back mismatch -- stopping."; exit 1
+          fi
+
+      # ── 3. Deliberate redeploy ─────────────────────────────────────────────
+      - name: Trigger REAL redeploy of litellm-prod (POST /start = action_deploy)
+        id: deploy
+        run: |
+          HTTP=$(curl -s --max-time 60 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$LITELLM_PROD_UUID/start")
+          echo "POST /start -> HTTP $HTTP"
+          cat /tmp/start.json | jq . 2>/dev/null || cat /tmp/start.json
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: deploy trigger failed"; exit 1
+          fi
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/start.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for litellm-prod deployment to finish
+        run: |
+          DEP="${{ steps.deploy.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then sleep 60; else
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Deployment finished."; break ;;
+                failed|error) echo "ERROR: deployment failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+
+      # ── 4. Confirm suffix rotated + alias present ────────────────────────
+      - name: AFTER — container name + alias presence (SSH, read-only)
+        id: after
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          NAME=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_PROD_UUID} --format '{{.Names}}'" | head -1)
+          echo "litellm-prod container AFTER: $NAME"
+          echo "container_name=$NAME" >> "$GITHUB_OUTPUT"
+          BEFORE="${{ steps.before.outputs.container_name }}"
+          if [ "$NAME" = "$BEFORE" ]; then
+            echo "::warning::Container name UNCHANGED ($NAME) -- suffix did not rotate this time."
+          else
+            echo "Suffix ROTATED: $BEFORE -> $NAME."
+          fi
+
+          echo "=== coolify-network aliases on $NAME ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker inspect '$NAME' --format '{{json .NetworkSettings.Networks.coolify.Aliases}}'" | tee /tmp/aliases.txt
+          if ! grep -q "$PROD_ALIAS" /tmp/aliases.txt; then
+            echo "::error::'$PROD_ALIAS' NOT present in the new container's aliases -- ABORTING before touching ops-hub-prod."
+            exit 1
+          fi
+          echo "CONFIRMED: '$PROD_ALIAS' present."
+
+      # ── 5. GATE: litellm-prod's OWN health (real completion, external URL) ─
+      - name: GATE — litellm-prod real completion smoke test (external URL + master key)
+        id: gate
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/chat.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $MASTER_KEY" -H "Content-Type: application/json" \
+            "$LITELLM_PROD_EXTERNAL_URL/chat/completions" \
+            -d '{"model":"triage-model","messages":[{"role":"user","content":"reply with the single word OK"}],"max_tokens":5,"temperature":0}')
+          echo "POST /chat/completions (triage-model) -> HTTP $HTTP"
+          jq -r '.choices[0].message.content // .error // .' /tmp/chat.json 2>/dev/null || cat /tmp/chat.json | head -c 400
+          echo ""
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::litellm-prod's OWN health gate FAILED (HTTP $HTTP) after the redeploy -- this is"
+            echo "NOT an alias problem (the alias check already passed). ABORTING before touching ops-hub-prod."
+            echo "ROLLBACK: pin docker_registry_image_tag back to the BEFORE image ref"
+            echo "(${{ steps.before.outputs.image_ref }}) on litellm-prod and redeploy again."
+            exit 1
+          fi
+          echo "GATE PASS — litellm-prod answers real completions post-redeploy."
+
+      # ── 6. Cutover: re-pin ops-hub-prod's LITELLM_URL ────────────────────
+      - name: Delete all existing LITELLM_URL rows on ops-hub-prod (append-not-upsert footgun)
+        run: |
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Deleting $COUNT existing LITELLM_URL row(s)..."
+          for eu in $(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs/$eu")
+            echo "  DELETE $eu -> HTTP $DEL"
+          done
+
+      - name: Set LITELLM_URL to the new stable alias
+        run: |
+          NEW_URL="http://${PROD_ALIAS}:4000"
+          HTTP=$(curl -s --max-time 30 -o /tmp/set.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$NEW_URL" '{key:$k,value:$v}')")
+          echo "POST LITELLM_URL=$NEW_URL -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set LITELLM_URL"; cat /tmp/set.json; exit 1
+          fi
+
+      - name: Read-back — exactly one LITELLM_URL row, correct value
+        run: |
+          curl -s --max-time 30 -o /tmp/rb2.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/rb2.json 2>/dev/null)
+          VALUE=$(jq -r '[.[] | select(.key == "LITELLM_URL") | .value] | join(", ")' /tmp/rb2.json 2>/dev/null)
+          echo "LITELLM_URL row count: $COUNT, value(s): $VALUE"
+          if [ "$COUNT" != "1" ]; then
+            echo "::error::Expected exactly 1 LITELLM_URL row, found $COUNT"; exit 1
+          fi
+
+      - name: Restart ops-hub-prod (env-var-only change — /restart, not /start)
+        id: restart_opshub
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ro.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/restart")
+          echo "POST /restart -> HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/ro.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for ops-hub-prod restart + generic health
+        run: |
+          DEP="${{ steps.restart_opshub.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then sleep 30; else
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) break ;;
+                failed|error) echo "ERROR: restart failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$OPS_HUB_PROD_URL/health" || echo "000")
+            [ "$HTTP" = "200" ] && { echo "ops-hub-prod generic /health OK"; break; }
+            echo "Attempt $i: HTTP $HTTP — waiting"; sleep 10
+          done
+
+      # ── 7. REAL verification path ─────────────────────────────────────────
+      - name: VERIFY — GET /health/litellm-internal (the real path, never generic /health)
+        run: |
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 15 -o /tmp/verify.json -w "%{http_code}" "$OPS_HUB_PROD_URL/health/litellm-internal" || echo "000")
+            echo "Attempt $i: /health/litellm-internal -> HTTP $HTTP"
+            cat /tmp/verify.json 2>/dev/null
+            [ "$HTTP" = "200" ] && { echo "VERIFIED: 200 reachable_and_authenticated"; break; }
+            sleep 10
+          done
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::/health/litellm-internal did NOT return 200 after cutover."
+            echo "ROLLBACK: re-run fix-ops-hub-prod-litellm-url.yml with confirm_container_name="
+            echo "${{ steps.after.outputs.container_name }}"
+            exit 1
+          fi
+
+      - name: Sync Inngest functions (env var change may affect function config)
+        run: |
+          curl -s --max-time 30 -X PUT "$OPS_HUB_PROD_URL/api/inngest" || true
+
+      - name: Immediate T-97 monitor confirmation dispatch (mode=live)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run monitor-litellm-internal-auth.yml --repo "${{ github.repository }}" --ref main -f mode=live
+          echo "Dispatched. Check run history for this workflow to confirm HTTP 200."
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================="
+          echo " T-104 PRODUCTION cutover summary"
+          echo "======================================================="
+          echo " litellm-prod BEFORE : ${{ steps.before.outputs.container_name }}"
+          echo " litellm-prod AFTER  : ${{ steps.after.outputs.container_name }}"
+          echo " Old LITELLM_URL     : ${{ steps.before_url.outputs.current_url }}"
+          echo " New LITELLM_URL     : http://${PROD_ALIAS}:4000"
+          echo "======================================================="
+          echo " Next: confirm the T-97 monitor dispatch above concluded"
+          echo " 'success', and watch for 24-72h per PRODUCTION.md."
+          echo "======================================================="
