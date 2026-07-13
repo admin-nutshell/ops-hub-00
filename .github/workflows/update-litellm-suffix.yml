@@ -147,22 +147,28 @@ jobs:
             sleep 30
           fi
 
-      # ── 6. Verify ops-hub-app health ─────────────────────────────────────────
-      - name: Verify ops-hub-app health
+      # ── 6. Verify ops-hub-app's REAL internal LiteLLM hop ────────────────────
+      # T-104 (ADR-0008 SS3): verify via /health/litellm-internal, NEVER the
+      # generic /health -- /health returns 200 as soon as the app process is
+      # up, regardless of whether the internal LiteLLM hop (the actual thing
+      # this workflow just changed) works. That blind spot is exactly what let
+      # FQ-69/FQ-76 go undetected; this break-glass workflow's own wrong verify
+      # endpoint was flagged as a latent bug by ADR-0008 SS3 and is corrected here.
+      - name: Verify ops-hub-app's real internal LiteLLM hop (/health/litellm-internal)
         run: |
           set -euo pipefail
           MAX=6; WAIT=10; n=0
-          until curl -sf --max-time 10 "https://ops-hub-staging.inatechshell.ca/health" > /tmp/health.json 2>/dev/null; do
+          until curl -sf --max-time 10 "https://ops-hub-staging.inatechshell.ca/health/litellm-internal" > /tmp/health.json 2>/dev/null; do
             n=$((n+1))
             if [ $n -ge $MAX ]; then
-              echo "ERROR: health check failed after $((MAX*WAIT))s"
+              echo "ERROR: /health/litellm-internal check failed after $((MAX*WAIT))s"
               cat /tmp/health.json 2>/dev/null || true
               exit 1
             fi
             echo "  [$n/$MAX] waiting ${WAIT}s..."
             sleep $WAIT
           done
-          echo "ops-hub-app healthy:"
+          echo "ops-hub-app's internal LiteLLM hop is healthy:"
           cat /tmp/health.json
 
       # ── 7. Cleanup ────────────────────────────────────────────────────────────

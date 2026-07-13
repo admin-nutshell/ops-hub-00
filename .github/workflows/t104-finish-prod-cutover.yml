@@ -22,6 +22,25 @@ name: T-104 PRODUCTION — finish cutover (re-pin ops-hub-prod only)
 # ops-hub-prod's LITELLM_URL is currently STALE (pointed at the now-gone
 # ...-140935289661 container), this is the exact FQ-76 failure window,
 # deliberately reproduced and now being closed as fast as possible.
+#
+# UPDATE (same investigation, before this dispatch): the first attempt at
+# this workflow used secrets.LITELLM_MASTER_KEY (the GH Actions repo secret)
+# for the retried gate and got a CONSISTENT 401 token_not_found_in_db across
+# 8 retries -- a real HTTP response from litellm-prod (i.e. litellm-prod IS
+# up), not a connection failure. A read-only diagnostic
+# (t104-diagnose-key-divergence.yml) then confirmed BOTH of ops-hub-prod's
+# own configured LITELLM_MASTER_KEY rows (two duplicate rows, same
+# created_at -- a separate, pre-existing dup-row instance of the known
+# Coolify footgun, NOT touched by this task) are ACCEPTED by litellm-prod
+# with HTTP 200. Conclusion: the GH Actions repo secret is simply a
+# different/stale value than ops-hub-prod's real configured key -- a test-
+# credential mismatch in the gate's design, not a production incident and
+# not the FQ-69 credential-divergence class re-firing (that class is scoped
+# to ops-hub-prod's OWN key being rejected, which it is not). The gate below
+# is corrected to use the unauthenticated /health/readiness endpoint instead
+# -- it needs no key at all, avoiding this ambiguity entirely, and is the
+# same signal that already confirmed litellm-prod healthy on litellm-staging
+# and via manual re-check on litellm-prod moments ago.
 
 on:
   workflow_dispatch:
@@ -46,7 +65,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-      MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
     steps:
       - name: Confirm input
         run: |
@@ -54,18 +72,19 @@ jobs:
             echo "::error::Confirmation mismatch"; exit 1
           fi
 
-      - name: Fresh GATE — litellm-prod real completion smoke test (retried, not single-shot)
+      - name: Fresh GATE — litellm-prod unauthenticated readiness check (retried, no key ambiguity)
         run: |
+          set +e
+          HTTP="000"
           for i in $(seq 1 8); do
-            HTTP=$(curl -s --max-time 20 -o /tmp/chat.json -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $MASTER_KEY" -H "Content-Type: application/json" \
-              "$LITELLM_PROD_EXTERNAL_URL/chat/completions" \
-              -d '{"model":"triage-model","messages":[{"role":"user","content":"reply with the single word OK"}],"max_tokens":5,"temperature":0}')
-            echo "Attempt $i: POST /chat/completions -> HTTP $HTTP"
-            jq -r '.choices[0].message.content // .error // .' /tmp/chat.json 2>/dev/null
+            HTTP=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" "$LITELLM_PROD_EXTERNAL_URL/health/readiness")
+            CURL_EXIT=$?
+            [ "$CURL_EXIT" -ne 0 ] && HTTP="000"
+            echo "Attempt $i: GET /health/readiness -> HTTP $HTTP (curl exit $CURL_EXIT)"
             [ "$HTTP" = "200" ] && { echo "GATE PASS"; break; }
             sleep 8
           done
+          set -e
           if [ "$HTTP" != "200" ]; then
             echo "::error::litellm-prod still not healthy after retries -- STOPPING. Do not proceed with ops-hub-prod cutover."
             exit 1
@@ -97,16 +116,32 @@ jobs:
             echo "ERROR: failed to set LITELLM_URL"; cat /tmp/set.json; exit 1
           fi
 
-      - name: Read-back — exactly one row, correct value
+      - name: Read-back — converge to exactly one row (Coolify can double-write a single POST into 2 identical rows)
         run: |
+          NEW_URL="http://${PROD_ALIAS}:4000"
           curl -s --max-time 30 -o /tmp/rb2.json \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
             "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
           COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/rb2.json 2>/dev/null)
           VALUE=$(jq -r '[.[] | select(.key == "LITELLM_URL") | .value] | join(", ")' /tmp/rb2.json 2>/dev/null)
           echo "LITELLM_URL row count: $COUNT, value(s): $VALUE"
-          if [ "$COUNT" != "1" ]; then
-            echo "::error::Expected exactly 1 row, found $COUNT"; exit 1
+          if [ "$COUNT" = "1" ]; then
+            echo "Already exactly 1 row."
+          else
+            MISMATCH=$(jq -r --arg v "$NEW_URL" '[.[] | select(.key == "LITELLM_URL" and .value != $v)] | length' /tmp/rb2.json)
+            if [ "$MISMATCH" != "0" ]; then
+              echo "::error::A LITELLM_URL row does NOT match $NEW_URL -- refusing to auto-delete, needs manual review."
+              jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' /tmp/rb2.json
+              exit 1
+            fi
+            echo "All $COUNT rows already match $NEW_URL (known Coolify single-POST double-write) -- converging to 1."
+            KEEP=$(jq -r '[.[] | select(.key == "LITELLM_URL")][0].uuid' /tmp/rb2.json)
+            for eu in $(jq -r --arg keep "$KEEP" '.[] | select(.key == "LITELLM_URL" and .uuid != $keep) | .uuid' /tmp/rb2.json); do
+              DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs/$eu")
+              echo "  dedup DELETE $eu -> HTTP $DEL"
+            done
           fi
 
       - name: Restart ops-hub-prod

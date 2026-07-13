@@ -44,17 +44,26 @@ jobs:
             "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
           echo "Fetched. Row present: $(jq -r '[.[] | select(.key == "LITELLM_MASTER_KEY")] | length' /tmp/envs.json 2>/dev/null) LITELLM_MASTER_KEY row(s)."
 
-      - name: Test ops-hub-prod's own configured key against litellm-prod (key never echoed)
+      - name: Test EVERY existing LITELLM_MASTER_KEY row against litellm-prod (key never echoed) — dup rows found, need to know which resolve
         run: |
-          OWN_KEY=$(jq -r '.[] | select(.key == "LITELLM_MASTER_KEY") | .value' /tmp/envs.json 2>/dev/null | head -1)
-          if [ -z "$OWN_KEY" ] || [ "$OWN_KEY" = "null" ]; then
-            echo "RESULT: no LITELLM_MASTER_KEY row readable on ops-hub-prod (value may be withheld by the API)."
-            exit 0
-          fi
-          HTTP=$(curl -s --max-time 20 -o /tmp/test.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer ${OWN_KEY}" -H "Content-Type: application/json" \
-            "$LITELLM_PROD_EXTERNAL_URL/chat/completions" \
-            -d '{"model":"triage-model","messages":[{"role":"user","content":"reply OK"}],"max_tokens":5,"temperature":0}')
-          unset OWN_KEY
-          echo "RESULT: test with ops-hub-prod's OWN configured key -> HTTP $HTTP"
-          jq -r '.choices[0].message.content // .error.message // .message // .' /tmp/test.json 2>/dev/null || cat /tmp/test.json | head -c 300
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_MASTER_KEY")] | length' /tmp/envs.json 2>/dev/null)
+          for idx in $(seq 0 $((COUNT - 1))); do
+            OWN_KEY=$(jq -r --argjson i "$idx" '[.[] | select(.key == "LITELLM_MASTER_KEY")][$i].value' /tmp/envs.json 2>/dev/null)
+            CREATED=$(jq -r --argjson i "$idx" '[.[] | select(.key == "LITELLM_MASTER_KEY")][$i].created_at // "unknown"' /tmp/envs.json 2>/dev/null)
+            if [ -z "$OWN_KEY" ] || [ "$OWN_KEY" = "null" ]; then
+              echo "RESULT row[$idx] (created $CREATED): value not readable"
+              continue
+            fi
+            HTTP=$(curl -s --max-time 20 -o /tmp/test_$idx.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer ${OWN_KEY}" -H "Content-Type: application/json" \
+              "$LITELLM_PROD_EXTERNAL_URL/chat/completions" \
+              -d '{"model":"triage-model","messages":[{"role":"user","content":"reply OK"}],"max_tokens":5,"temperature":0}')
+            unset OWN_KEY
+            echo "RESULT row[$idx] (created $CREATED) -> HTTP $HTTP"
+          done
+          echo ""
+          echo "Coolify's known append-not-upsert footgun means the app's running env"
+          echo "uses whichever row Coolify last wrote — typically the LAST (highest"
+          echo "index / most recent created_at) row. Compare timestamps above against"
+          echo "each row's HTTP result to infer which one the running container is"
+          echo "actually using."
