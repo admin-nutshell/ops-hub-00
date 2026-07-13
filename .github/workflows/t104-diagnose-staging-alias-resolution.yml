@@ -1,0 +1,103 @@
+name: T-104 diagnose — litellm-staging alias resolution vs readiness (read-only)
+
+# Follow-up to t104-apply-verify-litellm-staging-alias.yml (run 29214692340):
+# the alias ("litellm-staging") was confirmed present in the freshly-redeployed
+# container's Docker network aliases, but the ephemeral curl probe against
+# http://litellm-staging:4000/health/readiness returned HTTP 000 (curl
+# connection failure -- could mean DNS resolution failed, OR the app simply
+# hadn't finished booting yet in the ~45s between redeploy-finished and the
+# probe running). This workflow disambiguates, read-only, no further mutation:
+#   1. Container status + uptime (docker ps).
+#   2. Raw DNS resolution test (getent hosts) for BOTH the alias and the
+#      current suffixed name, from an ephemeral container on the shared
+#      network -- isolates "does the name resolve at all" from "does the app
+#      answer HTTP".
+#   3. curl against the SUFFIXED name (the historically-known-good address)
+#      as a control -- if this ALSO fails right now, the issue is app
+#      readiness/timing, not the alias.
+#   4. curl against the ALIAS again, now with a longer/retried wait.
+#   5. Tail of the container's own logs -- confirms whether the app process
+#      has finished startup.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  LITELLM_STAGING_UUID: "h12xz8887fxvbvjts2hac8if"
+  STAGING_ALIAS: "litellm-staging"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Current container + status/uptime
+        id: current
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_STAGING_UUID} --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+          NAME=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_STAGING_UUID} --format '{{.Names}}'" | head -1)
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Raw DNS resolution — alias vs suffixed name (isolates DNS from app readiness)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          CONTAINER="${{ steps.current.outputs.name }}"
+          echo "=== getent hosts $STAGING_ALIAS (from ephemeral container on 'coolify' network) ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker run --rm --network coolify busybox:latest nslookup ${STAGING_ALIAS}" || echo "(resolution FAILED for alias)"
+          echo ""
+          echo "=== nslookup $CONTAINER (the current suffixed name, known-good historically) ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker run --rm --network coolify busybox:latest nslookup ${CONTAINER}" || echo "(resolution FAILED for suffixed name)"
+
+      - name: Control — curl the SUFFIXED name (known-good historically)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          CONTAINER="${{ steps.current.outputs.name }}"
+          echo "=== curl http://$CONTAINER:4000/health/readiness (control) ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker run --rm --network coolify curlimages/curl:latest -sv --max-time 10 http://${CONTAINER}:4000/health/readiness" 2>&1 || true
+
+      - name: Retry — curl the ALIAS with retries (readiness may just need more time post-redeploy)
+        run: |
+          for i in $(seq 1 8); do
+            RESULT=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+              "haytham@${{ secrets.VPS_HOST }}" \
+              "docker run --rm --network coolify curlimages/curl:latest -s --max-time 10 -o /dev/null -w 'HTTP %{http_code}' http://${STAGING_ALIAS}:4000/health/readiness" 2>&1 || echo "HTTP 000")
+            echo "Attempt $i: $RESULT"
+            echo "$RESULT" | grep -qE 'HTTP (200|401)' && { echo "SUCCESS on attempt $i"; break; }
+            sleep 10
+          done
+
+      - name: litellm-staging container logs (tail — confirm app finished booting)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          CONTAINER="${{ steps.current.outputs.name }}"
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker logs --tail 40 '$CONTAINER'" 2>&1 || true
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
