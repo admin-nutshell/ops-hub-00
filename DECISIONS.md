@@ -6801,6 +6801,214 @@ multi-sample evidence" framing and the "maybe crosses a boundary" framing.
    finding (lines ~6490-6499, the raw evidence this correction re-diagnoses)
 ```
 
+### 2026-07-13 — T-111: staging-stopped guard added to `monitor-e2e-pipeline.yml` (SC7 option ii) — design decision + failure-path proof (Production Manager)
+
+```
+2026-07-13 [Production Manager] T-111 (Sprint 15 Track B) closes the residual
+timing race T-108's own SC7 re-review named but deliberately did NOT close
+(docs/adr/0010-staging-deploy-trigger-sc7.md ~L122-126, and WORK.md's T-108
+row): option (i), start-then-stop in main-deploy.yml, restores ops-hub-staging
+to STOPPED after every deploy, but cannot close a window where staging is
+TRANSIENTLY running (mid start-then-stop, or from a manual/other trigger)
+exactly when this monitor's scheduled 6-hourly run fires -- and staging's own
+sweepNewTickets/sweepRespondedTickets/sla-monitor crons are GUC'd to this
+monitor's SAME synthetic tenant/project (SC7's named operating assumption,
+monitor-e2e-pipeline.yml header lines 35-42), so they would double-process the
+sentinel ticket and corrupt this monitor's own read -- exactly the class of
+"green signal while the real path is broken" incident this monitor exists to
+catch, this time potentially self-inflicted. T-108 named this the necessary
+structural backstop option (i) alone can't provide ("re-review option (ii) --
+the monitor itself asserts or tolerates staging's live state").
+
+WHAT WAS BUILT: a new step "Guard -- ops-hub-staging must be STOPPED before
+this run proceeds (SC7 option ii, T-111)" (id: staging_guard), inserted as the
+FIRST substantive step in the job (before "Install psql", before "Reset
+sentinel ticket"). It queries ops-hub-staging's ACTUAL container state via SSH
+`docker ps` -- the AUTHORITATIVE signal, not the Coolify status field, same
+technique t107-check-staging-status.yml's "AUTHORITATIVE container state"
+step already proved live (DECISIONS.md T-107 entries). Strictly READ-ONLY --
+never stops/starts/mutates anything; it only decides whether THIS run may
+touch the sentinel ticket. No new credential: reuses VPS_HOST and
+SSH_PRIVATE_KEY, both EXISTING repo secrets already consumed by
+t107-check-staging-status.yml and roughly a dozen diagnose-*/fix-*.yml
+workflows for this exact SSH-to-Coolify-VPS pattern -- grepped across
+.github/workflows/*.yml to confirm before writing a single line, not assumed
+(64 files reference at least one of VPS_HOST/SSH_PRIVATE_KEY/
+COOLIFY_API_TOKEN/OPS_HUB_STAGING_UUID). Constant OPS_HUB_STAGING_UUID
+("ajqplom2mghf5a8h6vf1q6xg") pinned into this file's own env block, copied
+verbatim from main-deploy.yml's own pinned value with the same T-54 rationale
+(ops-hub-prod's Coolify app happens to share the display name "ops-hub-app" in
+a different Coolify project -- a name lookup would match both).
+
+DESIGN DECISION -- three sub-cases, each chosen deliberately (options
+considered and rejected are named, not just the winner):
+
+1. Staging confirmed STOPPED -> proceed=true, the run continues exactly as
+   before this guard existed. Not interesting; the two real decisions are
+   below.
+
+2. Staging confirmed RUNNING -> SKIP THIS CYCLE CLEANLY: proceed=false,
+   `::warning::` annotated, job stays GREEN (exit 0). This is the one call
+   most worth defending, so the reasoning in full: option (b) from the task
+   brief ("fail loud and open a status-page incident, treating an unexpected
+   running staging as itself worth surfacing") was seriously considered and
+   REJECTED. Two reasons. First, this monitor's own header states its purpose
+   is catching "a green health signal while the real path was 100% broken" --
+   a transiently-running staging (most likely mid a LEGITIMATE
+   main-deploy.yml start-then-stop window, which self-resolves within
+   minutes without any human action) is categorically NOT that; it is "this
+   run cannot take a clean measurement right now," the same semantic class as
+   this file's own PRE-EXISTING "monitor dormant" guard (missing
+   E2E_MONITOR_DB_URL/E2E_MONITOR_INNGEST_KEY/E2E_SENTINEL_TICKET_ID --
+   already an established, accepted pattern in this exact file: skip clean,
+   annotate, no incident, no job failure), not a confirmed downstream-pipeline
+   failure. Second, and more concretely: main-deploy.yml runs on every
+   qualifying src/**-etc. merge, so a real, if infrequent (deploy-duration /
+   6h cadence, roughly single-digit-percent per deploy by rough estimate),
+   overlap is EXPECTED occasionally, not anomalous-by-itself. Making a benign,
+   self-healing overlap fail this monitor's job RED every time it happens
+   would train whoever watches this monitor's run history to discount its red
+   runs -- exactly the desensitization this monitor's own reason-for-existing
+   argues against. So: no status-page incident either way for case 2 (SC8
+   stays reserved for a CONFIRMED downstream-chain break via
+   reset/dispatch/poll/langfuse failure, per the existing BC1-fixed
+   condition -- untouched by this change, verified below); this cycle's
+   downstream-chain assertion simply does not run, and the next scheduled run
+   (6h) or a manual dispatch re-checks. Detecting staging left running across
+   MANY consecutive cycles (a materially different, real operational problem)
+   is the STILL-UNDECIDED T-98 consecutive-fail-threshold carry (WORK.md
+   Sprint 15 "Explicitly deferred" list, T-102's own scope note) --
+   deliberately NOT rebuilt here; folding the two together under this task
+   would have been exactly the "fold the two together under time pressure"
+   WORK.md explicitly warned against.
+
+3. The SSH check ITSELF fails (VPS/SSH unreachable, genuinely cannot confirm
+   either way) -> FAIL THE JOB RED (proceed=false, exit 1). This is the one
+   deliberate asymmetry from case 2, and it was a real design call, not an
+   oversight: fail-closed (never proceed on an unconfirmed state) is
+   necessary but not sufficient on its own -- I also had to decide whether an
+   unconfirmed state gets the SAME quiet treatment as a confirmed-running
+   state. It does not. A transiently-running staging self-heals (T-108's
+   start-then-stop guarantees it); an unreachable SSH path does NOT -- a
+   rotated key or a VPS network change could persist for cycle after cycle,
+   silently zeroing out this monitor's downstream-chain coverage every 6
+   hours while the job kept reporting green, which is precisely the "green
+   while the real path is broken" failure mode this monitor exists to catch,
+   this time inside its own precondition check. So case 3 is loud (a
+   genuinely red, notification-generating CI run) while case 2 is quiet --
+   deliberately asymmetric, both directions considered, not defaulted into.
+   Still no status-page incident for case 3 either (SC8 stays reserved for a
+   confirmed downstream-pipeline break, not an SSH/VPS-reachability problem
+   which is a different monitor's job to catch, out of this task's scope).
+
+REJECTED, NOT BUILT: a grace/polling window (wait N minutes, re-check, then
+decide) was considered and rejected. The correct action is IDENTICAL in both
+the "legitimate mid-deploy" and "left running by mistake" sub-cases of case 2
+(don't touch the sentinel ticket this cycle) -- the sweep-collision
+correctness problem SC7 exists to prevent doesn't care WHY staging is
+running. A wait-and-recheck loop would add real job latency, its own timing
+race (staging could stop then restart again inside the window), and
+complexity, for zero behavioral difference in what this run should do either
+way. Single authoritative read, immediate decision.
+
+GATING -- minimal-diff, reusing the file's own existing cascade rather than
+touching already-approved logic (same discipline T-108's own header names:
+"rejected restructuring... as unnecessary rewrite-risk on already-approved
+logic"): exactly ONE existing line changed. "Guard -- required credentials +
+sentinel ticket id all present" (id: guard) gained
+`if: steps.staging_guard.outputs.proceed == 'true'`. When staging_guard sets
+proceed=false (either exit path), the credentials-guard step does not run, so
+`steps.guard.outputs.ready` is never set -- every existing downstream step
+(reset/dispatch/poll/langfuse, ALL already gated on
+`steps.guard.outputs.ready == 'true'`) cascades to skipped for free, and the
+BC1-fixed "On failure -- open incident" / "On success -- resolve incident"
+steps' existing conditions (both already gated on the same
+`steps.guard.outputs.ready == 'true'`) are UNTOUCHED and correctly stay
+skipped in both new failure sub-cases. Verified live below, not just reasoned
+through.
+
+mode=simulate-failure (T-98's PRE-EXISTING failure-path proof, for the
+reset-step-fails-for-real / BC1 incident-wiring test) is DELIBERATELY LEFT
+UNGATED by this guard -- its "Reset sentinel ticket" target is always a
+guaranteed-nonexistent id (00000000-0000-0000-0000-0000000000ff), never the
+SC7-protected sentinel row, so it is unaffected by staging's cron activity
+either way; coupling it to staging_guard would only add friction to an
+already-independent, already-proven test with no safety benefit.
+staging_guard exits proceed=true immediately, untouched, when MODE=
+simulate-failure.
+
+FAILURE-PATH PROOF (Sprint 10 Section 5.1 norm -- any monitor/alerting
+workflow change is proven on its failure path before going live; explicitly
+named as this task's own core exit criterion, WORK.md Sprint 15 "Standing
+norms reaffirmed"): extended the file's EXISTING `mode` workflow_dispatch
+input with a third choice value, `simulate-staging-running` (same "extend the
+existing input, don't invent a second one" pattern as the pre-existing
+`simulate-failure` value -- per the task brief's own instruction). When
+dispatched, it forces staging_guard to treat ops-hub-staging as RUNNING
+WITHOUT querying real SSH/Coolify state at all, so the proof needs no live
+infrastructure and cannot itself leave anything running.
+
+Dispatched for real against this task's own branch (not simulated by
+reasoning alone): `gh workflow run monitor-e2e-pipeline.yml --ref
+t111-monitor-staging-stopped-guard -f mode=simulate-staging-running` ->
+run 29284121758 (https://github.com/admin-nutshell/ops-hub-00/actions/runs/
+29284121758), completed 2026-07-13T20:52:37Z (16s), job status SUCCESS
+(green), exactly as case 2 designs. Verified via `gh run view
+--job=86932337539`, not just the top-level run status:
+  - "Setup SSH key (SC7 staging-guard)" -- SKIPPED (env.MODE != 'live';
+    correct, no live SSH touched at all in this proof).
+  - "Guard -- ops-hub-staging must be STOPPED..." -- RAN, succeeded, set
+    proceed=false (the notice + warning annotations both fired, confirmed in
+    `gh run view`'s ANNOTATIONS block).
+  - "Install psql" -- RAN (harmless, installs a tool, touches nothing;
+    unconditional by design, not gated).
+  - "Guard -- required credentials..." -- SKIPPED (the one new `if:` line
+    working as designed).
+  - "Reset sentinel ticket" / "Dispatch" / "Poll" / "Assert LangFuse trace"
+    -- ALL SKIPPED (cascade proof: the sentinel ticket was never touched,
+    the real Inngest key was never used).
+  - "On failure -- open a status-page incident" -- SKIPPED (confirms the
+    guard's clean-skip path does NOT page; the BC1-fixed condition's
+    `steps.guard.outputs.ready == 'true'` check correctly stayed false).
+  - "On success -- resolve any open incident" -- SKIPPED (also correctly
+    gated off the same never-set output; neither incident branch fired).
+Cross-checked against `gh run list --workflow=status-incident.yml`: a
+status-incident.yml run DID fire around the same timestamp
+(29284155122, 2026-07-13T20:52:50Z), initially concerning given the
+proximity -- inspected its log directly (`gh run view 29284155122 --log`)
+and confirmed it checks out an UNRELATED ref (`status-content`) and its
+triggering context has nothing to do with this monitor's own incident-open/
+resolve steps (both independently confirmed SKIPPED above, from this run's
+own step list, not inferred) -- a different, already-scheduled process in
+this repo firing at a coincidentally close timestamp, not a T-111 side
+effect. Recorded here for anyone re-checking this evidence later, rather than
+silently omitted.
+
+MERGE AUTHORIZATION: this task does NOT need the user's own direct section
+5.1 category (a)/(b) authorization. It is strictly READ-ONLY against Coolify/
+staging state (never stops/starts/mutates anything -- verified by inspection
+of every line this diff adds: one `docker ps` SSH read, no POST/PATCH/DELETE
+calls anywhere in the new steps) and it edits MONITOR LOGIC
+(monitor-e2e-pipeline.yml), not the SHARED eval-gate safety net and not
+Coolify prod/staging CONFIGURATION -- matching WORK.md Sprint 15's own
+pre-stated scoping ("T-111 remains correctly scoped as not touching a shared
+safety net or prod-adjacent config... its pause-and-ask trigger is the
+standing Sprint 10 Section 5.1 monitor-failure-path norm, not section 5.1
+cat. a/b"). That failure-path norm is satisfied above. If a future change to
+this guard ever needs it to WRITE to Coolify (e.g., promoting SC7 enforcement
+from "skip" to "actively stop staging"), THAT would cross into category (b)
+and would need the user's own direct authorization -- explicitly flagged here
+as the boundary, not assumed away.
+
+-> .github/workflows/monitor-e2e-pipeline.yml (header comment lines 124-220,
+   steps lines 267-326) ; WORK.md Sprint 15 Track B (T-111 row, to be updated
+   done) ; run 29284121758 (failure-path proof, job 86932337539) ; PR (opened,
+   not merged -- branch t111-monitor-staging-stopped-guard) ; docs/adr/
+   0010-staging-deploy-trigger-sc7.md ~L122-126 (the named residual this task
+   closes) ; t107-check-staging-status.yml (the SSH docker-ps technique this
+   reuses, proven live in T-107's own DECISIONS.md entries)
+```
+
 ### 2026-07-13 — T-110: triage case (i) "Non-English (Spanish) ticket" de-flaked at the ROOT (fixture tightening), NOT by softening the gate — IMPLEMENTED, PR open, awaiting user merge authorization (Evals Lead diagnosis + fix; Tech Lead independent review)
 
 ```
