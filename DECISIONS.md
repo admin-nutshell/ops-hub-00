@@ -6436,4 +6436,4 @@ end-to-end run through the real scripts (FQ-77 borderline 0.75 now passes; below
 over-escalation, grader-`pass:false`-at-0.85, malformed, out-of-enum all still hard-fail). All
 6 YAMLs pass `promptfoo validate`. Independent Tech Lead CI/harness review requested per the
 ADR-0007/0008/0009 author+reviewer precedent (review does NOT authorize merge — only the user's
-own words do). -> ADR-0009 ; PR sprint-14-t109-eval-gate-honor-pass
+own words do). -> ADR-0009 ; PR #449 (sprint-14-t109-eval-gate-honor-pass)
