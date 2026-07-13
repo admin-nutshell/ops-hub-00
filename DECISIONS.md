@@ -6468,13 +6468,24 @@ own words do). -> ADR-0009 ; PR #449 (sprint-14-t109-eval-gate-honor-pass)
   corrected to: merge (user's own words + admin override) -> THEN recapture on `main` -> confirm the
   gate re-enforces green.
 
-  (2) live-eval-gate is red on #449 and CANNOT be greened pre-merge by construction of a gating-
-  MECHANISM change: the new honor-pass outputs systematically differ from the threshold-era baseline,
-  and the only valid baseline can only be captured post-merge (see (1)). Confirmed via branch-
-  protection API that live-eval-gate IS a required check on `main`, so the merge needs an ADMIN
-  OVERRIDE in addition to the user's own authorization. Do NOT re-run hoping flaky case (i) rolls
-  normal/low — that is gaming the gate (violates the standing "never soften the gate to pass" norm).
-  Hand off honest-red.
+  (2) live-eval-gate is red on #449. CORRECTION (Tech Lead delta-review, Point 2): my earlier
+  wording "cannot be greened pre-merge BY CONSTRUCTION / the honor-pass outputs systematically differ
+  from the threshold-era baseline" is an OVERSTATEMENT and is retracted. The honor-pass mechanism was
+  FULLY in place (threshold already removed) on TWO earlier runs (29269326993@581eaf6, 29268967513@
+  3bc5d9c) and both went GREEN with zero regressions against the same threshold-era baseline cd3742a
+  — 41/42 baselined tests are [stable]; the ONLY mover across the red runs is flaky case (i). So the
+  red is FLAKINESS-driven (case (i) rolling 'high'), NOT systematic mechanism divergence, and there
+  is no missed pre-merge green path (one exists and was hit twice — the only FORCED green path is the
+  forbidden global-baseline poisoning of (1)). The post-merge-recapture conclusion still holds, for
+  the correct/stronger reason: the threshold-era baseline is INVALID under honor-pass (ADR-0009 C3/C4
+  — the run adds a per-case deterministic javascript assertion, 43 current vs 42 baselined, and a
+  grader-pass:false-at-score>=0.8 case can flip), so any green measured against it is NOT meaningful,
+  and re-running to catch a flaky case-(i) green would be gaming the gate ("never soften the gate to
+  pass"). Net: no meaningful pre-merge green is achievable without luck (gaming) or baseline-poisoning
+  -> recapture on `main` post-merge. Confirmed via branch-protection API that live-eval-gate IS a
+  required check on `main` (the workflow's inline "not a required check yet (T-94)" comments are stale
+  and were corrected in this PR), so the merge needs an ADMIN OVERRIDE in addition to the user's own
+  authorization. Hand off honest-red.
 
 2026-07-13 [Evals Lead] FOLLOW-UP FINDING (out of T-109 scope; file for a future eval-quality task):
   case (i) "Non-English (Spanish) ticket" is a FLAKY gate case. The production `triage-model`

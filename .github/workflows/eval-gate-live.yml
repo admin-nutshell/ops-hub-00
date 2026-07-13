@@ -191,8 +191,10 @@ jobs:
           node-version: '20'
 
       # --- STEP 1: scoped-key presence. Absent on a same-repo run = a config problem, but
-      #     we neutral-skip (loud) rather than red — the gate is not a required check yet and
-      #     a missing key is not a quality signal. The judge preflight below is the real
+      #     we neutral-skip (loud) rather than red — a neutral-skip is emitted as a passing/
+      #     neutral result by design (the gate IS a required check as of 2026-07-12, so a genuinely
+      #     non-evaluable state must not hard-block), and a missing key is not a quality signal. A
+      #     real FAIL still blocks. The judge preflight below is the real
       #     "can we run" probe.
       - name: Guard — scoped eval key present (NOT the master key)
         id: keyguard
@@ -260,7 +262,7 @@ jobs:
                 echo "- If this is **FQ-70** (\`fallback-model\` Anthropic-credit-exhaustion on litellm-staging): **expected, not a regression signal.** The gate is dormant until FQ-70 resolves, at which point it evaluates automatically with no code change."
                 echo "- If \`${JUDGE_ALIAS}\` is supposed to be **healthy**: this skip is a **real failure** — investigate the judge alias."
                 echo ""
-                echo "_This gate is wired but not a required merge check yet (T-94). A neutral skip does not block merge._"
+                echo "_\`live-eval-gate\` IS a required, merge-blocking check on \`main\` (branch-protection, live 2026-07-12). This message is a **neutral-skip**, which is emitted as a passing/neutral result by design so a genuinely-non-evaluable state does not block merge — distinct from a FAIL, which blocks._"
               } > "$OUT_DIR/gate-comment.md"
               ;;
           esac
@@ -359,7 +361,7 @@ jobs:
             cat "$OUT_DIR/compare.out"
             echo "\`\`\`"
             echo ""
-            echo "_Not a required merge check yet (T-94)._"
+            echo "_\`live-eval-gate\` is a required, merge-blocking check on \`main\` (branch-protection, live 2026-07-12); a FAIL here blocks merge._"
           } > "$OUT_DIR/gate-comment.md"
 
       # --- STEP 6: DB persistence (Finding 3 — structurally wired, NON-FATAL, secret-gated).

@@ -46,9 +46,14 @@ name: T-92 — capture green eval baseline (all 3 evals, live via LiteLLM)
 # new honor-pass rule (pass <=> grader.pass && score>=floor) — the same rule the gate decides
 # by. RE-BASELINE IS MANDATORY AFTER T-109 LANDS (ADR-0009 C3/C4, two reasons: the per-assertion
 # result feeding compare-baseline changes, AND a previously-green >=0.8 case can flip if a grader
-# returns pass:false at high score). Operational step: dispatch this workflow (against the T-109
-# branch pre-merge, then against main post-merge) to mint the green baseline the gate enforces
-# against — nothing enforces correctly until that baseline exists under the new logic.
+# returns pass:false at high score). Operational step: dispatch this workflow AGAINST `main`
+# AFTER T-109 merges — NOT against the T-109 branch pre-merge. The live gate selects its baseline
+# via `gh run list --workflow=capture-eval-baseline.yml --status=success --limit 1` with NO branch
+# filter, so a capture from an unmerged branch becomes the GLOBAL baseline for every prompt-touching
+# PR while `main` still runs the old logic — poisoning all other in-flight PRs and prematurely
+# activating honor-pass. Correct order: user authorizes merge (own words + admin override, since
+# live-eval-gate is a required check) -> merge -> dispatch this workflow on `main` -> confirm the
+# gate re-enforces green. Nothing enforces correctly until that main-captured baseline exists.
 # The floor is EVAL_RUBRIC_FLOOR (apply-honor-pass.py default 0.6); leave unset to use the default.
 
 on:
