@@ -1,0 +1,122 @@
+name: T-107 check — litellm-staging alias survival + ops-hub-staging state (read-only)
+
+# T-107 (Sprint 13 Track B): before re-pinning ops-hub-staging's own LITELLM_URL
+# to the litellm-staging alias (T-104's honest residual — the alias mechanism
+# was proven on staging during T-104's spike but never consumed on the
+# ops-hub-staging side), confirm two things read-only, don't assume either:
+#   1. The 'litellm-staging' custom_network_aliases field applied during
+#      T-104's spike (t104-apply-verify-litellm-staging-alias.yml, run
+#      29214692340/29214888465) is STILL present — Coolify re-applies it on
+#      every deploy per ADR-0008's mechanism, but this task verifies rather
+#      than assumes it survived the time since.
+#   2. ops-hub-staging's CURRENT run state (running vs stopped) and its
+#      CURRENT LITELLM_URL row(s) — this determines whether the follow-up
+#      repin can include a live restart+verify, or must stop short of any
+#      stopped->running transition per T-98 SC7 (ops-hub-staging stays
+#      STOPPED as a named operating assumption of the E2E monitor; restarting
+#      it requires a T-98 re-review FIRST, distinct from a normal
+#      already-running restart which needs no such review).
+#
+# Mutates nothing. No confirmation input required.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_STAGING_UUID: "h12xz8887fxvbvjts2hac8if"
+  STAGING_ALIAS: "litellm-staging"
+  OPS_HUB_STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: litellm-staging — custom_network_aliases field (Coolify DB record)
+        run: |
+          curl -s --max-time 30 -o /tmp/litellm.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_STAGING_UUID"
+          GOT=$(jq -r '.custom_network_aliases // empty' /tmp/litellm.json 2>/dev/null)
+          echo "custom_network_aliases (DB field) = '$GOT'"
+          if [ "$GOT" = "$STAGING_ALIAS" ]; then
+            echo "ALIAS_FIELD_PRESENT=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::custom_network_aliases is NOT '$STAGING_ALIAS' (got '$GOT') -- alias field did not survive or was never applied as expected."
+            echo "ALIAS_FIELD_PRESENT=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: litellm-staging — live container alias + DNS resolution proof (SSH, read-only)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          NAME=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_STAGING_UUID} --format '{{.Names}}'" | head -1)
+          echo "litellm-staging current container: $NAME"
+          if [ -z "$NAME" ]; then
+            echo "::error::No running litellm-staging container found — cannot confirm live alias."
+            exit 1
+          fi
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker inspect '$NAME' --format '{{json .NetworkSettings.Networks.coolify.Aliases}}'" \
+            | tee /tmp/aliases.txt
+          if grep -q "$STAGING_ALIAS" /tmp/aliases.txt; then
+            echo "CONFIRMED: '$STAGING_ALIAS' present in the LIVE container's coolify-network aliases."
+          else
+            echo "::error::'$STAGING_ALIAS' NOT present on the live container — alias did not survive."
+            exit 1
+          fi
+          echo "Running DNS-resolution probe via an ephemeral container on the shared network..."
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker run --rm --network coolify curlimages/curl:latest -s --max-time 10 -o /dev/null -w 'HTTP %{http_code}\n' http://${STAGING_ALIAS}:4000/health/readiness" \
+            | tee /tmp/probe.txt
+          if grep -qE 'HTTP (200|401)' /tmp/probe.txt; then
+            echo "CONFIRMED: http://$STAGING_ALIAS:4000 resolves and answers from inside the shared network, right now."
+          else
+            echo "::error::Probe did not get a healthy response through the alias."
+            exit 1
+          fi
+
+      - name: ops-hub-staging — current status + current LITELLM_URL row(s)
+        run: |
+          curl -s --max-time 30 -o /tmp/opshub.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID"
+          STATUS=$(jq -r '.status // "unknown"' /tmp/opshub.json 2>/dev/null)
+          echo "ops-hub-staging status field: $STATUS"
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Current LITELLM_URL row count: $COUNT"
+          jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' /tmp/envs.json 2>/dev/null
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================="
+          echo " T-107 pre-flight check"
+          echo "======================================================="
+          echo " litellm-staging alias field present : ${ALIAS_FIELD_PRESENT:-unknown}"
+          echo " See prior steps for live container alias/DNS proof,"
+          echo " ops-hub-staging status, and current LITELLM_URL row(s)."
+          echo "======================================================="
