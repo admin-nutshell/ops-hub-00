@@ -74,12 +74,17 @@ jobs:
 
       - name: Fresh GATE — litellm-prod unauthenticated readiness check (retried, no key ambiguity)
         run: |
+          set +e
+          HTTP="000"
           for i in $(seq 1 8); do
             HTTP=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" "$LITELLM_PROD_EXTERNAL_URL/health/readiness")
-            echo "Attempt $i: GET /health/readiness -> HTTP $HTTP"
+            CURL_EXIT=$?
+            [ "$CURL_EXIT" -ne 0 ] && HTTP="000"
+            echo "Attempt $i: GET /health/readiness -> HTTP $HTTP (curl exit $CURL_EXIT)"
             [ "$HTTP" = "200" ] && { echo "GATE PASS"; break; }
             sleep 8
           done
+          set -e
           if [ "$HTTP" != "200" ]; then
             echo "::error::litellm-prod still not healthy after retries -- STOPPING. Do not proceed with ops-hub-prod cutover."
             exit 1
