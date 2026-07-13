@@ -292,9 +292,16 @@ jobs:
       # (bad build, failed health check, timed-out deployment poll) — a failed
       # deploy that leaves the container running is exactly the SC7 violation
       # this step exists to prevent, just self-inflicted by this pipeline
-      # instead of by a manual restart. Only skips (deliberately, safely) if
-      # the "Patch and deploy" step never ran/recorded an app_uuid — i.e.
-      # staging was never touched this run, so there's nothing to stop.
+      # instead of by a manual restart. Keyed off the job-level constant
+      # $OPS_HUB_STAGING_UUID (NOT steps.coolify.outputs.app_uuid) so it stops
+      # staging on every run that reached this job, not only ones where the
+      # "Patch and deploy" step got far enough to record its output — that
+      # output is written AFTER the START curl, so a hard failure of that
+      # curl itself (network blip, timeout) under `set -euo pipefail` would
+      # kill the step before recording it, and an output-keyed stop would
+      # then skip while staging was, in fact, started. Stopping an
+      # already-not-started/already-stopped app is a harmless no-op, so
+      # unconditional-stop-by-constant is strictly safer.
       #
       # RESIDUAL — NOT fully closed by this step alone, named honestly rather
       # than papered over: while staging is transiently running during this
@@ -305,29 +312,26 @@ jobs:
       # overlapped this window. This restores the STOPPED STEADY STATE, not a
       # structural guarantee against every timing window — that structural
       # close is a monitor-side fix (re-review option (ii): the monitor itself
-      # asserts/tolerates staging's state), deliberately deferred rather than
-      # done here because the T-98 monitor is DORMANT today (FQ-75/SC9
-      # unprovisioned — no sentinel ticket exists yet, so there is nothing for
-      # a transient staging window to catch) and editing live monitor logic
-      # pointlessly now would trigger the Sprint 10 §5.1 "prove any monitor
-      # change on its failure path" burden for zero present benefit. Binding
-      # forward gate: SC9 provisioning (whenever FQ-75 lands) MUST add a
-      # staging-stopped precondition/guard to the monitor before it goes live
-      # — see DECISIONS.md / docs/adr/0010-staging-deploy-trigger-sc7.md.
+      # asserts/tolerates staging's state). **CORRECTED, verified against
+      # `gh secret list`/`gh variable list`/`gh run list` before this ADR was
+      # finalized: the T-98 monitor is LIVE today (scheduled 6-hourly, real
+      # sentinel ticket, live since Sprint 10) — NOT dormant as an earlier
+      # draft of this comment (and the joint review it followed) assumed.**
+      # So the residual race above is real and current, not hypothetical.
+      # (ii) is filed as an OVERDUE, IMMEDIATE fast-follow (its own PR, proven
+      # on its failure path per the Sprint 10 §5.1 norm) rather than folded in
+      # here under time pressure — see DECISIONS.md / WORK.md carries /
+      # docs/adr/0010-staging-deploy-trigger-sc7.md for the full corrected
+      # reasoning and why this doesn't change the chosen option.
       - name: Stop ops-hub-staging (restore T-98 SC7 default state)
         if: always()
         env:
           TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-          APP_UUID: ${{ steps.coolify.outputs.app_uuid }}
         run: |
-          if [ -z "${APP_UUID:-}" ]; then
-            echo "No app_uuid recorded — the patch/start step didn't run (or failed before recording it), so staging was never started this run. Nothing to stop."
-            exit 0
-          fi
-          echo "Stopping $APP_UUID to restore the T-98 SC7 default (stopped) state..."
+          echo "Stopping $OPS_HUB_STAGING_UUID to restore the T-98 SC7 default (stopped) state..."
           STOP_HTTP=$(curl -s --max-time 60 -o /tmp/stop.json -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
-            "$COOLIFY_BASE/applications/$APP_UUID/stop")
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/stop")
           echo "Stop HTTP $STOP_HTTP"
           jq . /tmp/stop.json 2>/dev/null || cat /tmp/stop.json
           if [ "$STOP_HTTP" != "200" ] && [ "$STOP_HTTP" != "201" ]; then

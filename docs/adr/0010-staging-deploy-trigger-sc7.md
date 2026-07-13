@@ -206,10 +206,15 @@ this tenant).
   noise only, no customer reach, and not new behavior this ADR introduces
   (true any time staging is up, by design since T-98).
 - **Failure mode covered:** a failed build/health-check no longer leaves
-  staging running (`if: always()` on the stop step) — verified by dry-run
-  reasoning against the job's step ordering; every code path that reaches
-  "patch/start ran and recorded `app_uuid`" reaches the stop step regardless
-  of what happens afterward.
+  staging running (`if: always()` on the stop step) — the stop step is keyed
+  off the job-level constant `$OPS_HUB_STAGING_UUID`, not the "Patch and
+  deploy" step's output, specifically so it still runs even if that step
+  fails *after* issuing the START call but *before* recording its output
+  (e.g. the START curl itself times out under `set -euo pipefail`) — an
+  output-keyed stop would silently skip in exactly that case, leaving
+  staging running. Stopping an app that was never started (or is already
+  stopped) is a harmless no-op, so keying off the always-available constant
+  is strictly safer than keying off a conditional output.
 - **Failure mode NOT covered by this ADR alone:** a `POST /stop` call itself
   failing (network blip, Coolify API error) leaves staging running with no
   automatic retry — the workflow step exits non-zero in that case (a visible
