@@ -1,0 +1,224 @@
+name: T-104 apply + verify — litellm-staging persistent network alias
+
+# ADR-0008 build-task #1 / §6.1 finding-2: the staging half of the durable
+# LITELLM_URL fix. Confirmed by t104-spike-litellm-staging-alias-feasibility.yml
+# (run 29214375628) via Coolify's own source (coollabsio/coolify
+# app/Jobs/ApplicationDeploymentJob.php ~L3132-3148, app/Models/Application.php
+# ~L52/194/380-433): `custom_network_aliases` is a real, persisted Coolify
+# application field. On EVERY deployment job run, Coolify regenerates the
+# service's docker-compose `networks.<net>.aliases` as
+# `array_merge([container_name], custom_network_aliases)` -- i.e. the alias is
+# baked into Coolify's own deployment pipeline, not a one-time SSH command that
+# would evaporate on the next redeploy (the false-positive trap this design
+# avoids). Confirmed also: `/applications/{uuid}/start` maps to
+# ApplicationsController::action_deploy (routes/api.php L125) -- a REAL deploy
+# (queue_application_deployment with force_rebuild), distinct from
+# `/restart` -> action_restart (L126, restart_only:true, the lighter path
+# restart-verify-litellm-staging.yml deliberately used to AVOID a full
+# redeploy for FQ-53). This workflow uses /start specifically so the "does it
+# survive a REDEPLOY" question is tested against the real trigger, not a
+# lighter restart that might not even rotate the container suffix.
+#
+# Sequence (single redeploy event -- finding-8: apply + verify collapse into
+# one prod touch, mirrored here on staging):
+#   1. Capture the CURRENT litellm-staging container name (baseline).
+#   2. PATCH custom_network_aliases="litellm-staging" (additive: Coolify's own
+#      compose generation always keeps container_name as an alias too --
+#      array_merge, not replace -- so this cannot break existing resolution
+#      paths even if something above is wrong).
+#   3. POST /applications/{uuid}/start (real redeploy, action_deploy).
+#   4. Poll to completion.
+#   5. Confirm via SSH whether the container suffix actually rotated (the
+#      spike is only a valid answer if it did -- logged either way, not
+#      assumed).
+#   6. docker inspect the (possibly new) container's NetworkSettings.Networks
+#      .coolify.Aliases -- confirm "litellm-staging" is present alongside the
+#      suffixed name.
+#   7. From an ephemeral container on the SAME shared "coolify" network (not
+#      inside the app container -- avoids depending on curl being present in
+#      any specific image), curl http://litellm-staging:4000/health/readiness
+#      -- the real Docker-DNS-resolution proof, using the exact alias
+#      ops-hub-prod would be pinned to.
+#
+# ROLLBACK (written before dispatch, per PRODUCTION.md "no deploy without a
+# written rollback path" / ADR-0008 finding-6): this step touches ONLY
+# litellm-staging's own alias config and triggers one redeploy of it. Nothing
+# on ops-hub-staging, litellm-prod, or ops-hub-prod is touched. If the deploy
+# fails or the alias doesn't resolve: (a) re-run
+# fix-litellm-network.yml (existing break-glass, still valid) to restore
+# known-good staging connectivity via the 5-candidate probe pattern, or (b)
+# simply PATCH custom_network_aliases back to null and redeploy again --
+# harmless either way since nothing downstream (ops-hub-staging's LITELLM_URL)
+# is repointed by this workflow. This is staging -- the free canary; no
+# customer-facing blast radius.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  LITELLM_STAGING_UUID: "h12xz8887fxvbvjts2hac8if"
+  STAGING_ALIAS: "litellm-staging"
+
+jobs:
+  apply-and-verify:
+    name: Apply persistent alias + deliberate redeploy + verify
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: BEFORE — current litellm-staging container name (SSH, read-only)
+        id: before
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          NAME=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_STAGING_UUID} --format '{{.Names}}'" | head -1)
+          echo "litellm-staging container BEFORE: $NAME"
+          echo "container_name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Apply persistent alias — PATCH custom_network_aliases (additive, no other field touched)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/patch.json -w "%{http_code}" -X PATCH \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_STAGING_UUID" \
+            -d "$(jq -n --arg v "$STAGING_ALIAS" '{custom_network_aliases: $v}')")
+          echo "PATCH custom_network_aliases=$STAGING_ALIAS -> HTTP $HTTP"
+          cat /tmp/patch.json | jq . 2>/dev/null || cat /tmp/patch.json
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: PATCH failed (HTTP $HTTP) -- stopping before any deploy is triggered."
+            exit 1
+          fi
+
+      - name: Confirm the field actually persisted (read-back, not trust-the-200)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/readback.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$LITELLM_STAGING_UUID")
+          echo "GET readback -> HTTP $HTTP"
+          jq '{custom_network_aliases}' /tmp/readback.json 2>/dev/null
+          GOT=$(jq -r '.custom_network_aliases // empty' /tmp/readback.json 2>/dev/null)
+          if [ "$GOT" != "$STAGING_ALIAS" ]; then
+            echo "ERROR: read-back ($GOT) does not match what we set ($STAGING_ALIAS) -- stopping."
+            exit 1
+          fi
+          echo "Confirmed: custom_network_aliases=$GOT"
+
+      - name: Trigger a REAL redeploy (POST /start = action_deploy, NOT /restart)
+        id: deploy
+        run: |
+          HTTP=$(curl -s --max-time 60 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$LITELLM_STAGING_UUID/start")
+          echo "POST /start -> HTTP $HTTP"
+          cat /tmp/start.json | jq . 2>/dev/null || cat /tmp/start.json
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: deploy trigger failed (HTTP $HTTP)"; exit 1
+          fi
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/start.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deployment to finish
+        run: |
+          DEP="${{ steps.deploy.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then
+            echo "No deployment UUID returned -- sleeping 60s as a fallback."
+            sleep 60
+          else
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" | jq -r '.status // empty' 2>/dev/null || true)
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                finished) echo "Deployment finished."; break ;;
+                failed|error) echo "ERROR: deployment failed"; exit 1 ;;
+              esac
+              sleep 10
+            done
+          fi
+
+      - name: AFTER — litellm-staging container name + suffix-rotation check (SSH, read-only)
+        id: after
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          NAME=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${LITELLM_STAGING_UUID} --format '{{.Names}}'" | head -1)
+          echo "litellm-staging container AFTER: $NAME"
+          echo "container_name=$NAME" >> "$GITHUB_OUTPUT"
+          BEFORE="${{ steps.before.outputs.container_name }}"
+          if [ "$NAME" = "$BEFORE" ]; then
+            echo "::warning::Container name UNCHANGED ($NAME) -- this redeploy did NOT rotate the suffix. The alias-survives-a-redeploy question is NOT settled by this run; re-run later or trigger via a config change that forces recreation, then re-verify."
+            echo "suffix_rotated=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Suffix ROTATED: $BEFORE -> $NAME. This run IS a valid test of alias survival across redeploy."
+            echo "suffix_rotated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Docker network aliases on the (possibly new) container — does 'litellm-staging' survive?
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          CONTAINER="${{ steps.after.outputs.container_name }}"
+          echo "=== docker inspect $CONTAINER -- coolify network aliases ==="
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker inspect '$CONTAINER' --format '{{json .NetworkSettings.Networks.coolify.Aliases}}'" \
+            | tee /tmp/aliases.txt
+          if grep -q "$STAGING_ALIAS" /tmp/aliases.txt; then
+            echo "CONFIRMED: '$STAGING_ALIAS' is present in the container's coolify-network aliases."
+          else
+            echo "::error::'$STAGING_ALIAS' NOT found in the container's aliases after redeploy — the field did not take effect as expected."
+            exit 1
+          fi
+
+      - name: Docker-DNS resolution proof — ephemeral probe container on the shared network (no app code touched)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          echo "Running a throwaway curlimages/curl container ON the shared 'coolify' network"
+          echo "to resolve+hit http://$STAGING_ALIAS:4000/health/readiness -- this is the exact"
+          echo "DNS resolution ops-hub-staging's own LITELLM_URL would rely on, tested"
+          echo "independently of any app code."
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker run --rm --network coolify curlimages/curl:latest -s --max-time 10 -o /dev/null -w 'HTTP %{http_code}\n' http://${STAGING_ALIAS}:4000/health/readiness" \
+            | tee /tmp/probe_result.txt
+          if grep -qE 'HTTP (200|401)' /tmp/probe_result.txt; then
+            echo "CONFIRMED: http://$STAGING_ALIAS:4000 resolves and answers from inside the shared network."
+          else
+            echo "::error::Probe did not get a healthy response through the alias — see output above."
+            exit 1
+          fi
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================="
+          echo " T-104 STAGING apply+verify"
+          echo "======================================================="
+          echo " Container BEFORE : ${{ steps.before.outputs.container_name }}"
+          echo " Container AFTER  : ${{ steps.after.outputs.container_name }}"
+          echo " Suffix rotated?  : ${{ steps.after.outputs.suffix_rotated }}"
+          echo " Alias tested     : $STAGING_ALIAS"
+          echo "======================================================="
+          echo " If suffix_rotated=true AND the alias/probe steps above"
+          echo " passed: ADR-0008 Option 1 is PROVEN feasible on staging."
+          echo " Proceed to the prod apply step per ADR §6.2."
+          echo "======================================================="
