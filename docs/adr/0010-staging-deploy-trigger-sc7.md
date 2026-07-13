@@ -143,7 +143,13 @@ affect.
   call (`POST /stop`) and a few seconds of added job time; negligible.
   Staging is briefly, deliberately running during each qualifying deploy —
   by design, to prove the image boots — which is the accepted trade for
-  keeping the canary.
+  keeping the canary. Concretely, this means every qualifying deploy briefly
+  boots staging and its live Inngest cron sweeps get one real chance to fire
+  during that window, generating whatever telemetry/LangFuse traces a normal
+  staging tick would — today near-silent (no sentinel ticket exists in an
+  actionable state for them to act on; the T-98 monitor is dormant), and
+  covered going forward by the (ii)@SC9 binding gate below once the monitor
+  is live.
 - **Failure mode covered:** a failed build/health-check no longer leaves
   staging running (`if: always()` on the stop step) — verified by dry-run
   reasoning against the job's step ordering; every code path that reaches
