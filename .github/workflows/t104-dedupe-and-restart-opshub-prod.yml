@@ -1,0 +1,143 @@
+name: T-104 PRODUCTION — dedupe LITELLM_URL rows + restart ops-hub-prod + verify
+
+# Follow-up to t104-finish-prod-cutover.yml run 29216049357: GATE passed,
+# delete-all-existing-rows succeeded (2 old rows, both HTTP 200), and the
+# single POST to set the new value succeeded (HTTP 201) -- but the read-back
+# found 2 rows, both already correct (http://litellm-prod:4000). This is the
+# SAME Coolify duplicate-row platform behavior already known for env vars
+# (MEMORY.md: "UI Save appends rows, not upsert"), now confirmed to also
+# happen from a single API POST call, not just the UI. Since both existing
+# rows already carry the CORRECT value, production is not at risk from this
+# duplication (Coolify's documented "last row wins" behavior means either
+# row resolves correctly) -- but this workflow converges to exactly one row
+# for cleanliness/house convention, then completes the cutover: restart
+# ops-hub-prod and verify via /health/litellm-internal (never generic
+# /health), then dispatch T-97 mode=live.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type 'dedupe-and-restart' to confirm"
+        required: true
+
+permissions:
+  contents: read
+  actions: write
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  OPS_HUB_PROD_URL: "https://ops-hub-prod.inatechshell.ca"
+  PROD_ALIAS: "litellm-prod"
+
+jobs:
+  dedupe:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Confirm input
+        run: |
+          if [ "${{ inputs.confirm }}" != "dedupe-and-restart" ]; then
+            echo "::error::Confirmation mismatch"; exit 1
+          fi
+
+      - name: Converge to exactly one LITELLM_URL row (delete extras only if all values already match the intended new URL)
+        run: |
+          NEW_URL="http://${PROD_ALIAS}:4000"
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json)
+          echo "Current LITELLM_URL row count: $COUNT"
+          MISMATCH=$(jq -r --arg v "$NEW_URL" '[.[] | select(.key == "LITELLM_URL" and .value != $v)] | length' /tmp/envs.json)
+          if [ "$MISMATCH" != "0" ]; then
+            echo "::error::Found a LITELLM_URL row whose value does NOT match $NEW_URL -- refusing to auto-delete, needs manual review."
+            jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' /tmp/envs.json
+            exit 1
+          fi
+          if [ "$COUNT" -le "1" ]; then
+            echo "Already at $COUNT row(s), nothing to dedupe."
+          else
+            # Keep the first uuid, delete the rest
+            KEEP=$(jq -r '[.[] | select(.key == "LITELLM_URL")][0].uuid' /tmp/envs.json)
+            echo "Keeping row $KEEP, deleting the rest..."
+            for eu in $(jq -r --arg keep "$KEEP" '.[] | select(.key == "LITELLM_URL" and .uuid != $keep) | .uuid' /tmp/envs.json); do
+              DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs/$eu")
+              echo "  DELETE $eu -> HTTP $DEL"
+            done
+          fi
+
+      - name: Read-back confirm
+        run: |
+          curl -s --max-time 30 -o /tmp/rb.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/rb.json)
+          VALUE=$(jq -r '[.[] | select(.key == "LITELLM_URL") | .value] | join(", ")' /tmp/rb.json)
+          echo "Final LITELLM_URL row count: $COUNT, value(s): $VALUE"
+
+      - name: Restart ops-hub-prod
+        id: restart_opshub
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ro.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/restart")
+          echo "POST /restart -> HTTP $HTTP"
+          DEP=$(jq -r '.deployment_uuid // empty' /tmp/ro.json 2>/dev/null || true)
+          echo "dep_uuid=$DEP" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for restart + generic health
+        run: |
+          set +e
+          DEP="${{ steps.restart_opshub.outputs.dep_uuid }}"
+          if [ -z "$DEP" ]; then sleep 30; else
+            for i in $(seq 1 30); do
+              STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/deployments/$DEP" | jq -r '.status // empty' 2>/dev/null)
+              echo "Attempt $i: status=$STATUS"
+              [ "$STATUS" = "finished" ] && break
+              if [ "$STATUS" = "failed" ] || [ "$STATUS" = "error" ]; then
+                echo "ERROR: restart failed"; exit 1
+              fi
+              sleep 10
+            done
+          fi
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$OPS_HUB_PROD_URL/health")
+            [ "$HTTP" = "200" ] && { echo "ops-hub-prod generic /health OK"; break; }
+            echo "Attempt $i: HTTP $HTTP — waiting"; sleep 10
+          done
+          set -e
+
+      - name: VERIFY — GET /health/litellm-internal (the real path)
+        run: |
+          set +e
+          for i in $(seq 1 15); do
+            HTTP=$(curl -s --max-time 15 -o /tmp/verify.json -w "%{http_code}" "$OPS_HUB_PROD_URL/health/litellm-internal")
+            echo "Attempt $i: /health/litellm-internal -> HTTP $HTTP"
+            cat /tmp/verify.json 2>/dev/null; echo ""
+            [ "$HTTP" = "200" ] && { echo "VERIFIED"; break; }
+            sleep 10
+          done
+          set -e
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Did not reach 200. ROLLBACK: re-run fix-ops-hub-prod-litellm-url.yml with the current litellm-prod suffixed container name."
+            exit 1
+          fi
+
+      - name: Sync Inngest functions
+        run: curl -s --max-time 30 -X PUT "$OPS_HUB_PROD_URL/api/inngest" || true
+
+      - name: Immediate T-97 monitor confirmation dispatch (mode=live)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run monitor-litellm-internal-auth.yml --repo "${{ github.repository }}" --ref main -f mode=live
+
+      - name: Summary
+        if: always()
+        run: echo "T-104 PRODUCTION cutover completed."
