@@ -4,10 +4,11 @@
 
 ---
 
-## FQ-77 — Authorize a one-line eval-safety-net calibration so the triage security fix (T-105) can ship
+## ✅ FQ-77 — RESOLVED: eval-safety-net calibration authorized directly by the user; T-105 triage security fix shipped
 
-**Filed:** 2026-07-12
+**Filed:** 2026-07-12 | **Resolved:** 2026-07-13
 **Filed by:** Tech Lead (T-105, Sprint 12) — with an independent ruling from the Evals Lead.
+**Status:** RESOLVED — the user authorized **Option A** directly, in their own un-relayed words. The governance classifier had correctly refused a *relayed* authorization claim AND the coordinator's own direct merge attempt on the strength of it — because this modifies a **shared, merge-blocking safety net** (the `live-eval-gate` rubric), which no agent may self-approve. The one-line (g) calibration landed as its own separate PR **#439** (merged by a human first + baseline re-captured — never bundled into the fix), then T-105 (PR **#431**) rebased onto the corrected main and **merged clean on its own merits (2026-07-13)**. No customer impact either way (preventative hardening). Lesson banked as a NEW standing norm (retro §5.1): self-merge authorization crosses neither a shared-safety-net boundary nor a coordinator-relay boundary. **Notify:** Tech Lead + Evals Lead — both done (calibration + baseline landed, T-105 merged, gate run record persisted).
 **Needs:** Authorization (a human nod on a shared safety-net change our agents are not allowed to approve for themselves).
 **Deadline:** Non-blocking. Nothing in production is broken. This only decides whether the finished security fix merges now or waits.
 
