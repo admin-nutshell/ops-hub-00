@@ -6497,3 +6497,71 @@ moment.
 -> docs/adr/0010-staging-deploy-trigger-sc7.md ; .github/workflows/main-deploy.yml ;
    PR #448 ; WORK.md T-108 row (now "implemented, PR open, awaiting user merge authorization")
 ```
+
+### 2026-07-13 — T-108 CORRECTION: the joint review's "T-98 monitor is dormant" premise was WRONG — monitor is LIVE; ops-hub-staging is ALSO currently running right now, a separate live SC7 violation (Production Manager, Security Lead review)
+
+```
+2026-07-13 [Production Manager + Security Lead] CORRECTION to the entry
+immediately above and to the Sprint 13 joint review (PR #446) it was built on.
+Both stated the T-98 monitor (monitor-e2e-pipeline.yml) is "DORMANT... FQ-75/
+SC9 unprovisioned." A cheap independent Security Lead pass (fable) on T-108's
+diff/ADR, dispatched because WORK.md names Security Lead as SC7-re-review
+co-owner, traced provision-e2e-sentinel-ticket.yml and sweepNewTickets'
+query and flagged the anchor as suspect. VERIFIED, not assumed: `gh secret
+list` shows E2E_MONITOR_DB_URL (set 2026-07-12T19:05Z) and
+E2E_MONITOR_INNGEST_KEY (set 2026-07-12T21:14Z) both exist; `gh variable list`
+shows E2E_SENTINEL_TICKET_ID (set 2026-07-12T21:23Z,
+b91f7b21-bd9f-4a8c-b732-1663dc630d0b) exists; `gh run list
+--workflow=monitor-e2e-pipeline.yml` shows the `cron: "0 */6 * * *"` schedule
+firing and succeeding repeatedly, latest 2026-07-13T14:21:37Z. **The T-98
+monitor is LIVE, not dormant.** WORK.md's own T-98 row already said this
+("FULLY RESOLVED, GO-LIVE COMPLETE," Sprint 10) — the Sprint 13 joint review
+simply never re-checked it before carrying "dormant" forward as a load-bearing
+assumption, and this task inherited that assumption uncritically at first.
+
+CONSEQUENCE FOR T-108's DECISION: does NOT change the chosen option (i), but
+changes its justification and urgency. The residual timing race ADR-0010
+names (staging's own cron sweeps could touch the T-98 sentinel during a
+transient start-then-stop window) is REAL and CURRENT, not a hypothetical
+tied to a future SC9 milestone that hadn't landed. The "binding forward gate"
+originally written as "must land before the T-98 monitor goes live" is
+corrected to: the monitor already went live in Sprint 10; a staging-stopped
+guard on monitor-e2e-pipeline.yml (SC7 re-review option (ii)) is now an
+OVERDUE, IMMEDIATE fast-follow, not upcoming work — filed as such in WORK.md's
+carries, to be its own focused PR proven on its failure path (Sprint 10 §5.1),
+not folded into T-108 under time pressure.
+
+WHY THIS DOES NOT BLOCK T-108's PR: #448 is a strict improvement on the exact
+axis now in question. Today's un-patched main-deploy.yml starts staging on
+almost every non-doc merge with NO stop step — the worst-case, unbounded form
+of this same race (staging left running indefinitely). #448 starts it on far
+fewer merges AND always stops it. Holding #448 until a separate, properly-
+proven monitor fix also lands would leave the LARGER exposure live longer.
+Full reasoning, including why (iii) workflow_dispatch-only is a closer call
+now than originally framed but still not chosen: docs/adr/0010 (updated).
+
+SEPARATE, LIVE FINDING (not T-108's to fix unilaterally): while verifying the
+Security Lead review, a read-only check (`t107-check-staging-status.yml` run
+29267618042, 2026-07-13T16:44Z, SSH `docker ps`) confirmed **ops-hub-staging
+IS RUNNING RIGHT NOW** — independent of PR #448, which is not merged. Root
+cause, read from main-deploy.yml's own run history (not guessed): the T-107
+closeout merge itself (commit 8a658a1, PR #445) resolved a real merge
+conflict in a workflow file, which re-tripped the still-unfixed OLD
+paths-ignore denylist and re-triggered "Deploy to Staging" (run 29261809160,
+2026-07-13T15:20:27Z, success) — a SECOND live recurrence of the exact T-107
+incident class, on `main`, today, that #448 has not fixed yet because it
+isn't merged. NOT stopped unilaterally: per the Sprint 13 §5.1 teaching
+moment (T-107's own process incident was a self-authorized stop action taken
+instead of pausing to ask), this is reported to the user as a live, distinct
+finding requiring their own decision — options are (a) authorize an immediate
+`POST /stop` now, (b) the user stops it via Coolify directly, (c) accept the
+exposure for now (bounded: synthetic-tenant-only, RLS-isolated, no customer/
+security-boundary crossing, same reasoning the Sprint 10 T-98 review and
+Sprint 13 joint review both already established for this tenant). This is
+NOT bundled into T-108's merge authorization ask — it is a separate,
+narrower, lower-stakes action (a stop, not a trigger-mechanics change) the
+user can decide on its own timeline.
+-> docs/adr/0010-staging-deploy-trigger-sc7.md (corrected) ; PR #448 (updated) ;
+   run 29267618042 (staging-running confirmation) ; run 29261809160
+   (root-cause deploy run) ; WORK.md T-108 row + carries (fast-follow filed)
+```
