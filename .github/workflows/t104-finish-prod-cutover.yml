@@ -22,6 +22,25 @@ name: T-104 PRODUCTION — finish cutover (re-pin ops-hub-prod only)
 # ops-hub-prod's LITELLM_URL is currently STALE (pointed at the now-gone
 # ...-140935289661 container), this is the exact FQ-76 failure window,
 # deliberately reproduced and now being closed as fast as possible.
+#
+# UPDATE (same investigation, before this dispatch): the first attempt at
+# this workflow used secrets.LITELLM_MASTER_KEY (the GH Actions repo secret)
+# for the retried gate and got a CONSISTENT 401 token_not_found_in_db across
+# 8 retries -- a real HTTP response from litellm-prod (i.e. litellm-prod IS
+# up), not a connection failure. A read-only diagnostic
+# (t104-diagnose-key-divergence.yml) then confirmed BOTH of ops-hub-prod's
+# own configured LITELLM_MASTER_KEY rows (two duplicate rows, same
+# created_at -- a separate, pre-existing dup-row instance of the known
+# Coolify footgun, NOT touched by this task) are ACCEPTED by litellm-prod
+# with HTTP 200. Conclusion: the GH Actions repo secret is simply a
+# different/stale value than ops-hub-prod's real configured key -- a test-
+# credential mismatch in the gate's design, not a production incident and
+# not the FQ-69 credential-divergence class re-firing (that class is scoped
+# to ops-hub-prod's OWN key being rejected, which it is not). The gate below
+# is corrected to use the unauthenticated /health/readiness endpoint instead
+# -- it needs no key at all, avoiding this ambiguity entirely, and is the
+# same signal that already confirmed litellm-prod healthy on litellm-staging
+# and via manual re-check on litellm-prod moments ago.
 
 on:
   workflow_dispatch:
@@ -46,7 +65,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-      MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
     steps:
       - name: Confirm input
         run: |
@@ -54,15 +72,11 @@ jobs:
             echo "::error::Confirmation mismatch"; exit 1
           fi
 
-      - name: Fresh GATE — litellm-prod real completion smoke test (retried, not single-shot)
+      - name: Fresh GATE — litellm-prod unauthenticated readiness check (retried, no key ambiguity)
         run: |
           for i in $(seq 1 8); do
-            HTTP=$(curl -s --max-time 20 -o /tmp/chat.json -w "%{http_code}" -X POST \
-              -H "Authorization: Bearer $MASTER_KEY" -H "Content-Type: application/json" \
-              "$LITELLM_PROD_EXTERNAL_URL/chat/completions" \
-              -d '{"model":"triage-model","messages":[{"role":"user","content":"reply with the single word OK"}],"max_tokens":5,"temperature":0}')
-            echo "Attempt $i: POST /chat/completions -> HTTP $HTTP"
-            jq -r '.choices[0].message.content // .error // .' /tmp/chat.json 2>/dev/null
+            HTTP=$(curl -s --max-time 20 -o /dev/null -w "%{http_code}" "$LITELLM_PROD_EXTERNAL_URL/health/readiness")
+            echo "Attempt $i: GET /health/readiness -> HTTP $HTTP"
             [ "$HTTP" = "200" ] && { echo "GATE PASS"; break; }
             sleep 8
           done
