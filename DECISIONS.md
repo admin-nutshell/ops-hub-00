@@ -5913,3 +5913,122 @@ itself.
   by a human directly, not self-approved by any agent. T-105 (PR #431) is now rebasing onto the
   corrected main for a clean re-run and merge.
 ```
+
+### 2026-07-13 — Sprint 12 retro authored + Sprint 12 CLOSED + Sprint 13 planned (PM)
+
+```
+2026-07-13 [PM] Sprint 12 retro authored: docs/retros/sprint-12.md (7-section
+house format). Headline: A GOVERNANCE BOUNDARY HOLDING UNDER REAL PRESSURE. The
+build and the vuln fix were both expected; the genuinely new story is FQ-77.
+T-104 BUILT the durable LITELLM_URL fix and it is LIVE in prod — Option 1
+(persistent Coolify custom_network_aliases) proven on the free litellm-STAGING
+canary against a REAL /start redeploy (suffix actually rotated, alias survived,
+DNS-resolved, HTTP 200) BEFORE prod was touched — the staging-spike-first
+discipline ADR-0008 mandated paying off exactly as designed; mechanism verified
+against coollabsio/coolify's OWN source, not guessed. Applied to prod, re-pinned
+LITELLM_URL to a stable http://litellm-prod:4000, verified the REAL path
+(/health/litellm-internal 200 + clean T-97 mode=live), corrected BOTH break-glass
+workflows' wrong verify endpoint (ADR §3's latent bug). Option 2 (re-sync hook)
++ its Sprint 9 §5.1 Security Lead gate NEVER needed. Clean but not detour-free:
+a mid-deploy 401 wore FQ-69's exact master-key-rejection signature — taken
+seriously, run down READ-ONLY (keys never printed; an earlier draft echoing a
+masked prefix was blocked by the harness safety classifier + rewritten), and
+RULED OUT (ops-hub-prod's own configured keys return 200; the GH Actions secret
+was a stale TEST credential — a flaw in THIS deploy's gate, not the FQ-69 class,
+not an incident). Dup-row footgun confirmed to fire from a SINGLE POST /envs
+call (not only repeated UI Saves); finish-cutover workflow now self-heals it.
+HONEST RESIDUAL: ops-hub-staging's OWN LITELLM_URL was NOT re-pinned (out of
+T-104's prod-only authorized scope) — flagged not dropped, becomes Sprint 13
+T-107. T-105 hardened triage against prompt-injection: untrusted-input clause
+(ticket_body is DATA, never instructions), re-admitted body-injection case (p)
+[new/passing] across all 5 live-gate runs, drop-don't-weaken intact (passes on
+the REAL fix, rubric never softened). T-105-sub REFUTED T-103's n=1 respond-
+completeness finding via a careful n=5 re-run reading each grader's REASON (not
+just the number): completeness never failed once; the sub-threshold docks were
+all anti-FABRICATION (naming specific UI menu paths as verified fact at temp
+0.3) — so the finding is disproven by mechanism, NOT closed as variance, and NO
+Sprint 13 candidate filed (that fix would harden a non-defect); residual already
+gated by cases (h)/(d) in the green 42/42 baseline. THE TEACHING MOMENT — FQ-77:
+T-105's PROVEN fix was blocked from merging because landing it cleanly needed a
+one-line calibration to a BASELINED, untouched-by-the-PR case (g) — the clause
+(placed before the criteria so (n) total-outage correctly reads critical) tipped
+(g) from normal->low, which (g)'s OWN rubric calls "a tolerable read" and does
+NOT list as a fail, yet the hard 0.8 threshold overrode the grader's own
+pass:true/0.75. Evals Lead ruled the calibration justified INDEPENDENTLY (bar:
+"justified even if the T-105 PR didn't exist?" — YES, primary-source-verified),
+and DECLINED to fold it into T-105 (a gate-loosening in the same PR that needs
+the gate to pass reads as "loosened to land the fix"). Because it touches the
+SHARED merge-blocking safety net, the governance classifier correctly refused
+agent self-approval TWICE — a coordinator RELAY of standing authorization AND
+the coordinator's OWN DIRECT merge attempt on the strength of it — until the
+user's OWN fresh, un-relayed words landed it. Calibration merged as its own PR
+#439 (human-merged + re-baselined FIRST), then T-105 (PR #431) rebased + merged
+clean 2026-07-13. Elevated to a NEW standing norm (retro §5.1). Evals Lead's
+SECOND finding banked separately: llm-rubric grader per-run variance trips the
+hard 0.8 threshold on borderline cases even when the grader says pass — SYSTEMIC,
+not (g)-specific -> becomes Sprint 13's anchor. HONEST LEDGER: staging URL still
+un-repinned; gate hard-threshold brittleness is a finding not yet a fix;
+provider-credential class flashed its signature mid-deploy but its trigger STILL
+has not genuinely fired (ruled out read-only). No milestone (capability/
+hardening), seventh straight anchor+one-parallel sprint.
+
+2026-07-13 [PM] Sprint 12 CLOSED. WORK.md header 🟢 ACTIVE -> ✅ COMPLETE
+(2026-07-13), matching the Sprint 8/9/10/11 completion pattern. All three tasks
+(T-104/T-105/T-105-sub) ✅ DONE. T-104 self-merged its 7 PRs on green CI per
+standing authorization; T-105 (PR #431) + its calibration (PR #439) were
+HUMAN-merged directly — the correct handling for a shared-safety-net change
+(FQ-77), NOT self-merged. FOUNDER_QUEUE reconciled before stamping (PM
+"empty/resolved before next sprint" checklist): FQ-77 flipped in-file from an
+open Authorization request to ✅ RESOLVED (header + status line, matching the
+FQ-76 pattern) — it read RESOLVED in DECISIONS but its FOUNDER_QUEUE header
+still showed open, the exact done-but-OPEN drift the Sprint 10 close taught us
+to sweep. The only remaining OPEN items (FQ-63 staging-TLS domain, FQ-47 4b
+UptimeRobot paid tier, FQ-43 DNC) are standing founder-gated carries, not
+Sprint 12 drift. T-104/T-105/T-105-sub filed no NEW founder-gated FQ beyond
+FQ-77 (now resolved) — nothing else this sprint required a founder business/
+pricing/SLA/security-incident decision.
+
+2026-07-13 [PM] Sprint 13 planned: Sep 17 – Oct 1, 2026 (nominal) — "Eval-Gate
+Grader Robustness (ADR) + Staging Internal-URL Re-Pin" (capability/hardening).
+ANCHOR (Track A) T-106 (Evals Lead author + Tech Lead review): ADR for the
+durable fix to the eval-gate grader-robustness class FQ-77 exposed — the hard
+0.8 threshold can override the grader's own pass:true on borderline cases
+(per-run llm-rubric variance; the Evals Lead's SECOND FQ-77 finding, banked as
+systemic, distinct from the case-(g) one-liner already merged). Choose among
+multi-sample grading / margin-based grading / grader-pass-with-threshold-override
+hybrid; hard constraints as exit criteria (provider-neutral grader alias;
+PRESERVES drop-don't-weaken — must not become a back-door to soften the gate;
+cost/latency-per-gate-run budgeted; the FQ-77 boundary named). BUILD DEFERRED to
+Sprint 14 (ADR-then-build precedent, Sprints 8->9 and 11->12). The ADR itself is
+docs-only -> live-eval-gate neutral-skips, self-mergeable; the eventual BUILD
+modifies the SHARED merge-blocking safety net -> its merge needs the user's OWN
+direct in-the-moment authorization (NEW Sprint 12 §5.1, category a) — named in
+T-106's exit criteria so whoever builds it pauses rather than assumes standing
+self-merge. PARALLEL (Track B) T-107 (Production Manager): re-pin ops-hub-
+staging's OWN LITELLM_URL to the already-proven litellm-staging alias
+(http://litellm-staging:4000), closing T-104's honest residual on the identical
+proven mechanism (cheap, near-zero incremental risk). CLASSIFIER-BOUNDARY CAVEAT
+named in the exit criteria: it touches STAGING Coolify config — confirm with the
+user at pickup whether staging-only counts as "production infrastructure" for
+classifier purposes (§5.1 category b) or is materially lower-stakes as non-
+customer-facing; PAUSE AND ASK, do not assume standing auth. Also flagged: the
+T-98 SC7 "staging stays STOPPED" operating assumption must not be violated by
+any staging start the re-pin needs. Overcommit discipline held (SEVENTH
+consecutive sprint): anchor + ONE parallel track. DEFERRED as flagged carries:
+the grader-robustness BUILD (Sprint 14); T-98 6-hourly monitor threshold
+(undecided, needs its own mechanism); provider-CREDENTIAL-divergence root-cause
+(trigger STILL not fired — T-104's mid-deploy 401 wore its signature but was
+ruled out read-only; do NOT fold into T-107); evals-toward->=20 (opportunistic);
+T-105-sub's fabrication-specificity watch item (already gated by (h)/(d));
+LITELLM_URL dedup (self-heals on prod, live for staging until T-107); T-90 O1-O3;
+the subagent-stall watch item; plus the standing founder-gated carries (T-77
+Option A, FQ-63, FQ-47 4b, DNC/FQ-43). No milestone (capability-building);
+Milestone numbering note still stands (do NOT label M7). CLAUDE.md "Active
+sprint" block AND the "Critical path:" line both updated 12->13 (Sprint 12 moved
+to the completed parentheticals with its retro link) — keeping the compass file
+from going stale, the anti-pattern prior retros flagged. PROCESS NOTE: this
+closeout was done in an isolated worktree from the first commit (Sprint 11 §5.1),
+and is a normal docs PR — standing self-merge applies cleanly (it touches no
+safety net and no prod infra), the exact distinction FQ-77 sharpened.
+-> docs/retros/sprint-12.md
+```
