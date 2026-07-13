@@ -6391,3 +6391,49 @@ T-98 monitor goes live (dormant today → orderable but no hard forcing function
 + one parallel track, holding the Sprints 6-13 overcommit discipline (eight straight).
 -> docs/retros/sprint-13.md ; WORK.md Sprint 14 section
 ```
+
+2026-07-13 [Evals Lead] T-109 BUILT — ADR-0009 Option 3 (honor-`pass` grader-robustness)
+implemented; PR open on `sprint-14-t109-eval-gate-honor-pass`, awaiting the USER'S OWN direct
+merge authorization (§5.1 cat. a — modifies the shared `live-eval-gate` grading mechanism; NOT
+self-merged, NOT relayed, NOT self-manufactured). Mechanism: an llm-rubric assertion now passes
+⟺ `grader.pass === true AND score ≥ FLOOR` (the never-override-a-fail asymmetry is naturally
+implied — a grader `pass:false` fails at any score). Six conditions:
+  C1 — the per-assertion `threshold: 0.8` is REMOVED from all evals/*.yaml + canaries; the
+       pass/fail is relocated into scripts/eval/apply-honor-pass.py (verified against promptfoo
+       0.121: a bare llm-rubric then surfaces the grader's OWN pass/score — runJsonGradingPrompt
+       skips `pass = pass && score>=threshold`). Zero added metered cost (local re-decision on
+       the single existing grader verdict; multi-sample stays rejected per the ADR).
+  C2 — FLOOR = env EVAL_RUBRIC_FLOOR, default 0.6. RATIONALE: set STRICTLY BELOW the observed
+       (P1) borderline band 0.70-0.75 (FQ-77 case (g)) so an honest borderline `pass:true` is
+       honored, but a broken/rubber-stamping grader emitting `pass:true` at a genuinely-low
+       score (0.2-0.4) is still floored out. Model-independent numeric (provider-neutral) — a
+       property of the suite's rubric distribution, not any model's scoring curve.
+  C3 — write-point: apply-honor-pass.py stamps the final verdict into row `success` AND
+       `gradingResult.pass` IN PLACE, invoked inside scripts/eval/live-run.sh before
+       compare-baseline.py / calibration-guards.py canary-check read the file. Decision logic
+       stays in ONE script; the comparator stays a pure file diff (no schema change).
+  C4 — canaries: all thresholds removed + re-validated. Every must-fail canary fails via the
+       grader's own `pass:false` (impossible-sentinel rubric, score-independent), so it fails
+       under honor-pass AND a rubber-stamping grader (wrong `pass:true`) makes it PASS → trips
+       calibration-guards.py canary-check (proven end-to-end). Re-baseline is automatic-in-code
+       (capture-eval-baseline.yml routes through the same runner) but an OPERATIONAL step:
+       dispatch it against this branch to mint a green baseline under the new logic before the
+       gate enforces (the threshold-era baseline is invalid — a high-score grader-`pass:false`
+       case can flip; bidirectional delta).
+  C5 — per-eval objective-contract split (each eval's OWN contract, not a uniform enum):
+       triage = per-case javascript (valid JSON + closed enum + case allowed-set); kb-learn =
+       uniform javascript (valid JSON + non-empty title/body, matching kb-learn.ts); ticket-
+       respond = NONE (free-text prose, no JSON/enum contract — documented, not an oversight).
+       Fence-strip in the JS mirrors each production parser (faithful, NOT stricter than prod —
+       so built-in is-json was deliberately avoided; it would flip a fenced-but-valid green case).
+  C6 — each triage case's over/under-escalation allowed-set is a deterministic javascript
+       assertion AND-ed with the rubric, so over-escalation hard-fails GRADER-INDEPENDENTLY and
+       can never be honor-`pass`'d through on a grader's erroneous sub-floor `pass:true`; case
+       (p) also blocks injected category=vip / routing=executives.
+Drop-don't-weaken proven: 17 stdlib unit tests (scripts/eval/test_apply_honor_pass.py) + node
+deterministic tests (test-triage-deterministic.mjs 67 checks, test-kb-deterministic.mjs 7) + an
+end-to-end run through the real scripts (FQ-77 borderline 0.75 now passes; below-floor,
+over-escalation, grader-`pass:false`-at-0.85, malformed, out-of-enum all still hard-fail). All
+6 YAMLs pass `promptfoo validate`. Independent Tech Lead CI/harness review requested per the
+ADR-0007/0008/0009 author+reviewer precedent (review does NOT authorize merge — only the user's
+own words do). -> ADR-0009 ; PR sprint-14-t109-eval-gate-honor-pass

@@ -40,6 +40,16 @@ name: Eval Gate (live LLM-rubric)
 #   from "if fallback-model is healthy, THIS IS A REAL FAILURE". So a broken judge yields
 #   a dormant/neutral gate, never a misleading red, and never a silent pass. When FQ-70
 #   resolves, this same workflow starts evaluating for real with ZERO code change.
+#
+# T-109 (ADR-0009) — HONOR-PASS GRADING: the metered run (STEP 3) routes through the shared
+# runner (scripts/eval/live-run.sh), which now applies scripts/eval/apply-honor-pass.py to each
+# results.json BEFORE compare-baseline reads it. So this gate decides each rubric row by the
+# grader's OWN pass within a floor (pass <=> grader.pass && score>=floor), not by a raw 0.8
+# threshold — no workflow logic changes here (the mechanism lives in the runner + YAMLs). The
+# baseline this compares against (STEP 4/5) MUST be re-captured under the same rule via
+# capture-eval-baseline.yml (ADR-0009 C3/C4) — the prior threshold-era baseline is not valid
+# under honor-pass (a high-score grader-pass:false case can flip). Floor = EVAL_RUBRIC_FLOOR
+# (apply-honor-pass.py default 0.6). Merge of the T-109 change itself is §5.1-cat-a governance-gated.
 
 on:
   pull_request:
