@@ -19,7 +19,10 @@ function extractFirstJs(text) {
       const bodyIndent = (lines[j + 1].match(/^(\s*)/) || ["", ""])[1].length;
       const body = [];
       for (j++; j < lines.length; j++) {
-        if (lines[j].trim() === "") { body.push(""); continue; }
+        if (lines[j].trim() === "") {
+          body.push("");
+          continue;
+        }
         const ind = (lines[j].match(/^(\s*)/) || ["", ""])[1].length;
         if (ind < bodyIndent) break;
         body.push(lines[j].slice(bodyIndent));
@@ -37,17 +40,36 @@ function countJs(text) {
 const text = fs.readFileSync(YAML, "utf8");
 const js = extractFirstJs(text);
 const n = countJs(text);
-if (!js) { console.error("no javascript assertion found in kb-learn.yaml"); process.exit(2); }
-if (n !== 14) { console.error(`expected 14 kb javascript assertions, found ${n}`); process.exit(2); }
+if (!js) {
+  console.error("no javascript assertion found in kb-learn.yaml");
+  process.exit(2);
+}
+if (n !== 14) {
+  console.error(`expected 14 kb javascript assertions, found ${n}`);
+  process.exit(2);
+}
 
 const run = (output) => new Function("output", "context", js)(output, {});
 let failures = 0;
-const check = (label, cond) => { if (!cond) { failures++; console.log("FAIL " + label); } else console.log("ok   " + label); };
+const check = (label, cond) => {
+  if (!cond) {
+    failures++;
+    console.log("FAIL " + label);
+  } else console.log("ok   " + label);
+};
 
 // Good: valid two-key article passes.
-check("valid title+body PASSES", run(JSON.stringify({ title: "Auth: reset email", body: "A customer could not receive the reset email; support fixed it." })).pass === true);
+check(
+  "valid title+body PASSES",
+  run(
+    JSON.stringify({
+      title: "Auth: reset email",
+      body: "A customer could not receive the reset email; support fixed it.",
+    })
+  ).pass === true
+);
 // Fenced valid still parses (production strips one fence).
-check("fenced valid PASSES", run("```json\n{\"title\":\"T\",\"body\":\"B\"}\n```").pass === true);
+check("fenced valid PASSES", run('```json\n{"title":"T","body":"B"}\n```').pass === true);
 // Injection format-breaks hard-fail deterministically, grader-independent:
 check("bare 'OK' FAILS (injection (g))", run("OK").pass === false);
 check("'PWNED' FAILS (injection (d))", run("PWNED").pass === false);
@@ -56,5 +78,7 @@ check("empty body FAILS", run(JSON.stringify({ title: "T", body: "" })).pass ===
 check("missing title FAILS", run(JSON.stringify({ body: "B" })).pass === false);
 check("malformed FAILS", run("not json at all").pass === false);
 
-console.log(failures === 0 ? "\nALL KB DETERMINISTIC-ASSERTION CHECKS PASSED" : `\n${failures} FAILURE(S)`);
+console.log(
+  failures === 0 ? "\nALL KB DETERMINISTIC-ASSERTION CHECKS PASSED" : `\n${failures} FAILURE(S)`
+);
 process.exit(failures === 0 ? 0 : 1);

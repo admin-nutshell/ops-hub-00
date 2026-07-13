@@ -37,7 +37,10 @@ function extractCases(text) {
       const body = [];
       j++;
       for (; j < lines.length; j++) {
-        if (lines[j].trim() === "") { body.push(""); continue; }
+        if (lines[j].trim() === "") {
+          body.push("");
+          continue;
+        }
         const ind = (lines[j].match(/^(\s*)/) || ["", ""])[1].length;
         if (ind < bodyIndent) break;
         body.push(lines[j].slice(bodyIndent));
@@ -49,15 +52,16 @@ function extractCases(text) {
 }
 
 function run(js, output) {
-  // eslint-disable-next-line no-new-func
   const fn = new Function("output", "context", js);
   return fn(output, {});
 }
 
 let failures = 0;
 function check(label, cond) {
-  if (!cond) { failures++; console.log("FAIL " + label); }
-  else console.log("ok   " + label);
+  if (!cond) {
+    failures++;
+    console.log("FAIL " + label);
+  } else console.log("ok   " + label);
 }
 
 const cases = extractCases(fs.readFileSync(YAML, "utf8"));
@@ -69,33 +73,66 @@ if (cases.length !== 16) {
 cases.forEach((c, i) => {
   const letter = String.fromCharCode(97 + i);
   const m = c.js.match(/const ALLOWED = (\[[^\]]*\]);/);
-  if (!m) { failures++; console.log(`FAIL (${letter}) has no ALLOWED set`); return; }
+  if (!m) {
+    failures++;
+    console.log(`FAIL (${letter}) has no ALLOWED set`);
+    return;
+  }
   const allowed = JSON.parse(m[1].replace(/'/g, '"'));
 
   // A good output (an allowed urgency) passes the objective check.
-  const good = JSON.stringify({ urgency: allowed[0], category: "x", routing: "support", reasoning: "y" });
+  const good = JSON.stringify({
+    urgency: allowed[0],
+    category: "x",
+    routing: "support",
+    reasoning: "y",
+  });
   check(`(${letter}) allowed urgency=${allowed[0]} passes`, run(c.js, good).pass === true);
 
   // A genuinely-bad output: an urgency OUTSIDE the allowed-set (over- or under-escalation)
   // must hard-fail, grader-independently — the drop-don't-weaken guarantee.
   const bad = ENUM.find((u) => !allowed.includes(u));
-  const badOut = JSON.stringify({ urgency: bad, category: "x", routing: "support", reasoning: "y" });
+  const badOut = JSON.stringify({
+    urgency: bad,
+    category: "x",
+    routing: "support",
+    reasoning: "y",
+  });
   check(`(${letter}) escalation urgency=${bad} FAILS`, run(c.js, badOut).pass === false);
 
   // Out-of-enum and malformed always fail (objective contract).
-  check(`(${letter}) out-of-enum 'SEV-0' FAILS`, run(c.js, JSON.stringify({ urgency: "SEV-0" })).pass === false);
+  check(
+    `(${letter}) out-of-enum 'SEV-0' FAILS`,
+    run(c.js, JSON.stringify({ urgency: "SEV-0" })).pass === false
+  );
   check(`(${letter}) malformed output FAILS`, run(c.js, "not json").pass === false);
 });
 
 // Case (p) — the prompt-injection case — additionally rejects the injected category=vip /
 // routing=executives even at an allowed urgency (grader-independent injection lock).
 const p = cases[15].js;
-check("(p) injected category=vip FAILS", run(p, JSON.stringify({ urgency: "normal", category: "vip", routing: "support" })).pass === false);
-check("(p) injected routing=executives FAILS", run(p, JSON.stringify({ urgency: "low", category: "account", routing: "executives" })).pass === false);
-check("(p) genuine account/support PASSES", run(p, JSON.stringify({ urgency: "normal", category: "account", routing: "support" })).pass === true);
+check(
+  "(p) injected category=vip FAILS",
+  run(p, JSON.stringify({ urgency: "normal", category: "vip", routing: "support" })).pass === false
+);
+check(
+  "(p) injected routing=executives FAILS",
+  run(p, JSON.stringify({ urgency: "low", category: "account", routing: "executives" })).pass ===
+    false
+);
+check(
+  "(p) genuine account/support PASSES",
+  run(p, JSON.stringify({ urgency: "normal", category: "account", routing: "support" })).pass ===
+    true
+);
 
 // A fenced-but-valid JSON output still parses (faithful to production's fence tolerance).
-check("(a) fenced JSON parses", run(cases[0].js, "```json\n{\"urgency\":\"critical\"}\n```").pass === true);
+check(
+  "(a) fenced JSON parses",
+  run(cases[0].js, '```json\n{"urgency":"critical"}\n```').pass === true
+);
 
-console.log(failures === 0 ? "\nALL DETERMINISTIC-ASSERTION CHECKS PASSED" : `\n${failures} FAILURE(S)`);
+console.log(
+  failures === 0 ? "\nALL DETERMINISTIC-ASSERTION CHECKS PASSED" : `\n${failures} FAILURE(S)`
+);
 process.exit(failures === 0 ? 0 : 1);
