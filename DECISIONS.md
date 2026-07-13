@@ -6442,8 +6442,50 @@ own words do). -> ADR-0009 ; PR #449 (sprint-14-t109-eval-gate-honor-pass)
   i.e. reverting to strict {normal,low} (01fc423): T-109's drop-don't-weaken constraint requires
   over-escalation to hard-fail REGARDLESS of the grader even where rubric text reads charitably, so
   (i)/(p) over-escalation must stay grader-independent (relaxing re-opened the C6-Addendum hole).
-  Zero-cost call: {normal,low} never false-blocks a correct (i)/(p) output (correct outputs ARE
-  normal/low), and it is the exact config the first live-eval-gate run passed green.
+  CORRECTION (empirical, from the post-sync live-eval-gate run 29271330987): my earlier note that
+  "{normal,low} is the exact config the first green run passed" is FALSE and is retracted. The two
+  earlier green runs passed case (i) because the live model happened to roll urgency=normal/low that
+  run; on the post-sync run it rolled urgency=high. So case (i) is a FLAKY borderline input (the
+  model non-deterministically flips normal/low <-> high at temp=0). Strict-vs-relaxed is MOOT for
+  this failure: the GRADER ITSELF returned pass:false / score:0.6 on the 'high' output ("over-
+  escalation for a single user unable to log in"), so the row fails via the grader regardless of the
+  deterministic allowed-set. The grader's own verdict VALIDATES the strict {normal,low} read (the
+  grader agrees 'high' is over-escalation for (i)); strict is kept. See the case-(i) flakiness
+  follow-up finding below.
+
+2026-07-13 [Evals Lead] T-109 — TWO honest-ledger items on the open PR (#449):
+
+  (1) RE-BASELINE ORDERING CORRECTION (supersedes earlier "dispatch against this branch" wording).
+  The gate (eval-gate-live.yml) selects its baseline via `gh run list --workflow=capture-eval-
+  baseline.yml --status=success --limit 1` — NO branch filter. So a capture-eval-baseline run
+  dispatched against THIS (unmerged) branch would become THE global baseline for EVERY prompt-
+  touching PR repo-wide, while `main` still runs threshold-era logic → every other in-flight PR
+  would compare old-logic outputs against a new-logic baseline = spurious regressions, AND it would
+  activate honor-pass semantics repo-wide before the code is merged. Therefore the re-baseline is
+  the FIRST POST-MERGE action on `main`, NOT a pre-merge branch dispatch. This also means running
+  it is itself a shared-safety-net mutation gated on the same §5.1 category-a authorization as the
+  merge. Any earlier note (WORK.md / this file / PR body) suggesting a pre-merge branch dispatch is
+  corrected to: merge (user's own words + admin override) -> THEN recapture on `main` -> confirm the
+  gate re-enforces green.
+
+  (2) live-eval-gate is red on #449 and CANNOT be greened pre-merge by construction of a gating-
+  MECHANISM change: the new honor-pass outputs systematically differ from the threshold-era baseline,
+  and the only valid baseline can only be captured post-merge (see (1)). Confirmed via branch-
+  protection API that live-eval-gate IS a required check on `main`, so the merge needs an ADMIN
+  OVERRIDE in addition to the user's own authorization. Do NOT re-run hoping flaky case (i) rolls
+  normal/low — that is gaming the gate (violates the standing "never soften the gate to pass" norm).
+  Hand off honest-red.
+
+2026-07-13 [Evals Lead] FOLLOW-UP FINDING (out of T-109 scope; file for a future eval-quality task):
+  case (i) "Non-English (Spanish) ticket" is a FLAKY gate case. The production `triage-model`
+  classifies a single-user "can't log in since yesterday" ticket as urgency=high on some temp=0 runs
+  and normal/low on others — a real ~50/50 over-escalation of a limited-impact single-user access
+  problem (the grader flags 'high' as over-escalation). This is BOTH (a) a genuine triage-quality
+  signal worth a prompt/coverage look, and (b) a gate-flakiness source that will intermittently red
+  live-eval-gate independent of honor-pass. Pre-existing (predates T-109 — under the old threshold
+  a 'high' with grader pass:false also failed); T-109 neither caused nor is scoped to fix it. Options
+  to de-flake later: make the (i) ticket's impact unambiguous, or split its JSON-survival purpose
+  from its escalation judgement. Not fixed here to keep T-109 to its mechanism scope.
 
 ### 2026-07-13 — T-108: `main-deploy.yml` staging trigger reconciled with T-98 SC7 — IMPLEMENTED, PR open, awaiting user merge authorization (Production Manager)
 
