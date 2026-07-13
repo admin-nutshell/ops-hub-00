@@ -7189,3 +7189,55 @@ fire (this is a fixture text edit).
   - **N3 (cosmetic, no change requested):** `no consigo iniciar sesión con ella` retains a faint "blocked" flavor, decisively neutralized by the following workaround clauses; noted only as the sole residual pull should CI show any flap.
 
 - **Residual (accepted, standing) — governance boundary:** this is technical approval of the fixture edit ONLY, NOT merge clearance. T-110 edits a fixture the required `live-eval-gate` check reads directly and re-captures the baseline → Sprint 12 §5.1 **category-(a)** shared-safety-net action, same class as T-109. Its merge requires the user's **own direct, in-the-moment authorization** — standing self-merge does not carry, and a relay of *this review* does not satisfy it. This review completes the author+reviewer technical gate; the merge gate is separate and the user's to open.
+
+### 2026-07-13 — Sprint 15 closeout: T-110 merged (user's own hand, branch-protection temporarily lifted) + post-merge baseline re-verified clean (PM)
+
+```
+2026-07-13 [PM] T-110 MERGED (PR #452, commit 189acc0), mergedBy "admin-nutshell"
+(is_bot: false, the human founder account) at 2026-07-13T22:36:45Z -- the
+sanctioned §5.1 cat-a path: the user's own direct, in-the-moment authorization,
+given plainly and explicitly (not inferred from a generic reply -- two prior
+generic "continue"/"proceed as recommended" responses were correctly treated
+as NOT sufficient and re-asked in specific, disclosed terms before any bypass
+action was taken).
+
+MECHANICAL FINDING, worth recording for any future cat-a merge on this repo:
+branch protection on `main` has `enforce_admins.enabled = true` -- GitHub's
+"Include administrators" setting. With this ON, `gh pr merge --admin` (and the
+GitHub web UI's own merge button, confirmed by the user hitting the same wall)
+CANNOT bypass a red required check for ANYONE, including a repo-admin token or
+the repo owner themselves -- this is stricter than "coordinator can't self-
+merge," it is "nobody can merge past red, full stop, until the setting itself
+changes." T-109's equivalent merge (Sprint 14) presumably went through this
+same mechanism by whoever/however it was actually clicked; this session is the
+first time the mechanism itself was inspected and named. To land T-110, the
+user gave EXPLICIT authorization (after a plain-language re-ask naming the
+exact action) to: (1) `DELETE
+/repos/admin-nutshell/ops-hub-00/branches/main/protection/enforce_admins`,
+(2) merge PR #452 via `gh pr merge --squash --admin`, (3) immediately
+`POST .../enforce_admins` to restore it. All three ran back-to-back; verified
+`enforce_admins.enabled` false immediately after step 1, then true again
+immediately after step 3 -- the window the setting was relaxed was the single
+merge operation only, nothing else landed during it.
+
+POST-MERGE BASELINE RE-CAPTURE (the required first post-merge step, per
+T-109's and T-110's own documented ordering) -- RAN AND VERIFIED, not just
+dispatched: `capture-eval-baseline.yml` on `main`, run 29290482377, success.
+Read the actual per-case content (not just the green summary): the de-flaked
+case ("Non-English (Spanish) ticket, unambiguously limited-impact...") now
+returns `urgency: "low"` from the live triage-model, grader `pass:true,
+score:1.0`, with the grader's own stated reason explicitly citing the new
+ticket's workaround clause ("has a workaround using the mobile app") -- direct
+evidence the fixture rewrite converged the model's read, not just a second
+lucky roll of the dice. All three suites 43/43 green (16 triage + 13 respond +
+14 kb-learn), 0 rows restamped by honor-pass in any suite, both canary suites
+correctly holding their must-fail sentinel at 1/2. Sprint 15 is COMPLETE:
+T-111 (merged earlier, self-mergeable, independently re-verified) + T-110
+(merged this entry, cat-a, user's own hand) both closed on a clean,
+re-verified baseline.
+
+-> WORK.md Sprint 15 status (updated to COMPLETE) ; PR #452 (merged,
+   mergedBy admin-nutshell) ; PR #453 (merged earlier) ; run 29290482377
+   (post-merge baseline, re-read in full, not sampled) ; branch-protection
+   API calls (enforce_admins off->merge->on, verified at each step)
+```
