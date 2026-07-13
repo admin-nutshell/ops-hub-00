@@ -80,7 +80,6 @@ tests:
           both non-empty strings, describing the ticket's problem and resolution. This is a
           deliberately easy, unambiguous case — a correctly-wired harness MUST pass it.
           Fail only if the output is not that JSON object (e.g. it is prose, empty, or malformed).
-        threshold: 0.8
 
   # MUST-FAIL: the rubric demands an exact sentinel token no correct KB article will ever
   # contain. A correctly-wired grader MUST fail this. If it PASSES => grader rubber-stamping.
@@ -101,4 +100,3 @@ tests:
           A correct KB Learn article will NEVER contain this sentinel, so a correctly
           functioning grader MUST mark this test FAILED. If this test PASSES, the grader
           is rubber-stamping and the run is untrustworthy.
-        threshold: 0.8
