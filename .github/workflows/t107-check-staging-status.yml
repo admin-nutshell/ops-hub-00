@@ -17,10 +17,24 @@ name: T-107 check — litellm-staging alias survival + ops-hub-staging state (re
 #      it requires a T-98 re-review FIRST, distinct from a normal
 #      already-running restart which needs no such review).
 #
-# Mutates nothing. No confirmation input required.
+# The `check` job mutates nothing and needs no confirmation input. This file
+# also carries a confirm-gated `repin_and_restore_stopped` job (see below) —
+# added same-day to fix an accidental T-98 SC7 violation caused by merging an
+# earlier version of this same file (see docs/deploys/2026-07-13-t107-staging-
+# litellm-url-repin.md). Dispatching that job REQUIRES a human to type the
+# exact confirmation string into the workflow_dispatch input by hand — never
+# supply it programmatically/on an agent's own authorization.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      confirm_repin_and_stop:
+        description: >-
+          Type 'repin-and-restore-stopped' to run the mutating repin+stop job
+          (env var change + STOP, no start/restart). Leave blank for the
+          read-only check job only.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -106,6 +120,27 @@ jobs:
           echo "Current LITELLM_URL row count: $COUNT"
           jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' /tmp/envs.json 2>/dev/null
 
+      - name: ops-hub-staging — AUTHORITATIVE container state via SSH (T-98 SC7 check — is it ACTUALLY running, not just the Coolify status field)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          echo "Looking for a running ops-hub-staging container (filter: $OPS_HUB_STAGING_UUID)..."
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps --filter name=${OPS_HUB_STAGING_UUID} --format '{{.Names}}\t{{.Status}}'" \
+            | tee /tmp/opshub_ps.txt
+          if [ -s /tmp/opshub_ps.txt ]; then
+            echo "::warning::ops-hub-staging HAS a running container right now (see above). This is an SC7 concern (T-98 named operating assumption: ops-hub-staging stays STOPPED) if unexpected."
+            echo "OPSHUB_RUNNING=true" >> "$GITHUB_ENV"
+          else
+            echo "No running ops-hub-staging container found via docker ps -- consistent with SC7 (stays stopped)."
+            echo "OPSHUB_RUNNING=false" >> "$GITHUB_ENV"
+          fi
+          echo "--- Also checking exited/stopped containers for this UUID (for context) ---"
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            "haytham@${VPS_HOST}" \
+            "docker ps -a --filter name=${OPS_HUB_STAGING_UUID} --format '{{.Names}}\t{{.Status}}'" || true
+
       - name: Cleanup SSH key
         if: always()
         run: rm -f ~/.ssh/id_ed25519
@@ -119,4 +154,138 @@ jobs:
           echo " litellm-staging alias field present : ${ALIAS_FIELD_PRESENT:-unknown}"
           echo " See prior steps for live container alias/DNS proof,"
           echo " ops-hub-staging status, and current LITELLM_URL row(s)."
+          echo "======================================================="
+
+  repin_and_restore_stopped:
+    name: Re-pin LITELLM_URL + restore STOPPED (no start/restart, no live verify)
+    if: ${{ inputs.confirm_repin_and_stop == 'repin-and-restore-stopped' }}
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    # WHY NOT restart+verify: the pre-flight check job (this same run, or the
+    # immediately preceding one) found ops-hub-staging UNEXPECTEDLY RUNNING —
+    # traced to main-deploy.yml's "Deploy to Staging" job, whose paths-ignore
+    # list does not cover .github/workflows/** (or any other non-doc path),
+    # so merging THIS TASK'S OWN prior read-only-check PR (#444) to main
+    # silently triggered a real image deploy + POST /start on ops-hub-staging
+    # -- an accidental violation of T-98's SC7 named operating assumption
+    # ("ops-hub-staging stays STOPPED"; restarting it for real requires a
+    # T-98 re-review FIRST). Running is NOT the intended baseline here --
+    # it's a self-inflicted anomaly this job exists to undo, not lean on.
+    # So: apply the env var change (state-independent, the actually-authorized
+    # core of T-107), then STOP ops-hub-staging (restore-known-good -- more
+    # conservative than the restart T-107 was authorized for, not a new
+    # state transition needing fresh authorization), and DEFER live
+    # /health/litellm-internal verification to the next legitimate start
+    # (post T-98 re-review), per this task's own stopped-branch instructions.
+    steps:
+      - name: Confirm input
+        run: |
+          if [ "${{ inputs.confirm_repin_and_stop }}" != "repin-and-restore-stopped" ]; then
+            echo "::error::Confirmation mismatch"; exit 1
+          fi
+
+      - name: Delete ALL existing LITELLM_URL rows on ops-hub-staging (both current rows are stale -- neither matches the target, so a mismatch-guarded dedupe would refuse; delete-all-then-post is correct here)
+        run: |
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/envs.json 2>/dev/null || echo 0)
+          echo "Deleting $COUNT existing LITELLM_URL row(s)..."
+          for eu in $(jq -r '.[] | select(.key == "LITELLM_URL") | .uuid' /tmp/envs.json 2>/dev/null); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs/$eu")
+            echo "  DELETE $eu -> HTTP $DEL"
+          done
+
+      - name: Set LITELLM_URL to the stable staging alias
+        run: |
+          NEW_URL="http://${STAGING_ALIAS}:4000"
+          HTTP=$(curl -s --max-time 30 -o /tmp/set.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs" \
+            -d "$(jq -n --arg k "LITELLM_URL" --arg v "$NEW_URL" '{key:$k,value:$v}')")
+          echo "POST LITELLM_URL=$NEW_URL -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "ERROR: failed to set LITELLM_URL"; cat /tmp/set.json; exit 1
+          fi
+
+      - name: Read-back — confirm exactly one row, correct value (single POST can double-write, per the known Coolify footgun)
+        run: |
+          NEW_URL="http://${STAGING_ALIAS}:4000"
+          curl -s --max-time 30 -o /tmp/rb.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs"
+          COUNT=$(jq -r '[.[] | select(.key == "LITELLM_URL")] | length' /tmp/rb.json 2>/dev/null)
+          VALUE=$(jq -r '[.[] | select(.key == "LITELLM_URL") | .value] | join(", ")' /tmp/rb.json 2>/dev/null)
+          echo "LITELLM_URL row count: $COUNT, value(s): $VALUE"
+          if [ "$COUNT" != "1" ]; then
+            MISMATCH=$(jq -r --arg v "$NEW_URL" '[.[] | select(.key == "LITELLM_URL" and .value != $v)] | length' /tmp/rb.json)
+            if [ "$MISMATCH" != "0" ]; then
+              echo "::error::A LITELLM_URL row does NOT match $NEW_URL -- refusing to auto-delete, needs manual review."
+              jq -r '.[] | select(.key == "LITELLM_URL") | "  uuid=\(.uuid) value=\(.value)"' /tmp/rb.json
+              exit 1
+            fi
+            echo "All $COUNT rows already match $NEW_URL (known single-POST double-write) -- converging to 1."
+            KEEP=$(jq -r '[.[] | select(.key == "LITELLM_URL")][0].uuid' /tmp/rb.json)
+            for eu in $(jq -r --arg keep "$KEEP" '.[] | select(.key == "LITELLM_URL" and .uuid != $keep) | .uuid' /tmp/rb.json); do
+              DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs/$eu")
+              echo "  dedup DELETE $eu -> HTTP $DEL"
+            done
+          else
+            echo "Already exactly 1 row."
+          fi
+
+      - name: STOP ops-hub-staging (restore T-98 SC7 -- NOT a start/restart; undoes the accidental deploy-triggered start)
+        run: |
+          HTTP=$(curl -s --max-time 60 -o /tmp/stop.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/stop")
+          echo "POST /stop -> HTTP $HTTP"
+          cat /tmp/stop.json 2>/dev/null
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Confirm STOPPED via SSH docker ps (authoritative, retried)
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          for i in $(seq 1 12); do
+            OUT=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+              "haytham@${VPS_HOST}" \
+              "docker ps --filter name=${OPS_HUB_STAGING_UUID} --format '{{.Names}}'")
+            if [ -z "$OUT" ]; then
+              echo "Attempt $i: CONFIRMED -- no running ops-hub-staging container. SC7 restored."
+              break
+            fi
+            echo "Attempt $i: still running ($OUT) -- waiting"; sleep 10
+          done
+          if [ -n "$OUT" ]; then
+            echo "::error::ops-hub-staging still shows a running container after /stop + retries -- SC7 NOT restored, needs manual follow-up."
+            exit 1
+          fi
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================="
+          echo " T-107 repin + restore-stopped complete"
+          echo " New LITELLM_URL: http://${STAGING_ALIAS}:4000"
+          echo " ops-hub-staging: STOPPED (SC7 restored)"
+          echo " Live /health/litellm-internal verification DEFERRED to"
+          echo " the next legitimate staging start (post T-98 re-review)."
           echo "======================================================="
