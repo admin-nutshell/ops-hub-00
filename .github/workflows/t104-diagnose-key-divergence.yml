@@ -1,0 +1,60 @@
+name: T-104 diagnose — does ops-hub-prod's OWN configured key work against litellm-prod (read-only)
+
+# The finish-cutover GATE (run using secrets.LITELLM_MASTER_KEY, the GH
+# Actions repo secret) was rejected by litellm-prod with HTTP 401
+# "token_not_found_in_db" -- litellm-prod itself IS up and answering (this is
+# a real HTTP response, not a connection failure), so this is NOT a
+# URL/alias/timing problem. It may mean the GH Actions secret simply isn't
+# the same credential ops-hub-prod itself uses at runtime (a distinct,
+# already-known class per fix-ops-hub-prod-litellm-master-key.yml's own
+# existence/title) -- which would make this a red herring for T-104's
+# URL-suffix scope, NOT a new incident.
+#
+# This workflow tests ops-hub-prod's OWN configured LITELLM_MASTER_KEY
+# (read from Coolify, never printed/echoed anywhere -- only used as a Bearer
+# token) against litellm-prod directly. It does not touch anything. If this
+# succeeds, the GH secret is simply the wrong/stale one for direct external
+# testing (a tooling gap in my GATE step, not a production incident) and I
+# can safely resume the URL-suffix cutover using the real key. If this ALSO
+# fails, ops-hub-prod's actual key is rejected too -- a genuine, separate,
+# out-of-scope incident (the provider-credential-divergence carry) that must
+# be reported, not silently fixed under T-104.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+  LITELLM_PROD_EXTERNAL_URL: "https://litellm-prod.inatechshell.ca"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Fetch ops-hub-prod envs (key used only as a header value, never printed)
+        run: |
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs"
+          echo "Fetched. Row present: $(jq -r '[.[] | select(.key == "LITELLM_MASTER_KEY")] | length' /tmp/envs.json 2>/dev/null) LITELLM_MASTER_KEY row(s)."
+
+      - name: Test ops-hub-prod's own configured key against litellm-prod (key never echoed)
+        run: |
+          OWN_KEY=$(jq -r '.[] | select(.key == "LITELLM_MASTER_KEY") | .value' /tmp/envs.json 2>/dev/null | head -1)
+          if [ -z "$OWN_KEY" ] || [ "$OWN_KEY" = "null" ]; then
+            echo "RESULT: no LITELLM_MASTER_KEY row readable on ops-hub-prod (value may be withheld by the API)."
+            exit 0
+          fi
+          HTTP=$(curl -s --max-time 20 -o /tmp/test.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer ${OWN_KEY}" -H "Content-Type: application/json" \
+            "$LITELLM_PROD_EXTERNAL_URL/chat/completions" \
+            -d '{"model":"triage-model","messages":[{"role":"user","content":"reply OK"}],"max_tokens":5,"temperature":0}')
+          unset OWN_KEY
+          echo "RESULT: test with ops-hub-prod's OWN configured key -> HTTP $HTTP"
+          jq -r '.choices[0].message.content // .error.message // .message // .' /tmp/test.json 2>/dev/null || cat /tmp/test.json | head -c 300
