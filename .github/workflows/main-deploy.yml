@@ -1,18 +1,60 @@
 name: Deploy to Staging
 
-# Auto-deploys the ops-hub application to Coolify staging on every push to main.
+# Auto-deploys the ops-hub application to Coolify staging on every push to main
+# that genuinely changes the built application image.
 # Prod promotion is manual-only via prod-promotion.yml (workflow_dispatch).
 # CI/CD spec: docs/engineering/ci-cd-pipeline.md §5
+#
+# T-108 (2026-07-13, DECISIONS.md): this trigger was a `paths-ignore` DENYLIST
+# (status/**, docs/**, WORK.md, DECISIONS.md, FOUNDER_QUEUE.md, CLAUDE.md) that
+# omitted `.github/workflows/**` and every other non-product path — so ANY
+# non-doc merge (workflow-file edits included) silently built+deployed+started
+# staging, colliding with T-98 SC7 ("ops-hub-staging stays stopped"). It fired
+# for real during T-107 (a workflow-file-only PR #444 started staging).
+# Converted to a `paths` ALLOWLIST: only these paths can change what
+# `docker build .` actually produces (cross-checked against Dockerfile's own
+# COPY list + package.json's build script), so only they should trigger a
+# rebuild+redeploy. An allowlist fails toward UNDER-deploying (an unlisted
+# product path would silently miss staging) rather than the denylist's
+# OVER-deploying failure mode — the safer direction for a staging environment
+# whose default state should be stopped, and the gap is self-healing (any
+# genuinely-missed path shows up as a staging drift, not a silent violation of
+# a documented safety invariant).
+#
+# Deliberately excluded (verified, not assumed):
+#   - .github/workflows/** — the T-107 trigger case itself; a workflow-file
+#     edit cannot change the app image.
+#   - docs/**, *.md (WORK.md, DECISIONS.md, FOUNDER_QUEUE.md, CLAUDE.md,
+#     the numbered 0X_*.md charter files, docs/adr/**, docs/deploys/**,
+#     docs/retros/**), status/** — no code, GitHub Pages status site only.
+#   - supabase/migrations/** — confirmed against how the app actually consumes
+#     the DB before excluding: migrations are applied by hand via the Supabase
+#     SQL Editor (CLAUDE.md: "not tracked by Supabase CLI"), and src/index.ts
+#     contains no migration-runner — the app only opens a `pg`/
+#     `@supabase/supabase-js` connection to whatever schema already exists.
+#     A migration file changing does not change dist/ or the image; it needs
+#     its own manual apply step, not an app redeploy.
+#   - web/** — the ops dashboard is a separate Next.js app with its own
+#     Dockerfile/provisioning workflows (provision-ops-dashboard-staging.yml
+#     etc.); the root Dockerfile here never COPYs web/, so it cannot affect
+#     this image.
+#   - scripts/**, evals/** — CI/eval tooling, not COPY'd into the runtime image.
+#   - pnpm-workspace.yaml — declares workspace members ("." and "web") but is
+#     not read at Docker build time (root Dockerfile COPYs package.json +
+#     pnpm-lock.yaml directly, not the workspace file); included anyway below,
+#     belt-and-suspenders, since it is cheap to and does genuinely gate what
+#     `pnpm install` resolves for the root package outside Docker.
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "status/**"
-      - "docs/**"
-      - "WORK.md"
-      - "DECISIONS.md"
-      - "FOUNDER_QUEUE.md"
-      - "CLAUDE.md"
+    paths:
+      - "src/**"
+      - "Dockerfile"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig.json"
+      - "tsconfig.build.json"
 
 # Least-privilege: needs packages:write for GHCR image push.
 permissions:
@@ -232,3 +274,68 @@ jobs:
           if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
             echo "WARNING: Inngest sync returned HTTP $HTTP — functions may not be updated"
           fi
+
+      # ── Restore T-98 SC7 default state: staging ends every run STOPPED ───────
+      # T-108 SC7 re-review (DECISIONS.md 2026-07-13): the paths allowlist above
+      # only stops NON-product merges from starting staging; a genuine src/**
+      # (etc.) change still legitimately needs to build+boot the app — the one
+      # canary pr-checks.yml does NOT have (it lints/typechecks/unit-tests/
+      # eval-validates but never runs `docker build`, so a broken multi-stage
+      # build would otherwise go undetected until someone manually deploys).
+      # Chosen reconciliation: START-THEN-STOP (option (i) of the re-review) —
+      # keep building+booting+health-checking on every qualifying merge (the
+      # canary), then explicitly stop staging again so the space BETWEEN
+      # deploys — which is effectively all the time in a repo with more merges
+      # than deploys-in-flight — matches SC7's "stays stopped" default.
+      #
+      # `if: always()`: MUST run even when an earlier step in this job failed
+      # (bad build, failed health check, timed-out deployment poll) — a failed
+      # deploy that leaves the container running is exactly the SC7 violation
+      # this step exists to prevent, just self-inflicted by this pipeline
+      # instead of by a manual restart. Keyed off the job-level constant
+      # $OPS_HUB_STAGING_UUID (NOT steps.coolify.outputs.app_uuid) so it stops
+      # staging on every run that reached this job, not only ones where the
+      # "Patch and deploy" step got far enough to record its output — that
+      # output is written AFTER the START curl, so a hard failure of that
+      # curl itself (network blip, timeout) under `set -euo pipefail` would
+      # kill the step before recording it, and an output-keyed stop would
+      # then skip while staging was, in fact, started. Stopping an
+      # already-not-started/already-stopped app is a harmless no-op, so
+      # unconditional-stop-by-constant is strictly safer.
+      #
+      # RESIDUAL — NOT fully closed by this step alone, named honestly rather
+      # than papered over: while staging is transiently running during this
+      # job (build+push+patch+start+poll+health-check+inngest-sync), its own
+      # Inngest cron sweeps (sweepNewTickets, sweepRespondedTickets,
+      # sla-monitor) are live like any other time it's up, and could in
+      # principle interact with a T-98 monitor synthetic ticket if a run
+      # overlapped this window. This restores the STOPPED STEADY STATE, not a
+      # structural guarantee against every timing window — that structural
+      # close is a monitor-side fix (re-review option (ii): the monitor itself
+      # asserts/tolerates staging's state). **CORRECTED, verified against
+      # `gh secret list`/`gh variable list`/`gh run list` before this ADR was
+      # finalized: the T-98 monitor is LIVE today (scheduled 6-hourly, real
+      # sentinel ticket, live since Sprint 10) — NOT dormant as an earlier
+      # draft of this comment (and the joint review it followed) assumed.**
+      # So the residual race above is real and current, not hypothetical.
+      # (ii) is filed as an OVERDUE, IMMEDIATE fast-follow (its own PR, proven
+      # on its failure path per the Sprint 10 §5.1 norm) rather than folded in
+      # here under time pressure — see DECISIONS.md / WORK.md carries /
+      # docs/adr/0010-staging-deploy-trigger-sc7.md for the full corrected
+      # reasoning and why this doesn't change the chosen option.
+      - name: Stop ops-hub-staging (restore T-98 SC7 default state)
+        if: always()
+        env:
+          TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: |
+          echo "Stopping $OPS_HUB_STAGING_UUID to restore the T-98 SC7 default (stopped) state..."
+          STOP_HTTP=$(curl -s --max-time 60 -o /tmp/stop.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/stop")
+          echo "Stop HTTP $STOP_HTTP"
+          jq . /tmp/stop.json 2>/dev/null || cat /tmp/stop.json
+          if [ "$STOP_HTTP" != "200" ] && [ "$STOP_HTTP" != "201" ]; then
+            echo "ERROR: STOP failed (HTTP $STOP_HTTP) — staging may still be running; SC7 is violated until this is stopped manually. Treat as an incident, not a shrug."
+            exit 1
+          fi
+          echo "Stopped. SC7 default state restored."
