@@ -6736,3 +6736,67 @@ live, not just implemented-on-paper.
    29269402188 (staging-stop confirmation) ; PR #449 / PR #448 (mergedBy
    verified via `gh pr view --json mergedBy`)
 ```
+
+### 2026-07-13 — CORRECTION to the Sprint 14 closeout / Sprint 15 scoping: case (i) is NOT a multi-sample fit, and T-110's merge boundary was mis-scoped (PM, caught before any build started)
+
+```
+2026-07-13 [PM] Two mistakes in the Sprint 14 closeout / Sprint 15 scoping just
+merged (PR #450), caught before any T-110 work started -- banked as a labeled
+correction, not silently patched (the house norm: "record a miss as an
+addendum," Sprint 13 retro Process Change #6).
+
+MISTAKE 1 -- case (i) is not ADR-0009's multi-sample contingency, and the
+closeout's "this IS that empirical evidence" line overclaimed. Re-read
+ADR-0009's own cost model closely (lines 43, 136, 201): multi-sample is
+SCOPED AND PRICED as re-grading a single, FIXED target output N times
+("target stays ~$0.004... N=3 judge-only re-grades") -- it exists to smooth
+(P2) GRADER score scatter on an unchanging output. Case (i)'s actual failure
+mode (DECISIONS.md 2026-07-13 follow-up finding) is the TARGET MODEL itself
+non-deterministically choosing a different urgency value across runs (~50/50
+high vs normal/low) -- the grader is stable; the thing being graded changes.
+Re-grading one over-escalated output N times would just confirm the
+over-escalation N times; it does not address target-output variance at all.
+Worse: a genuine ~50/50 split is itself evidence the TICKET FIXTURE is
+ambiguous, not that grading is noisy -- averaging N samples of a real coin
+flip is still ~50%, so even the more-expensive-and-unpriced version of
+multi-sample (re-running the TARGET N times, which ADR-0009 never costed)
+would not converge this case to stable green.
+
+MISTAKE 2 -- T-110's WORK.md governance-boundary language ("neither T-110 nor
+T-111 is expected to cross a shared-safety-net boundary... unless scope
+grows") was wrong for T-110 from the start, not conditionally. T-110 edits
+evals/ticket-triage.yaml, a fixture the required live-eval-gate check reads
+directly, and re-captures the baseline -- and T-109's OWN exit criteria
+already established "running the recapture is itself a section 5.1 cat-a
+shared-safety-net action." T-110 is categorically the same governance class
+as T-109 (grader-robustness build), not a maybe. Corrected in WORK.md: T-110
+is now explicitly cat-a, build-only, no self-merge, same as T-109.
+
+CORRECTED DIRECTION (not yet built -- this is the diagnosis handoff, the fix
+itself is the Evals Lead's call): the two candidate remediations DECISIONS.md's
+own 2026-07-13 follow-up finding already named are the better fit than
+multi-sample -- (a) tighten the ticket fixture's wording to remove genuine
+ambiguity so the model's true read converges, or (b) split case (i)'s two
+conflated purposes (JSON-contract survival under non-English input, which
+wants urgency judged leniently; and escalation-judgement correctness, which
+wants an unambiguous ticket) into two separate cases. Also flagged for the
+Evals Lead to check: case (i)'s own rubric text explicitly says "(Do not fail
+solely on a normal-vs-low judgement call)" -- i.e. this case was DESIGNED
+lenient-on-urgency -- but T-109's C6 addition bolted a strict, grader-
+independent `ALLOWED=['normal','low']` hard-fail onto it (evals/ticket-
+triage.yaml, case (i)'s javascript assertion). That may be the proximate
+tension: a case built loose got a strict deterministic gate added on top of
+it, for a good reason (drop-don't-weaken against over-escalation generally)
+that may not fit this ONE case's own deliberately-lenient design intent. Not
+resolved here -- this is Evals Lead's diagnosis to make, with Tech Lead
+independent review (same author+reviewer precedent as T-106/T-109).
+
+NO code changed by this correction -- WORK.md's T-110 row and Sprint 15
+Track A description text updated to remove the premature "confirmed
+multi-sample evidence" framing and the "maybe crosses a boundary" framing.
+-> WORK.md Sprint 15 Track A (T-110 row + anchor description, corrected) ;
+   evals/ticket-triage.yaml lines 304-337 (case (i), read not yet edited) ;
+   docs/adr/0009-eval-gate-grader-robustness.md lines 43/136/201 (multi-sample
+   cost model, re-read closely) ; DECISIONS.md 2026-07-13 T-109 follow-up
+   finding (lines ~6490-6499, the raw evidence this correction re-diagnoses)
+```
