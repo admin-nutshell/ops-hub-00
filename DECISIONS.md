@@ -6437,3 +6437,10 @@ over-escalation, grader-`pass:false`-at-0.85, malformed, out-of-enum all still h
 6 YAMLs pass `promptfoo validate`. Independent Tech Lead CI/harness review requested per the
 ADR-0007/0008/0009 author+reviewer precedent (review does NOT authorize merge — only the user's
 own words do). -> ADR-0009 ; PR #449 (sprint-14-t109-eval-gate-honor-pass)
+  TL review outcome: APPROVE-WITH-NITS, C1–C6 MET. Finding 1 (triage cases (i)/(p) allowed-sets
+  briefly relaxed in a723246 to match their literal fail-lines) was resolved by CONFIRMING INTENT,
+  i.e. reverting to strict {normal,low} (01fc423): T-109's drop-don't-weaken constraint requires
+  over-escalation to hard-fail REGARDLESS of the grader even where rubric text reads charitably, so
+  (i)/(p) over-escalation must stay grader-independent (relaxing re-opened the C6-Addendum hole).
+  Zero-cost call: {normal,low} never false-blocks a correct (i)/(p) output (correct outputs ARE
+  normal/low), and it is the exact config the first live-eval-gate run passed green.
