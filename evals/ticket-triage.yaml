@@ -159,7 +159,7 @@ tests:
           - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
           - Set "urgency" to "normal": the ticket carries no clear severity or impact signal, so the prompt's explicit "If uncertain: urgency=normal, category=support, routing=support" default applies. ("low" is a tolerable read of a minor flag, but the uncertain-default is normal.)
           - Not over-escalate an ambiguous, low-information message.
-          Fail if urgency is "critical" or "high" (over-escalation of a vague, no-impact ticket), if the JSON is malformed, or if an out-of-enum value appears.
+          Fail if urgency is "critical" or "high" (over-escalation of a vague, no-impact ticket), if the JSON is malformed, or if an out-of-enum value appears. (Do not fail solely on a normal-vs-low judgement call.)
         threshold: 0.8
 
   # (h) Broad impact BUT a workaround exists → normal, not high. Directly probes the
