@@ -6391,3 +6391,108 @@ T-98 monitor goes live (dormant today → orderable but no hard forcing function
 + one parallel track, holding the Sprints 6-13 overcommit discipline (eight straight).
 -> docs/retros/sprint-13.md ; WORK.md Sprint 14 section
 ```
+
+### 2026-07-13 — T-108: `main-deploy.yml` staging trigger reconciled with T-98 SC7 — IMPLEMENTED, PR open, awaiting user merge authorization (Production Manager)
+
+```
+2026-07-13 [Production Manager] T-108 IMPLEMENTED (not merged — see gate below).
+Executes both parts of the joint review's decision (c) (DECISIONS.md 2026-07-13,
+PR #446), which scoped and recommended but implemented nothing.
+
+PART 1 — trigger widened, denylist -> allowlist. main-deploy.yml's `paths-ignore`
+(status/**, docs/**, WORK.md, DECISIONS.md, FOUNDER_QUEUE.md, CLAUDE.md — a
+denylist that omitted .github/workflows/** and every other non-product path, the
+exact gap T-107 hit) is replaced with a `paths` ALLOWLIST: src/**, Dockerfile,
+package.json, pnpm-lock.yaml, pnpm-workspace.yaml, tsconfig.json,
+tsconfig.build.json — cross-checked against the Dockerfile's own COPY list and
+package.json's build script, not guessed. supabase/migrations/** deliberately
+excluded, verified (not assumed) against how the app consumes the DB: migrations
+are applied by hand via the Supabase SQL Editor (CLAUDE.md: "not tracked by
+Supabase CLI") and src/index.ts contains no migration-runner — the app only opens
+a pg/supabase-js connection to whatever schema already exists, so a migration
+file changing does not change dist/ or the image. web/** also excluded — the ops
+dashboard is a separate Next.js app with its own Dockerfile/provisioning
+workflows; the root Dockerfile here never COPYs web/. Full path-set rationale +
+what's excluded and why: main-deploy.yml's own header comment.
+
+PART 2 — SC7 re-review, NOT pre-committed by the joint review, this task's own
+call: CHOSE OPTION (i), start-then-stop in the pipeline. main-deploy.yml gets a
+final `if: always()` step that POST /stop's ops-hub-staging after the existing
+build -> patch -> deploy-status-poll -> health-check -> Inngest-sync sequence,
+regardless of whether those steps succeeded. `if: always()` is load-bearing: a
+naive "stop only after a green health check" would leave staging running on
+every FAILED deploy too — the exact SC7 violation this exists to prevent, just
+self-inflicted by this pipeline instead of a manual restart.
+
+WHY (i) OVER (iii) (workflow_dispatch-only, dropping staging auto-deploy
+entirely): confirmed pr-checks.yml (the required PR gate) has NO `docker build`
+step — lint/typecheck/unit-tests/eval-schema-validate only. main-deploy.yml's
+build->boot->health-check is therefore the ONLY place in CI that proves a merge
+to main produces a bootable, healthy image — a real, non-redundant canary, not
+incidental scaffolding this repo has hit build-break incidents around before.
+(iii) would remove that canary outright, letting a broken Docker build sit
+undetected across an arbitrary number of merges. (i) keeps it while restoring
+the stopped default between deploys.
+
+WHY (i) ALONE ISN'T THE FULL STORY — the monitor-correctness angle, reasoned
+through directly (not dispatched as a separate Security Lead review; judged not
+warranted for this specific, non-customer-facing, currently-dormant-monitor
+call — see the ADR for the explicit call-not-to-escalate): (i) restores the
+STEADY STATE SC7 needs (stopped between deploys) but does NOT structurally close
+a narrower timing race. While staging is transiently running during a deploy
+job (several minutes: build+push+patch+start+poll+health-check+inngest-sync),
+its own Inngest cron sweeps (sweepNewTickets/sla-monitor every 5 min,
+sweepRespondedTickets every 15) are live like at any other time it's up. If the
+T-98 monitor were live with an in-flight sentinel ticket, a deploy's transient
+window could in principle overlap one of those sweeps. A monitor's safety
+property should not rest on an assumption enforced by a DIFFERENT system's
+pipeline behavior — that is the same shape of gap T-107 exposed in the first
+place; a monitor-side structural close (re-review option (ii): the monitor
+itself asserts/tolerates staging's live state) remains NECESSARY, not merely
+nice-to-have, and is not abandoned by choosing (i).
+
+WHY (ii) IS DEFERRED, NOT DROPPED: the T-98 monitor (monitor-e2e-pipeline.yml)
+is DORMANT today (guards on E2E_MONITOR_DB_URL/E2E_SENTINEL_TICKET_ID, exits
+clean — FQ-75/SC9 unprovisioned). No sentinel ticket exists, so there is
+currently nothing for a transient staging window to catch — (i) alone is fully
+sufficient TODAY. Building (ii) now would trigger the Sprint 10 §5.1 "prove any
+monitor change on its failure path" burden for a change with no observable
+failure mode yet to test against, and risks drifting from whatever SC9's
+eventual sentinel schema/query actually looks like.
+
+BINDING FORWARD GATE (not a soft "someone should later" — a hard SC9
+precondition, cross-referenced in WORK.md's T-98 tracking): SC9 provisioning
+(the FQ-75 work bringing the T-98 monitor live) MUST add a staging-stopped
+precondition/guard to monitor-e2e-pipeline.yml before that monitor is trusted —
+either the monitor checks Coolify's app status and skips/aborts if staging is
+running, or the sentinel query is scoped so a transiently-running staging
+structurally cannot double-grab it. That change will itself require the
+Sprint 10 §5.1 failure-path proof before the monitor is trusted.
+
+VERIFICATION (dry-run reasoning against the new config, no live merge
+performed — merging is exactly what needs the user's authorization, below): a
+workflow-file-only change (the T-107 shape) matches none of the new `paths`
+entries -> the deploy job would not even be queued, confirmed against GitHub
+Actions' documented `paths` semantics. `paths` is OR-matched: a merge touching
+both a workflow file AND src/** still deploys (correct — product code changed).
+A docs-only/DECISIONS.md/WORK.md-only merge still does not deploy (no
+regression vs. the old denylist's intended safe case). main-deploy.yml triggers
+on push:main, not pull_request — no interaction with required PR status checks
+or branch protection.
+
+Full design record + consequences + explicit "what this ADR does NOT close":
+docs/adr/0010-staging-deploy-trigger-sc7.md.
+
+PROD-INFRA GATE (§5.1 category b, Sprint 12 norm, reaffirmed Sprint 13 T-107's
+own incident: authorization cannot be self-manufactured) — NOT SELF-MERGED.
+This edits WHEN production-adjacent auto-deploys fire on real infrastructure.
+PR opened, CI green, explicitly held for the user's OWN direct, in-the-moment
+go-ahead before merge — naming exactly what's being authorized: (1) the
+paths-ignore->paths allowlist conversion, (2) the added start-then-stop step,
+and (3) the chosen SC7 reconciliation approach (option (i) now + option (ii)
+bound to SC9 provisioning later). No coordinator relay, no self-supplied
+dispatch-input confirmation — the user's own words only, per the Sprint 13
+§5.1 teaching moment.
+-> docs/adr/0010-staging-deploy-trigger-sc7.md ; .github/workflows/main-deploy.yml ;
+   WORK.md T-108 row (now "implemented, PR open, awaiting user merge authorization")
+```
