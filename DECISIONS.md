@@ -6671,3 +6671,68 @@ user can decide on its own timeline.
    run 29267618042 (staging-running confirmation) ; run 29261809160
    (root-cause deploy run) ; WORK.md T-108 row + carries (fast-follow filed)
 ```
+
+### 2026-07-13 — Sprint 14 closeout: T-109 + T-108 both merged by the user directly; post-merge verification (PM, read-only reconciliation)
+
+```
+2026-07-13 [PM] WORK.md had gone stale relative to GitHub: both PR #449 (T-109)
+and PR #448 (T-108) show as MERGED, mergedBy "admin-nutshell" (is_bot: false,
+the human founder account) -- 2026-07-13T18:25:27Z and 2026-07-13T17:10:42Z
+respectively -- confirming BOTH shared-safety-net (T-109, category a) and
+prod-adjacent (T-108, category b) merges went through the sanctioned §5.1 path:
+the user's own direct merge, not a relay, an inference, or a self-manufactured
+token. T-109 was merged as an admin override of the required-but-honest-red
+`live-eval-gate` check (the red was pre-existing case-(i) flakiness, not a
+honor-pass-vs-baseline regression -- see below). This closeout reconciles
+WORK.md/DECISIONS.md to the actual GitHub state before Sprint 15 is scoped.
+
+T-109 POST-MERGE RE-BASELINE -- CONFIRMED, and its risk profile checked, not
+assumed. capture-eval-baseline.yml ran on `main` at 2026-07-13T18:25:43Z (run
+29274409705, 16s after the merge commit, success) -- the FIRST post-merge
+action, per the task's own ordering requirement. Read the run log directly
+(not just the green checkmark): all three evals captured 100% green under the
+new honor-pass mechanism -- ticket-triage 16/16, ticket-respond 13/13,
+kb-learn 14/14 (43/43 total) -- and every suite logged "0 restamped (0
+promoted, 0 demoted)", meaning honor-pass agreed with the old threshold-era
+verdict on every single row THIS run; the mechanism made no visible difference
+this capture. Both canary suites show the expected 1/2 (50%) -- the must-fail
+sentinel still correctly fails under the new mechanism (C4 held).
+
+RISK FLAGGED, not fixed here: the "Non-English (Spanish) ticket ... urgency"
+triage case (DECISIONS.md 2026-07-13 T-109 follow-up entry's "case (i)") is
+the one already-documented as non-deterministically over-escalating to `high`
+at temp=0 on SOME runs -- a pre-existing model-layer flakiness, out of T-109's
+scope, not caused by honor-pass. In THIS baseline-capture run it happened to
+classify correctly (normal/low, grader pass:true, score=1) and got frozen into
+the new baseline as an expected-PASS row. Consequence: a future prompt-touching
+PR that lands during an unlucky run of this same case will show as a NEW
+per-case regression against this baseline -- not a false one; the deterministic
+C6 escalation allowed-set (strict {normal,low} for this case, confirmed via
+TL Finding-1 resolution, commit 01fc423) will ALSO fail it independently of the
+grader, so it is a real behavioral flip, not a grader-noise artifact. But it
+will read as "this PR broke triage" on a PR that may have touched nothing
+related, reopening a live-eval-gate flakiness experience adjacent to (though
+mechanically distinct from) FQ-77's class. ADR-0009 itself named the
+contingency for exactly this shape of finding: "wire [multi-sample] only for
+cases empirically shown to be (P2)-variance-prone during the C3 calibration."
+This IS that empirical evidence. Not fixed in this closeout -- flagged as the
+Sprint 15 anchor candidate (see WORK.md).
+
+T-108 POST-MERGE STAGING STATE -- CONFIRMED STOPPED, not assumed. The carried
+"ops-hub-staging IS RUNNING RIGHT NOW" live finding (WORK.md Sprint 14 carries,
+surfaced when PR #445's conflict-resolution merge re-tripped the OLD
+denylist) was closed out: a stop-and-confirm run (29269402188, dispatched
+2026-07-13T17:10:47Z, 5s after T-108's merge) SSH-polled `docker ps` four
+times (10s apart) until it returned empty, then confirmed "SC7 restored".
+Separately: no `main-deploy.yml` run correlates to the T-108 merge commit
+itself (d07c623, a workflow-file-only change) -- confirming the new `paths`
+allowlist works exactly as designed, a workflow-only merge no longer trips a
+staging rebuild+start. Both halves of T-108's exit criteria are now verified
+live, not just implemented-on-paper.
+
+-> WORK.md Sprint 14 section (closed out, corrected from stale
+   "awaiting merge authorization" to actual merged state) ; docs/retros/
+   sprint-14.md (authored) ; run 29274409705 (post-merge baseline) ; run
+   29269402188 (staging-stop confirmation) ; PR #449 / PR #448 (mergedBy
+   verified via `gh pr view --json mergedBy`)
+```
