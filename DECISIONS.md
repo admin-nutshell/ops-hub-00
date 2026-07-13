@@ -6032,3 +6032,98 @@ and is a normal docs PR — standing self-merge applies cleanly (it touches no
 safety net and no prod infra), the exact distinction FQ-77 sharpened.
 -> docs/retros/sprint-12.md
 ```
+
+### 2026-07-13 — ADR-0009 ACCEPTED: durable fix for the eval-gate grader-robustness class (T-106, Sprint 13 anchor)
+
+```
+2026-07-13 [Evals Lead] T-106 — authored docs/adr/0009-eval-gate-grader-
+robustness.md, Status ACCEPTED via the author+reviewer precedent (Evals Lead
+author + independent Tech Lead review appended, same shape as ADR-0007/0008).
+This is the design of record for FQ-77's SECOND, systemic finding (banked
+separately from the case-(g) one-line calibration PR #439): the live-eval-
+gate decides llm-rubric pass/fail by score>=0.8 and DISCARDS the grader's own
+pass boolean, so an honest sub-threshold-but-passing borderline verdict (which
+the rubric's OWN tolerance forgives) blocks a PR exactly as hard as a real
+contract violation — it blocked a genuinely-correct security fix (T-105) for a
+reason the grader itself explicitly disagreed with (grader returned
+pass:true/score:0.75, "low is not a listed fail value"; the 0.8 threshold
+overrode it — primary-source run 29215571461).
+
+CHOSEN: Option 3 (hybrid) — HONOR THE GRADER'S OWN `pass` VERDICT IN A BOUNDED
+BAND. An llm-rubric assertion passes IFF (grader.pass === true) AND
+(score >= floor, candidate 0.6). Three parts: (1) honor-pass in the band
+[floor, 0.8); (2) a HARD FLOOR — a low-scored pass:true still fails, so a
+broken/rubber-stamping grader can't rescue junk; (3) a NEVER-OVERRIDE-A-FAIL
+asymmetry — a grader pass:false always fails, at any score. Plus a COMPANION
+HARDENING: move the objective contract checks (valid-JSON, closed-enum) OUT of
+the rubric prose into DETERMINISTIC promptfoo assertions AND-ed with the
+llm-rubric, so objective fails are grader-independent and honor-pass provably
+operates only on the subjective-nuance dimension. This is what makes the
+drop-don't-weaken constraint a PROOF, not an argument.
+
+WHY NOT the alternatives (the discriminator is decisive): MULTI-SAMPLE rejected
+as default — it does NOT fix the presenting case (g), whose grader returns an
+HONEST, STABLE 0.75 (averaging honest 0.75s stays 0.75, still < 0.8); it only
+addresses a DIFFERENT sub-phenomenon (per-run variance around a true-mean-
+above-threshold). It also ~TRIPLES the judge-dominated cost (ADR-0007 §4:
+~$0.027 -> ~$0.081/run; ~$5.50 -> ~$15 CAD/mo at 130 runs — OVER the $10 CAD
+hard cap) and adds 2x judge latency to EVERY gate run. Retained ONLY as an
+optional, calibration-gated, per-case escalation for genuinely variance-prone
+cases (cost bounded to those few). MARGIN-BASED (blanket "pass if >= 0.7")
+rejected outright — it can pass a case the grader ITSELF failed (pass:false /
+0.72 slips through a 0.7 margin) = a back-door gate-loosening, the exact
+"loosened to land the fix" appearance drop-don't-weaken forbids. The crux:
+honoring the grader's pass BOOLEAN defers to the rubric's structured verdict;
+a blanket margin overrides a NUMBER with a looser number.
+
+EXIT CRITERIA (as labeled subsections, not prose): (a) PROVIDER-NEUTRAL — reads
+the structured {pass,score} ANY llm-rubric grader emits; floor is model-
+independent numeric config; grader is a swappable LiteLLM alias (grader != target,
+ADR-0007 §5.3); deterministic checks are pure code, no model. (b) PRESERVES
+DROP-DON'T-WEAKEN — the delta is BIDIRECTIONAL and safe: it stops failing
+borderline nuance the grader forgave AND starts failing high-score cases the
+grader explicitly failed (a tightening today's score>=0.8 rule misses);
+over-escalation (grader pass:false, asymmetry blocks), malformed JSON + out-of-
+enum (deterministic, grader-independent) all still hard-fail; a rubber-stamping
+grader trips the must-fail canary (ADR-0007 §5.2) into a hard error. (c) COST/
+LATENCY BUDGETED — ZERO added metered cost/latency: re-decides LOCALLY from the
+single existing grader verdict, no extra call; ADR-0007 §4 cost model unchanged.
+(d) FQ-77 BOUNDARY NAMED — the eventual BUILD modifies the SHARED merge-blocking
+safety net (the live-eval-gate grading mechanism itself), so per the NEW Sprint
+12 §5.1 norm (category a) its merge requires the USER'S OWN direct, in-the-moment
+authorization; standing self-merge does NOT cover it and a coordinator relay does
+NOT satisfy it. Build sized S–M, DEFERRED to Sprint 14 (ADR-then-build precedent,
+Sprints 8->9 / 11->12).
+
+2026-07-13 [Tech Lead] INDEPENDENT REVIEW (appended to the ADR) — verdict
+APPROVED as design-of-record; Option 3 confirmed correct against the repo
+(verified: scripts/eval/compare-baseline.py _entry_passed, calibration-guards.py
+cmd_canary_check, the threshold:0.8 assertions in evals/ticket-triage.yaml, and
+the FQ-77 grader transcript). TWO doc-accuracy corrections, INCORPORATED into the
+ADR body before ACCEPTED: (1) honor-pass is NOT literally "read an already-parsed
+field" — the live threshold:0.8 DISCARDS the grader's pass boolean and the never-
+override-a-fail guardrail is unimplementable from score alone, so the build must
+RELOCATE the per-assertion threshold decision into the harness (still zero metered
+cost); (2) the behavioral delta is BIDIRECTIONAL (pass IFF grader.pass && score>=
+floor), not "strictly narrows." FIVE non-blocking build conditions carried to
+Sprint 14: C1 relocate the threshold decision; C2 define the write-point that
+stamps the honor-pass verdict into results-JSON `success` BEFORE compare-baseline
+reads it (keeps the comparator a pure diff); C3 re-baseline first (two reasons —
+the per-assertion result changes AND previously-green >=0.8 cases can flip); C4
+re-validate every canary so its must-fail case fails via grader pass:false or
+score<floor, never the old threshold gap; C5 per-eval objective split (the enum
+check is triage-only; respond/kb-learn have their own contracts). "No new schema"
+confirmed genuinely true (the case_results JSONB column already exists).
+
+2026-07-13 [Evals Lead] SCOPE — held to the grader-robustness class ONLY. The
+>=20-tests-per-eval coverage-growth arc (ADR-0007 §5.4) is a DIFFERENT answer to
+a DIFFERENT question (how MANY assertions exist vs. how a borderline assertion is
+DECIDED) and is explicitly excluded, as are all other open carries (T-107 staging
+re-pin, T-98 monitor threshold, provider-credential class). No FOUNDER_QUEUE
+escalation required by the ADR — it tightens the objective checks, forces no
+provider switch, adds no credential surface; the only founder-facing touch is the
+BUILD's §5.1-gated merge (a governance boundary the Sprint 14 build task must name,
+not a business decision the design forces). This ADR is docs-only ->
+live-eval-gate neutral-skips -> self-mergeable; authored in an isolated worktree
+from commit #1 (Sprint 11 §5.1). -> docs/adr/0009-eval-gate-grader-robustness.md
+```
