@@ -104,6 +104,19 @@ else
 fi
 echo "::endgroup::"
 
+# --- T-114 multi-sample aggregation (ADR-0009 Option 1): for any case opted-in with
+# metadata.multiSample:N, collapse its N honor-passed repeat draws into ONE majority-vote
+# row. Runs AFTER honor-pass (so each draw's floor/never-override-a-fail guardrails are
+# applied per draw first) and BEFORE token-band/canary/compare read the file. STRICT no-op
+# for the ~43 cases that carry no marker — zero effect on the rest of the suite.
+echo "::group::T-114 multi-sample aggregation (ADR-0009 Option 1) — $BASENAME"
+if [ -f "$RESULTS_JSON" ]; then
+  python3 "$SCRIPT_DIR/aggregate-multisample.py" --results-json "$RESULTS_JSON"
+else
+  echo "(no results JSON produced — nothing to aggregate)"
+fi
+echo "::endgroup::"
+
 echo "=== Pass-rate summary for $BASENAME (promptfoo exit $PRODUCT_EXIT; NOTE: post-honor-pass verdict lives in $RESULTS_JSON, which is what compare-baseline gates on — PRODUCT_EXIT is promptfoo's pre-honor-pass exit, informational only) ==="
 if [ -f "$RESULTS_JSON" ] && command -v jq >/dev/null 2>&1; then
   jq '.results.stats // .results.table.stats // "no .stats key at this path — see log tail below"' \
