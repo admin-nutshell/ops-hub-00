@@ -7248,8 +7248,8 @@ re-verified baseline.
 2026-07-14 [Production Manager] T-113 (Sprint 16 Track B, carry flagged
 since Sprint 12 / T-102's own header, never picked up until now) --
 `monitor-e2e-pipeline.yml` used to open a customer-facing status-page
-incident on a SINGLE failed run. FIX (PR pending, branch
-t113-e2e-monitor-fail-threshold): `FAIL_THRESHOLD: "2"` (env var), gating
+incident on a SINGLE failed run. FIX (PR #457, branch
+t113-e2e-monitor-fail-threshold, NOT MERGED -- awaiting coordinator review): `FAIL_THRESHOLD: "2"` (env var), gating
 ONLY the status-page incident-open call -- NOT this Actions run's own
 red/green conclusion, and NOT the existing GitHub failed-run-notification
 email backstop, both of which still fire on a SINGLE failure, unchanged.
@@ -7345,7 +7345,8 @@ on branch `t113-e2e-monitor-fail-threshold` via `--ref`, each awaited to
      `status/content/*.md` for any remaining `resolved: false` -> zero
      found, nothing left open.
 
-CI: pending (PR not yet opened at time of this entry -- see WORK.md).
+CI: PR #457 open, checks pending at time of this entry -- see WORK.md for
+current status.
 
 KNOWN LIMITATION (T-102-style -- noted in the workflow's own header, not
 fixed): if a clean skip (staging_guard trips) lands between two real
