@@ -8079,7 +8079,20 @@ case ever needs it.
   degenerate (r) does not collapse-trip. LIVE model convergence is NOT claimed here: it is confirmed
   by CI's live-eval-gate on the PR — the plain gate is baseline-relative (a NEW failing test is
   non-blocking), so a strict_new workflow_dispatch (the T-99/T-103 pattern) is the only signal that
-  actually runs each [new] case live; run IDs + per-new-case pass/fail to be appended once available.
+  actually runs each [new] case live.
+2026-07-14 [Evals Lead] LIVE CONFIRMED (PR #467, commit ef24991). strict_new workflow_dispatch run
+  29359142613 (STRICT_NEW=true; target=triage-model, grader=fallback-model, grader != target §5.3;
+  judge preflight reachable — FQ-70 clear): "Eval Gate PASS — zero regressions vs last green
+  baseline", eval_gate_runs row status=pass total_cases=54 passed_cases=54. Every case printed `ok`,
+  including all 10 new ones (triage (r) 270 tok / (s) 332 / (t) 340; respond (n) 334 / (o) 316 /
+  (p) 340; kb (o) 859 / (p) / (q) / (r)) — all within their healthy token bands, so the short
+  degenerate (r) did NOT collapse-trip. compare-baseline --strict-new would have blocked on ANY
+  not-in-baseline test that failed; it did not → all 10 new cases are [new/passing] live. Plain
+  pull_request gate 29359119923 PASS; hermetic "Eval Gate" schema (promptfoo validate) PASS; Lint/
+  Unit/Security/CodeRabbit all green. Self-merged per standing additive-only authorization (T-99/
+  T-103 class — NOT the T-109/T-110/T-112/T-114 shared-safety-net class). POST-MERGE: fired
+  capture-eval-baseline.yml on main to re-capture the 54-case green baseline (else the next PR's
+  gate compares against the stale 44-case baseline and these cases show [new] forever — T-103 step).
 2026-07-14 [Evals Lead] Banked observations on EXISTING cases (additive-only discipline — flagged,
   NOT fixed, per WORK.md's Sprint-18 rule): NONE newly found. No existing case looked flaky/wrong
   during the read-through. The known, already-banked T-112/T-114 grader-variance carry on the
