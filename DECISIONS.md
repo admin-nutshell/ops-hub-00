@@ -7459,18 +7459,52 @@ convergence of the production `triage-model` on the new wording — i.e.
 whether the reworded `high` bullet actually reduces or eliminates the ~50/50
 over-escalation T-110 measured on ambiguous single-user tickets, and whether
 any of the 17 rubric-graded cases' LIVE grader output shifts in a way the
-textual reasoning above did not anticipate. CI's `live-eval-gate` on this PR
-is the real proof — say so plainly, the same posture T-109/T-110 took: this PR
-touches a prompt surface (`src/inngest/ticket-triage.ts` AND
-`evals/ticket-triage.yaml` both match the gate's own path filter), so the
-live gate is ELIGIBLE to run for real (not the "no prompt surface touched"
-neutral-skip). IMPORTANT CAVEAT the reviewer should know, distinct from that:
-the gate has a SEPARATE neutral-skip path if its judge alias (`fallback-model`)
-is unreachable (the FQ-70 detector, STEP 2 judge preflight) — Sprint 15's
-post-merge re-baseline (run 29290482377) produced real grader scores, so the
-judge is very likely healthy, but if this PR's gate run instead shows a
-judge-unavailable neutral-skip, that is "did not evaluate," NOT "passed" —
-do not read that shape of green as quality confirmation.
+textual reasoning above did not anticipate.
+
+WHAT CI'S `live-eval-gate` CAN AND CANNOT PROVE HERE — corrected framing
+(an advisor pass caught an overclaim in an earlier draft of this entry, which
+said the gate "is the real proof" of efficacy; that is NOT accurate and is
+worth getting right precisely because overstating a gate result is the
+exact failure mode this role exists to catch):
+  CAN prove — a NO-REGRESSION signal across the 17 cases under the reworded
+  shared prompt (per the "Unlike T-110" analysis below: cases (a)-(p) compare
+  cleanly against their unchanged baseline keys, so a red here is real; case
+  (q) is the grader-independent bleed-guard and will show `[new/...]`).
+  CANNOT prove — that the ambiguity fix actually WORKS, i.e. that ambiguous
+  single-user/no-workaround tickets now converge more reliably toward
+  normal/low. Two structural reasons: (1) Sprint 15's baseline (run
+  29290482377) is 43/43 GREEN — every case already passed under the OLD
+  prompt, so a pass/fail-vs-baseline comparator can only report "still green"
+  or "went red," never "improved"; it has no discriminating signal for a fix
+  whose target was already passing. (2) T-110 deliberately REMOVED the one
+  fixture that ever had the ambiguous shape (the old case (i) ticket) — by
+  design, no case in the current suite still presents that ambiguity, so
+  there is nothing left in the suite for the new wording to visibly
+  "improve" against. This is not a suite gap to patch: re-introducing an
+  ambiguous fixture to "prove convergence" would just reintroduce the ~50/50
+  flakiness T-110 removed, and a single PR-gate run (one sample) could not
+  demonstrate convergence even then (convergence is a many-sample property,
+  the same point T-110's own entry already made about its own fixture edit).
+  WHAT ACTUALLY CLOSES THE LOOP ON EFFICACY: the wording argument above (the
+  explicit AND conjunction removes the OR-list misread the diagnosis
+  identified) plus POST-MERGE PRODUCTION OBSERVATION — this pipeline has
+  LangFuse tracing on every real triage call; the honest "how we'll know it
+  worked" is watching real single-user/no-workaround tickets classify post-
+  merge, not this PR's gate result. Filed as a follow-up observation, not a
+  blocking gap: no committed task yet, but the natural candidate is the next
+  monthly eval-coverage review or a LangFuse trace sample a sprint or two
+  post-merge.
+  This PR touches a prompt surface (`src/inngest/ticket-triage.ts` AND
+  `evals/ticket-triage.yaml` both match the gate's own path filter), so the
+  live gate is ELIGIBLE to run for real (not the "no prompt surface touched"
+  neutral-skip). SEPARATE CAVEAT: the gate also has a judge-unavailable
+  neutral-skip path (the FQ-70 detector, STEP 2 judge preflight) if
+  `fallback-model` is unreachable — Sprint 15's post-merge re-baseline (run
+  29290482377) produced real grader scores, so the judge is very likely
+  healthy, but if this PR's gate run instead shows a judge-unavailable
+  neutral-skip, that is "did not evaluate," NOT "passed," and even the
+  no-regression signal above is lost — do not read that shape of green as
+  any kind of quality confirmation.
 
 Unlike T-110 (which changed a test's `description` — forcing a mechanical
 `[REGRESSION: DROPPED]` on the old key and an EXPECTED red requiring an admin
