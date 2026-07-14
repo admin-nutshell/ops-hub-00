@@ -1,0 +1,89 @@
+name: T-116 — diagnose ticket-respond compliance-fabrication frequency
+
+# T-116 (Sprint 19) diagnostic vehicle. Fires N repeated LIVE completions against
+# the production model alias (triage-model, via LiteLLM staging /v1) using the EXACT
+# ticket-respond system prompt + compliance ticket from evals/ticket-respond.yaml, at
+# temperature 0.3 (production respond temperature). Characterizes the frequency of the
+# GDPR/PIPEDA compliance-certification fabrication T-115 found (raw evidence in
+# DECISIONS.md 2026-07-14). Runs on WHATEVER ref it is dispatched from — dispatch on
+# the branch BEFORE the prompt fix (current rate) and AFTER (fixed rate).
+#
+# READ-ONLY from an infra standpoint: no Coolify mutation, no schema change, no writes.
+# It DOES make real (metered) LLM calls against litellm-staging. Uses ONLY the scoped,
+# budget-capped LITELLM_EVAL_KEY (T-90; [triage-model, fallback-model]) — never the
+# master key (non-negotiable #10). Key is masked; only completions + counts are surfaced.
+
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: 'Draws per variant'
+        required: false
+        default: '10'
+      variant:
+        description: 'Which probe: all | m | direct | soc2'
+        required: false
+        default: 'all'
+      target_alias:
+        description: 'LiteLLM alias under test'
+        required: false
+        default: 'triage-model'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
+      TARGET_ALIAS: ${{ github.event.inputs.target_alias || 'triage-model' }}
+      N: ${{ github.event.inputs.n || '10' }}
+      VARIANT: ${{ github.event.inputs.variant || 'all' }}
+    steps:
+      - name: Guard — scoped eval key present (NOT the master key)
+        env:
+          LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          [ -n "${LITELLM_EVAL_KEY:-}" ] || { echo "::error::LITELLM_EVAL_KEY not set"; exit 1; }
+          echo "::add-mask::$LITELLM_EVAL_KEY"
+          echo "Scoped eval key present."
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: '3.11'
+
+      - name: Sanity-check the scoped key + target alias before spending draws
+        env:
+          LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          echo "::add-mask::$LITELLM_EVAL_KEY"
+          HTTP=$(curl -s -o /tmp/models.json -w "%{http_code}" --max-time 20 \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" "$LITELLM_BASE/models")
+          echo "GET /v1/models -> HTTP $HTTP"
+          [ "$HTTP" = "200" ] && (jq -r '.data[]?.id' /tmp/models.json 2>/dev/null || cat /tmp/models.json) || \
+            echo "::warning::scoped key/model list not 200 — the diagnostic step may fail on the same credential/alias issue."
+
+      - name: Run compliance-fabrication diagnostic (N draws/variant, temp 0.3)
+        env:
+          OPENAI_API_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          echo "::add-mask::$OPENAI_API_KEY"
+          pip install --quiet pyyaml
+          python3 scripts/eval/diagnose-compliance-fabrication.py \
+            --eval-file evals/ticket-respond.yaml \
+            --target-alias "$TARGET_ALIAS" \
+            --litellm-base "$LITELLM_BASE" \
+            --n "$N" --variant "$VARIANT" | tee /tmp/diag.out
+          echo "### T-116 diagnostic (ref \`${{ github.ref_name }}\`, N=$N, variant=$VARIANT)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -c 3000 /tmp/diag.out >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
