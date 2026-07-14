@@ -4,7 +4,42 @@
 
 ---
 
-## Sprint 18 — 🟢 ACTIVE (planned 2026-07-14) — Eval Coverage Growth Toward ADR-0007 §5.4's ≥20/eval Target
+## Sprint 19 — 🟢 ACTIVE (planned 2026-07-14) — Ticket-Respond Compliance-Fabrication Hardening
+
+**Sprint:** Sprint 19 — Fix the REAL Defect T-115 Found: `ticket-respond` Compliance/DPA Fabrication (capability/hardening, security-adjacent)
+**Sprint goal:** T-115 (Sprint 18) incidentally discovered and confirmed, via raw evidence, that `ticket-respond`'s prompt can produce a reply stating a definitive GDPR/PIPEDA compliance certification as verified fact ("I can confirm that we are fully compliant with both GDPR and PIPEDA") when a customer asks about compliance status — an unverifiable claim the agent has no way to actually know, and a real business/legal exposure if it ships to a real customer. Confirmed at n=1 so far (`temperature=0.3` — frequency genuinely unknown, not yet characterized as rare or common). **T-116** diagnoses the actual trigger condition and frequency (same rigor as T-105's prompt-injection hardening: gather real evidence via repeated live sampling before writing a fix, don't guess), then hardens `src/inngest/ticket-respond.ts`'s prompt so it reliably declines to assert unverifiable compliance certifications — instead routing the question honestly (confirm status will be checked / escalate to the right team), the same shape the existing rubric already asks for and that the model gets right most of the time. This is a genuine, live-prompt-touching, eval-file-touching change — same governance class as T-105/T-109/T-110/T-112: **rides the normal `live-eval-gate` for CI, but the eventual merge needs the user's own direct, in-the-moment §5.1 cat-a authorization** — do not assume standing self-merge covers it.
+**Sprint window:** December 10 – December 24, 2026 (nominal, 2-week cadence from Sprint 18's Dec 10 end; note actual delivery keeps compressing well ahead of window — Sprints 8–18 all effectively landed same-week as planning).
+**Target milestone:** None declared — capability/hardening, same posture as Sprints 6–18. The **Milestone numbering note** still stands: do NOT label this work M7. Charter-M7 is gated on an exogenous tenant-onboarding event that hasn't happened (FQ-43, DNC deferred indefinitely). Revisit numbering only on a founder decision that reopens tenant onboarding.
+**Feeding retro:** `docs/retros/sprint-18.md` §7 (the elevated-priority carry — the compliance-fabrication defect, this sprint's anchor).
+
+**Standing norms reaffirmed this sprint:**
+- **(NEW, Sprint 18)** **Recapturing the eval-gate baseline is a cat-a action needing its own explicit user authorization — never routine housekeeping, never bundled into another ask.** Applies if T-116's merge requires a post-merge baseline recapture (likely, since this is a prompt-touching fix) — ask separately, explicitly, after the merge itself is authorized.
+- **(NEW, Sprint 18)** **Verify raw evidence before accepting any "it's just variance/noise" characterization — wrong three times in one prior session on three different topics.** Applies directly here: don't assume the DPA case's fabrication is "rare" or "common" without actually sampling it; don't assume a fix works without pulling raw model output showing the new behavior.
+- **(Sprint 16)** **A prompt-quality review must check for behavioral SHIFT across all cases, not just per-case pass/fail.** T-116's fix touches a live prompt — diff raw model output on nearby cases (not just the DPA case) against the last-green baseline before claiming nothing else moved.
+- **(Sprint 13 §5.1)** **§5.1 authorization cannot be self-manufactured.** T-116 touches `src/inngest/ticket-respond.ts` (a live, customer-facing prompt) and `evals/ticket-respond.yaml` (a required-check fixture) — treat as cat-a from the start, same as T-105/T-109/T-110/T-112, not a conditional "maybe."
+- **(Sprint 11 §5.1)** **Concurrent git-writing agent work starts in an ISOLATED WORKTREE from the first commit.**
+- **(Standing)** **Never soften the gate to pass; drop-don't-weaken.** The fix must make the model MORE reliably honest about compliance uncertainty, not just reword around this one case — and the existing DPA case's rubric/pass criteria must not be loosened to manufacture green.
+
+**Explicitly deferred / flagged (not in scope this sprint — do not start early):**
+- **PR #462 (T-114's multi-sample escalation)** — held, unmerged, dormant. Not part of this sprint. Multi-sample is explicitly NOT the fix for a fabrication defect (majority-voting past an occasional fabrication masks it, per T-114/T-115's own reasoning) — do not reach for it here.
+- **Broader `ticket-respond` prompt audit beyond the compliance/DPA fabrication class.** T-116 is scoped to the ONE concrete, confirmed finding — do not generalize into a full prompt rewrite without new empirical evidence of other fabrication classes.
+- **The critical/high boundary-variance pattern** (bundling case, dropped triage case (s)) — a separate, already-tracked watch item, not this sprint's concern.
+- **Eval-coverage growth toward ADR-0007 §5.4's ≥20/eval** — currently N≈19/16/18. Still explicitly out of scope; grow opportunistically, additive-only; not a committed task.
+- **`main`'s `enforce_admins` branch-protection policy, provider-credential divergence, `LITELLM_URL` Coolify dup-row footgun, T-90 observations O1–O3, per-user session auth, FQ-63/FQ-47 4b/FQ-43** — all unchanged standing carries, founder-gated or not-a-task.
+
+### Sprint 19 tasks
+
+#### Track A — `ticket-respond` compliance-fabrication hardening (sprint anchor, single-track)
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-116: Diagnose the trigger condition/frequency of `ticket-respond`'s compliance-certification fabrication (T-115's finding), then harden `src/inngest/ticket-respond.ts`'s prompt so it reliably declines unverifiable compliance claims; keep `evals/ticket-respond.yaml`'s existing DPA case as the direct regression check, add further cases if the diagnosis reveals related gaps | Evals Lead (diagnosis + fix) + Tech Lead (independent review, same author+reviewer precedent as T-105/T-112) | T-115 (banked the finding, DECISIONS.md 2026-07-14 "Baseline recaptured..." entry) | Not started | Dec 22 |
+
+### Sprint 19 status: 🟢 ACTIVE (planned 2026-07-14) — anchor-only, addressing the most important carry from Sprint 18 (a real, confirmed, unfixed compliance-fabrication defect). **T-116 not started.**
+
+---
+
+## Sprint 18 — 🟡 CLOSED (2026-07-14, same day as planning) — Eval Coverage Growth Toward ADR-0007 §5.4's ≥20/eval Target
 
 **Sprint:** Sprint 18 — Eval Coverage Depth (capability/hardening)
 **Sprint goal:** With no forced fix or urgent carry queued (confirmed with the user directly at Sprint 17's close — nothing else was well-scoped/ready), pick up the long-flagged, repeatedly-deferred **eval-coverage growth** carry: grow each of the three product evals (`ticket-triage`, `ticket-respond`, `kb-learn`) toward ADR-0007 §5.4's **≥20 tests/eval** target (currently N≈17/13/14). This has been explicitly named "opportunistic, additive-only, not a committed task" in every retro since Sprint 11 (T-99 grew N=4→9, T-103 grew N=9→15/13/14) — the user was asked directly what to prioritize with nothing else queued, and chose "the safest, most useful cleanup task." **Additive-only, by design:** every existing case's wording, rubric, and pass criteria stay untouched — this sprint only ADDS new, meaningfully-distinct scenarios per eval (not filler/near-duplicates of existing cases), following the exact precedent T-99/T-103 already set. Because it does not modify the grading mechanism, any existing case's behavior, or a live prompt, it rides the normal `live-eval-gate` and standing self-merge authorization — same treatment as T-99/T-103, NOT the T-109/T-110/T-112/T-114 cat-a class.
