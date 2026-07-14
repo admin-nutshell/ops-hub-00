@@ -16,6 +16,15 @@ name: T-114 diagnose bundling multi-sample
 # preflight neutral-skips loudly if the grader alias is unreachable (FQ-70 detector).
 
 on:
+  # push trigger scoped to the diagnostic's own files (this branch), because a
+  # workflow_dispatch workflow is only dispatchable once it exists on the default
+  # branch — which this one deliberately does not. Scoped paths keep later doc/marker
+  # commits from re-spending metered calls; touch the driver/workflow to re-run.
+  push:
+    branches: [sprint-17-t114-multisample-escalation]
+    paths:
+      - scripts/eval/diagnose-bundling-multisample.py
+      - .github/workflows/t114-diagnose-bundling-multisample.yml
   workflow_dispatch:
     inputs:
       target_alias:
@@ -73,7 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$OUT_DIR"
-          REF='${{ github.event.inputs.t112_ref }}'
+          REF='${{ github.event.inputs.t112_ref || 't112-triage-high-escalation-clarify' }}'
           git fetch origin "$REF"
           git show "FETCH_HEAD:evals/ticket-triage.yaml" > "$OUT_DIR/t112-ticket-triage.yaml"
           echo "Extracted T-112 eval file ($(wc -l < "$OUT_DIR/t112-ticket-triage.yaml") lines). urgency bullets:"
