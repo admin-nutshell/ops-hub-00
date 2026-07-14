@@ -8009,3 +8009,146 @@ case ever needs it.
    merged, held per user decision) ; live-eval-gate run confirming the
    lucky `critical` draw on the merge-time run
 ```
+
+### 2026-07-14 — T-115 (Sprint 18 anchor): product evals grown additively toward ADR-0007 §5.4's ≥20/eval target — triage 17→19, respond 13→16, kb-learn 14→18 (Evals Lead)
+
+```
+2026-07-14 [Evals Lead] T-115: continued the eval-depth arc (T-99 N=4→9; T-103 N=9→15/13/14)
+  a third pass. Grew the three PRODUCT evals ADDITIVELY: ticket-triage 17→19 (+2, after a designed
+  third triage case (s) was DROPPED pre-merge — see below), ticket-respond 13→16 (+3), kb-learn
+  14→18 (+4) — +9 net, 44→53 baselined. Triage lands one short of §5.4's ≥20 target (quality over
+  count, per the task's own "don't need to hit exactly 20"); respond/kb make meaningful,
+  genuinely-distinct progress (arc continues, as T-99 flagged ≥20 is multi-sprint). ADDITIVE-ONLY:
+  NO existing case's ticket text, rubric,
+  ALLOWED set, or any other content was touched; diff scoped to evals/** + the two deterministic
+  test-count guards. Each triage case carries the ADR-0009 C6 pair (llm-rubric AND a deterministic
+  javascript companion with a valid-JSON + closed-enum + per-case escalation ALLOWED check);
+  respond stays rubric-only by design (free-text output, no JSON/enum contract — the file's own
+  T-109 note); each kb case carries the identical objective JSON-contract javascript block. Every
+  new case is a REGRESSION-LOCK on current behaviour (gate never softened to pass), not an
+  aspiration.
+2026-07-14 [Evals Lead] New cases + the specific gap each closes (all grounded in the matching
+  src/inngest/*.ts system prompt, none a near-duplicate of an existing case):
+    ticket-triage (+3):
+    - (r) DEGENERATE / near-empty 'test' ticket → CONTRACT ROBUSTNESS: the closed-enum JSON must
+      survive a content-free body (not error/empty/prose). Distinct from (g), which tests the
+      uncertain→normal SEVERITY default on a wordy-but-vague message; (r)'s point is contract
+      survival on degenerate input. ALLOWED={normal,low}.
+    - (s) CASUAL/understated tone over a genuine total outage → urgency tracks IMPACT not tone.
+      The MIRROR of (j) (loud tone must not INFLATE a trivial issue); (s) guards that a downplaying
+      "no rush" tone must not DEFLATE a real outage. ALLOWED={critical}. *** DROPPED pre-merge ***:
+      this case sat on the critical/high boundary and behaved exactly like the banked bundling-case
+      variance — it passed on three live-eval-gate runs, then hard-failed at score=0 ([new/FAILING])
+      on a fourth (the target model read the downplayed-but-total outage as `high`, so the C6
+      deterministic ALLOWED={critical} correctly hard-failed it). Per the task's own "fix your own
+      miscalibrated new case" clause, it was DROPPED, not recalibrated: (a) with no local live model
+      I cannot VALIDATE a recalibration as robust (one green run ≠ robust — the bundling case proves
+      that), so shipping a "fixed" (s) would push an unverified boundary case into the SHARED gate
+      baseline; (b) it is the precise critical/high grader-variance anti-pattern this task exists NOT
+      to add; (c) strengthening its impact signal enough to draw `critical` reliably would collapse
+      it toward a near-duplicate of (j)/(a), failing the distinctness bar. Tone-vs-impact at the
+      critical boundary is banked as a FUTURE case to revisit once PR #462 (multi-sample grading)
+      lands — multi-sample is what makes boundary cases viable, so it belongs there, not here.
+    - (t) CROSS-TENANT DATA EXPOSURE (customer sees another tenant's records) → the security-breach
+      critical trigger via a NEW vector: not account-takeover (e) and not an impact-free phishing
+      REPORT (l), but the product itself leaking one tenant's data to another — the highest-stakes
+      multi-tenant failure (CLAUDE.md tenant-isolation non-negotiable). ALLOWED={critical}.
+    ticket-respond (+3):
+    - (n) OUT-OF-SCOPE capability request (write/deploy/maintain my custom integration) → honest
+      boundary, no fabricated capability/commitment. Distinct from (m) compliance-doc and (g)
+      timeline. Grounded in "do NOT invent commitments".
+    - (o) PRAISE-ONLY / no-issue ticket → gracious, concise (low-tone), invents no problem/fix/
+      commitment. A common intake type every existing case (all carry a problem) missed.
+    - (p) LEGAL/LIABILITY threat → serious+empathetic but NO admission of fault/liability and no
+      legal conclusion. Distinct axis from (j)'s commercial-threat-don't-capitulate-on-refund; the
+      failure mode here is conceding fault/liability the agent cannot verify.
+    kb-learn (+4):
+    - (o) NON-ENGLISH (French) source → strict-JSON contract + redaction + faithfulness survive
+      non-English input (no existing kb case is non-English). Output language unjudged; contract +
+      no-PII + faithful pattern are the point.
+    - (p) SYMPTOM vs ROOT CAUSE: the customer's self-diagnosis ("your servers are down") was WRONG;
+      support found the real cause (expired API key). Article must record the ACTUAL cause, not
+      parrot the wrong hypothesis (a distinct faithfulness axis vs (a)/(i) straightforward and
+      (c)/(h)/(n) no-cause).
+    - (q) HIGH-SENSITIVITY identifier redaction: a payment-card number + a government ID number — a
+      fourth cluster beyond (b) name/email/acct/ticket#/date, (e) phone/URL/IP, (k) order#/address/
+      staff-name. PCI/PIPEDA-critical, untested.
+    - (r) USER-EDUCATION resolution (no defect): the customer just hadn't found an EXISTING feature;
+      the article must frame it as guidance, NOT a bug/fix. Distinct from (a)/(i) (real fix), (l)
+      (workaround for an unknown bug), (c)/(h)/(n) (unresolved). Miscasting user-education as a
+      defect-and-fix poisons future retrieval.
+2026-07-14 [Evals Lead] Local (offline) verification done — no live API access in this environment,
+  same posture as every precedent build without it (T-99/T-103/T-105): (1) all three YAML files
+  parse (PyYAML safe_load); structural counts triage 19 tests / 19 llm-rubric / 19 javascript
+  (post-(s)-drop), respond 16/16/0 (rubric-only by design), kb 18/18/18. (2) node scripts/eval/test-triage-
+  deterministic.mjs and test-kb-deterministic.mjs BOTH pass — the triage script generically
+  exercises every case (incl. the 3 new) on a PASSING sample (allowed urgency → pass) AND FAILING
+  samples (out-of-allowed escalation → hard-fail, out-of-enum 'SEV-0' → fail, malformed → fail);
+  the name-pinned (i)/(q) ALLOWED locks and the (p) index-15 injection checks are unaffected (new
+  cases appended AFTER (q), so no index shifted). (3) Both deterministic scripts' hardcoded case
+  counts bumped in lockstep (triage 17→19, kb 14→18) — the ONLY non-eval-YAML change, required to
+  keep those guards green. (4) Re-ran calibration-guards.compute_band on all three: healthy bands
+  (triage floor=220/ceil=1038, respond 207/983, kb 407/2505) with no false-trip — every case's
+  per-call prompt includes the full system prompt, which sits well above each floor, so the short
+  degenerate (r) does not collapse-trip. LIVE model convergence is NOT claimed here: it is confirmed
+  by CI's live-eval-gate on the PR — the plain gate is baseline-relative (a NEW failing test is
+  non-blocking), so a strict_new workflow_dispatch (the T-99/T-103 pattern) is the only signal that
+  actually runs each [new] case live.
+2026-07-14 [Evals Lead] LIVE-GATE HISTORY (PR #467) — the new cases were exercised across multiple
+  live runs, which is exactly what surfaced the (s) drop above. strict_new workflow_dispatch run
+  29359142613 (STRICT_NEW=true; target=triage-model, grader=fallback-model, grader != target §5.3;
+  judge preflight reachable — FQ-70 clear): "Eval Gate PASS", eval_gate_runs status=pass 54/54 —
+  every case `ok`, including all then-10 new ones within healthy token bands (triage (r) 270 tok /
+  (s) 332 / (t) 340; respond (n) 334 / (o) 316 / (p) 340; kb (o) 859 + (p)/(q)/(r)); compare-baseline
+  --strict-new would have blocked ANY not-in-baseline failure and did not. Plain pull_request gate
+  29359119923 PASS. BUT the plain gate then FLAKED on two LATER runs, which is the load-bearing part
+  of this entry: (i) run 29359798948 (on the docs HEAD) regressed the PRE-EXISTING bundling case (n)
+  at score=0.65 (grader pass:false — the banked T-112/T-114 carry); (ii) a re-run of that same run
+  cleared (n) but instead regressed a DIFFERENT pre-existing case (ticket-respond Compliance/DPA,
+  score=0) AND hard-failed the new (s) at score=0 [new/FAILING]. (s) was dropped in response (see the
+  DROPPED note above); the two pre-existing flakes are out of scope and were left untouched.
+  CORRECTION: an earlier draft of this very entry prematurely stated "Self-merged" and "POST-MERGE:
+  fired capture-eval-baseline.yml" — neither had happened; that language was corrected to reflect the
+  true state. The merge is the standing additive-only authorization (T-99/T-103 class, NOT the
+  T-109/T-110/T-112/T-114 shared-safety-net class) but only on a genuinely GREEN required gate, never
+  --admin; POST-MERGE a SINGLE capture-eval-baseline.yml run folds the 9 surviving new cases into the
+  baseline (else the next PR compares against the stale 44-case baseline and they read [new] forever —
+  T-103 step), recording whatever the variance-prone cases draw honestly. The actual merged/captured
+  state is reflected in WORK.md's T-115 row, not asserted here ahead of the fact.
+2026-07-14 [Evals Lead] Banked observations on EXISTING cases (additive-only discipline — flagged,
+  NOT fixed, per WORK.md's Sprint-18 rule): no existing case was EDITED. But T-115's own gate runs
+  surfaced a materially NEW signal — the live-eval-gate grader-variance is BROADER than the single
+  banked bundling case. Across the runs above it flaked on THREE distinct cases: (n) triage bundling
+  (score=0.65, the known T-112/T-114 carry), ticket-respond Compliance/DPA (score=0), and the
+  critical/high boundary that snagged the new (s). Critically, it BLOCKED an ADDITIVE-ONLY PR — one
+  that changes no prompt and no existing case — which is new blast-radius information beyond the
+  prompt-change PRs (T-110/T-112/T-114) where this variance was previously seen. This directly
+  reinforces the case for finally landing PR #462 (T-114 multi-sample grading), which remains
+  dormant/unmerged and untouched here. All three existing cases were left entirely untouched and are
+  out of scope; the finding is banked forward for the #462 decision, not fixed in T-115.
+2026-07-14 [Evals Lead] PROCESS NOTE (self-caught, no damage): initial branch + file writes landed
+  in the SHARED main checkout (C:/projects/ops-hub) instead of this task's isolated worktree —
+  the exact Sprint-11 shared-main-tree hazard. Caught immediately by the Edit tool's worktree
+  guard, BEFORE any commit; restored the shared tree to clean main (git restore + switch + branch
+  -D), recreated the branch inside the assigned worktree, and re-applied the appends there. Zero
+  commits and zero pushes touched the shared tree; the worktree-isolation norm held (the guard did
+  its job). Re-affirming the norm: all git-writing work starts in the isolated worktree from the
+  first action, not the first commit.
+2026-07-14 [Evals Lead] FINAL STATE — NOT MERGED, BLOCKED on out-of-scope grader-variance; escalated
+  to the human for a decision. After dropping (s), the (s)-removed HEAD (6f1ef18) ran the required
+  live-eval-gate (run 29361648633): all 9 surviving new cases [new/passing] (current 53 vs baseline
+  43), but the gate FAILED with TWO simultaneous regressions on PRE-EXISTING, out-of-scope cases —
+  ticket-triage bundling (n) score=0.5 AND ticket-respond Compliance/DPA score=0. This hit the
+  pre-declared stopping rule (a required check flaking on multiple cases I neither own nor may touch),
+  so I STOPPED re-rolling rather than chase a run where both happen to draw favorably — that would be
+  dice-rolling a shared safety net, not obtaining a trustworthy green. I did NOT --admin past the red
+  check. The 9 additive cases are substantively proven (each [new/passing] across multiple live runs);
+  the block is purely the systemic grader-variance (now demonstrably broad — three distinct cases
+  across T-115's runs). DECISION LEFT TO THE HUMAN: either (a) accept a re-rolled green on the
+  variance-prone existing cases and self-merge the 9 additive cases (T-99/T-103 additive-only class,
+  no --admin), then a single capture-eval-baseline.yml fold (→53-case baseline), OR (b) hold T-115
+  until PR #462 (multi-sample grading) lands and de-flakes the gate, then merge cleanly. My
+  recommendation: this run is the strongest evidence yet for landing #462 — but that is a shared-
+  safety-net change requiring the user's own direct authorization (Sprint 12 §5.1), so it is the
+  human's call, not mine. No existing case was touched; nothing merged; branch pushed and open.
+```

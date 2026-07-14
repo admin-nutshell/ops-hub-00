@@ -44,8 +44,11 @@ if (!js) {
   console.error("no javascript assertion found in kb-learn.yaml");
   process.exit(2);
 }
-if (n !== 14) {
-  console.error(`expected 14 kb javascript assertions, found ${n}`);
+// T-115 added cases (o) non-English source, (p) symptom-vs-cause, (q) financial/gov-ID
+// redaction, (r) user-education-not-defect, 14 -> 18. All share the identical objective
+// JS block, so extractFirstJs's single-block sample stays representative.
+if (n !== 18) {
+  console.error(`expected 18 kb javascript assertions, found ${n}`);
   process.exit(2);
 }
 

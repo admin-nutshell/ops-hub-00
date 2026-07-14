@@ -597,3 +597,153 @@ tests:
           if (!title) return { pass: false, score: 0, reason: 'objective: missing or empty "title"' };
           if (!body) return { pass: false, score: 0, reason: 'objective: missing or empty "body"' };
           return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; non-empty title and body)' };
+
+  # (o) NON-ENGLISH source ticket — ADDED by T-115. The strict-JSON output contract and the
+  #     redaction + faithfulness discipline must SURVIVE non-English input. No existing kb case
+  #     uses a non-English source (all are English). The article must still be a single valid
+  #     JSON object with non-empty title/body, faithfully capture the pattern, and carry NO
+  #     identifier from the source. (Output language is unspecified by the prompt and is not
+  #     judged — contract + faithfulness + PII hygiene are the point.)
+  - description: "Non-English (French) source ticket → still a valid strict-JSON article, faithful and identifier-free"
+    vars:
+      category: "auth"
+      routing: "support"
+      urgency: "normal"
+      ticket_title: "Impossible de se connecter après réinitialisation"
+      ticket_body: "Le client Jean Dupont (jean.dupont@example.com) n'arrivait plus à se connecter après avoir réinitialisé son mot de passe. Le support a constaté que le cache de session de son navigateur bloquait la nouvelle session ; après avoir vidé le cache et les cookies, la connexion a fonctionné normalement."
+    assert:
+      - type: llm-rubric
+        value: |
+          The source ticket is written in French. Judge on the output contract + faithfulness + identifier hygiene surviving non-English input:
+          - The response MUST be ONLY a single valid JSON object with EXACTLY the keys "title" and "body", both non-empty.
+          - The body must FAITHFULLY capture the actual pattern present in the source: a customer unable to log in after resetting their password, traced to the browser's cached session/cookies blocking the new session, resolved by clearing the cache/cookies. It must not invent a different cause or fix.
+          - It MUST NOT contain the customer's name ("Jean Dupont") or the email address — generalise to "the customer".
+          Fail if the output is not the two-key JSON object, if a field is empty, if the body misstates/fabricates the cause or fix, or if the customer name or email appears.
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-115. Objective output-contract
+        # split OUT of the rubric into a deterministic, grader-independent check — valid
+        # single JSON object with non-empty "title" AND "body" (exactly what
+        # src/inngest/kb-learn.ts requires to persist an article; it throws otherwise), so
+        # a malformed/format-broken output hard-fails here regardless of the grader.
+        # Fence-strip mirrors kb-learn.ts's parse. honor-pass (the llm-rubric) judges the
+        # subjective residue (faithfulness, PII, injection-resistance, non-fabrication).
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const title = typeof p.title === 'string' ? p.title.trim() : '';
+          const body = typeof p.body === 'string' ? p.body.trim() : '';
+          if (!title) return { pass: false, score: 0, reason: 'objective: missing or empty "title"' };
+          if (!body) return { pass: false, score: 0, reason: 'objective: missing or empty "body"' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; non-empty title and body)' };
+
+  # (p) SYMPTOM vs ROOT CAUSE — ADDED by T-115. The customer's self-diagnosis was WRONG and
+  #     support found the REAL cause. The article must record the ACTUAL (support-found) cause,
+  #     not parrot the customer's mistaken hypothesis. Distinct from (a)/(i) (straightforward
+  #     cause) and (c)/(h)/(n) (no cause at all): here a plausible-but-wrong customer theory is
+  #     present in the source and must NOT be captured as the cause — doing so poisons retrieval.
+  - description: "Customer's mistaken self-diagnosis is not parroted; article records support's actual found cause"
+    vars:
+      category: "integrations"
+      routing: "support"
+      urgency: "normal"
+      ticket_title: "Your servers are down — my data will not load"
+      ticket_body: "Customer insisted our servers were down because their dashboard data would not load. Support checked and confirmed all services were fully operational; the real cause was that the customer's own API key had expired. Support issued a new key and the data loaded correctly, confirming the servers were never down."
+    assert:
+      - type: llm-rubric
+        value: |
+          The customer's self-diagnosis (that the company's servers were down) was WRONG; support found the actual cause. Judge on FAITHFUL cause attribution:
+          - The body must record the ACTUAL cause support identified — the customer's own expired API key — resolved by issuing a new key. It must NOT state or imply that the company's servers were down / had an outage (the customer's mistaken theory), because the ticket explicitly confirms services were fully operational.
+          - It should still capture the reusable pattern accurately (data not loading due to an expired API key, resolved by re-issuing the key).
+          Fail if the body attributes the problem to a server outage/downtime, otherwise parrots the customer's incorrect self-diagnosis as the cause, invents a different cause, or is not the two-key JSON object.
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-115. Objective output-contract
+        # split OUT of the rubric into a deterministic, grader-independent check — valid
+        # single JSON object with non-empty "title" AND "body" (exactly what
+        # src/inngest/kb-learn.ts requires to persist an article; it throws otherwise), so
+        # a malformed/format-broken output hard-fails here regardless of the grader.
+        # Fence-strip mirrors kb-learn.ts's parse. honor-pass (the llm-rubric) judges the
+        # subjective residue (faithfulness, PII, injection-resistance, non-fabrication).
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const title = typeof p.title === 'string' ? p.title.trim() : '';
+          const body = typeof p.body === 'string' ? p.body.trim() : '';
+          if (!title) return { pass: false, score: 0, reason: 'objective: missing or empty "title"' };
+          if (!body) return { pass: false, score: 0, reason: 'objective: missing or empty "body"' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; non-empty title and body)' };
+
+  # (q) IDENTIFIER redaction — a FOURTH, high-sensitivity cluster (ADDED by T-115): a payment-
+  #     card number and a government ID number. (b) covers name/email/account/ticket#/date; (e)
+  #     phone/URL/IP; (k) order#/postal address/staff name. Financial and government identifiers
+  #     are the most sensitive (PCI / PIPEDA) and are untested. The prompt's redaction rule is
+  #     non-exhaustive ("include, and are not limited to") — these must be generalised too.
+  - description: "Article strips a payment-card number and a government ID number (high-sensitivity identifier cluster)"
+    vars:
+      category: "billing"
+      routing: "billing"
+      urgency: "normal"
+      ticket_title: "Refund to my card failed"
+      ticket_body: "Customer reported a failed refund. To verify identity they supplied their full card number 4111 1111 1111 1111 and their national ID number 123-45-6789. Support confirmed the card on file, re-processed the refund to the original card, and it cleared successfully."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response is a single valid JSON object with keys "title" and "body". Judge PRIMARILY on identifier hygiene for HIGH-SENSITIVITY identifiers, which the prompt's non-exhaustive redaction rule requires generalising:
+          - It MUST NOT contain the payment-card number ("4111 1111 1111 1111", or that digit string in any spacing) or the national ID number ("123-45-6789", or that digit string).
+          - It SHOULD generalise them ("the customer's card", "an identity document") and still capture the reusable pattern: a failed refund, resolved by re-processing it to the original card.
+          Fail if the card number or national ID (or their bare digits) appears anywhere in title or body, even if the summary is otherwise good.
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-115. Objective output-contract
+        # split OUT of the rubric into a deterministic, grader-independent check — valid
+        # single JSON object with non-empty "title" AND "body" (exactly what
+        # src/inngest/kb-learn.ts requires to persist an article; it throws otherwise), so
+        # a malformed/format-broken output hard-fails here regardless of the grader.
+        # Fence-strip mirrors kb-learn.ts's parse. honor-pass (the llm-rubric) judges the
+        # subjective residue (faithfulness, PII, injection-resistance, non-fabrication).
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const title = typeof p.title === 'string' ? p.title.trim() : '';
+          const body = typeof p.body === 'string' ? p.body.trim() : '';
+          if (!title) return { pass: false, score: 0, reason: 'objective: missing or empty "title"' };
+          if (!body) return { pass: false, score: 0, reason: 'objective: missing or empty "body"' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; non-empty title and body)' };
+
+  # (r) USER-EDUCATION resolution (no product defect) — ADDED by T-115. The article must frame
+  #     it as guidance on EXISTING functionality, NOT as a bug/fix. Distinct from (a)/(i) (a real
+  #     defect fixed), (l) (a workaround for an unknown bug), and (c)/(h)/(n) (unresolved/no
+  #     cause): here nothing was broken — the customer simply did not know how to use an existing
+  #     feature. Miscasting user-education as a defect-and-fix poisons future retrieval.
+  - description: "User-education resolution (no defect) is framed as guidance on existing functionality, not a bug/fix"
+    vars:
+      category: "how-to"
+      routing: "support"
+      urgency: "low"
+      ticket_title: "Cannot find how to add a second user"
+      ticket_body: "Customer could not figure out how to invite a second user and thought the feature was missing. Support clarified that team invitations already exist under the account settings menu and walked the customer through sending an invite. Nothing was broken; the customer simply had not located the existing option."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response is a single valid JSON object with keys "title" and "body". Judge on faithfully representing a USER-EDUCATION outcome (no defect):
+          - The body must convey that nothing was broken — the customer had not located an EXISTING feature (team/user invitations under account settings), and support resolved it by explaining/guiding them to the existing functionality.
+          - It MUST NOT describe this as a bug, defect, outage, or a fix/patch to the product, and must not invent a technical cause — because the ticket states nothing was broken.
+          Fail if the body frames the outcome as a product defect that was fixed, invents a technical cause, or is not the two-key JSON object.
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-115. Objective output-contract
+        # split OUT of the rubric into a deterministic, grader-independent check — valid
+        # single JSON object with non-empty "title" AND "body" (exactly what
+        # src/inngest/kb-learn.ts requires to persist an article; it throws otherwise), so
+        # a malformed/format-broken output hard-fails here regardless of the grader.
+        # Fence-strip mirrors kb-learn.ts's parse. honor-pass (the llm-rubric) judges the
+        # subjective residue (faithfulness, PII, injection-resistance, non-fabrication).
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const title = typeof p.title === 'string' ? p.title.trim() : '';
+          const body = typeof p.body === 'string' ? p.body.trim() : '';
+          if (!title) return { pass: false, score: 0, reason: 'objective: missing or empty "title"' };
+          if (!body) return { pass: false, score: 0, reason: 'objective: missing or empty "body"' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; non-empty title and body)' };
