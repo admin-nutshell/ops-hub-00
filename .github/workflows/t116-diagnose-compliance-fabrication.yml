@@ -21,7 +21,7 @@ on:
         required: false
         default: '10'
       variant:
-        description: 'Which probe: all | m | direct | soc2'
+        description: 'Which probe: all | m | direct | soc2 | hipaa'
         required: false
         default: 'all'
       target_alias:
