@@ -7687,3 +7687,267 @@ merging it -- coordinator review requested.
    `status/content/2026-07-14-synthetic-e2e-pipeline-monitor-failing--
    downstream.md` (resolved: true)
 ```
+
+### 2026-07-14 — T-112: real single-user-critical under-escalation bug found and fixed via live-eval-gate; a second, pre-existing grader-variance issue is NOT fixed — user chose to HOLD the PR (Coordinator, on independent review of the build agent's PR)
+
+```
+2026-07-14 [Coordinator] T-112 (Sprint 16 Track A, anchor) set out to fix
+the real finding T-110 banked: the production triage prompt's `high`
+bullet used to read as three independent, OR-able traits ("major
+degradation, multiple users blocked, no workaround"), letting a
+single-user, no-stated-workaround ticket satisfy ONE trait and
+over-escalate to `high` on ~50% of runs. The build agent's PR (#456,
+branch t112-triage-high-escalation-clarify) rewrote the bullet to state
+the AND explicitly and added a single-user carve-out, plus a new eval
+case (q) specifically to guard that the carve-out doesn't bleed into
+demoting a genuine single-user CRITICAL (e.g. data-loss) ticket.
+
+INDEPENDENT REVIEW FOUND A REAL BUG THE BUILD AGENT'S OWN CASE-BY-CASE
+REASONING MISSED: live-eval-gate on PR #456 failed with case (q) itself
+scoring 0 (not the mechanical description-rename false-positive seen on
+T-109/T-110 -- a genuine new-case failure). Pulled the raw request/
+response evidence (not inferred): the model's actual output was
+`{"urgency":"normal","category":"support","routing":"support",
+"reasoning":"The issue affects a single user with no workaround
+available, but does not involve system-wide impact or critical data
+loss."}` for a ticket explicitly describing ONE user's irrecoverable data
+loss. The prompt's own PRE-EXISTING `critical: system down, data loss,
+security breach` trigger is user-count-agnostic and was completely
+unmodified by T-112 -- yet the model skipped past it entirely, missing
+even the `high` threshold, straight to `normal`. Root cause: the first
+cut's critical-triggers-still-apply exception was a trailing parenthetical
+ON the `high` bullet ("...not high (critical triggers above still apply
+regardless of user count)") -- a weak, easily-discounted hedge physically
+distant from the critical bullet itself. The newly-prominent, specific
+"single user -> not high" carve-out out-competed it.
+
+FIX (one targeted revision, per the anti-flakiness/anti-serial-tuning
+discipline from T-110's own session -- attempt once, verify, don't guess
+across CI cycles): moved the user-count invariance INTO the `critical`
+bullet itself (front-loaded, not a hedge on a different bullet) --
+"urgency critical: system down, data loss, security breach -- these
+ALWAYS apply regardless of how many users are affected; a single user's
+data loss, security breach, or total lockout is still critical, never
+normal or low" -- and narrowed the `high` bullet's carve-out to an
+explicit "AND none of the critical triggers above apply" instead of
+relying on the model to cross-reference a parenthetical. Committed as a
+follow-up commit on the same branch/PR (not a new PR), ticket-triage.ts
+and evals/ticket-triage.yaml's system block kept byte-identical (T-105's
+lockstep discipline). Re-ran live-eval-gate: case (q) now PASSES; case (i)
+(T-110's regression check) unaffected; no other case shifted.
+
+A SECOND, SEPARATE ISSUE SURFACED AND IS NOT RESOLVED: the SAME re-run
+showed a REGRESSION on a pre-existing, untouched-by-T-112 case --
+"Ticket bundling a total outage with a trivial typo classifies on the
+dominant (critical) issue" -- scoring 0.5 (its own deterministic
+ALLOWED=['critical','high'] check PASSED; only the llm-rubric component
+scored 0/pass:false). This case's OWN rubric text already says "Set
+urgency to critical (a high read is tolerable)" -- explicit tolerance for
+either answer -- yet the grader reasoned "This is a full access outage, so
+'critical' is required," effectively overriding its own rubric's stated
+hedge. Checked whether this was pure pre-existing grader noise or a real
+T-112 side-effect by pulling the LAST GREEN BASELINE's raw output for the
+identical ticket (run 29290482377, captured before T-112 touched anything):
+the baseline model answer was `"urgency":"critical"`. BOTH of T-112's runs
+(original cut and the case-(q) fix) instead returned `"urgency":"high"` --
+byte-identical between the two T-112 cuts, confirming the fix commit did
+NOT cause this, but T-112's underlying wording change (making the `high`
+bullet longer/more specific) DID measurably shift the model's own answer
+on this case from critical to high, a real (if in-spec-tolerable) behavior
+drift.
+
+CONSIDERED AND DECLINED: rewriting this case's rubric to an explicit
+"pass if critical OR high" OR-clause to stop the grader flip-flopping.
+Advisor review caught the flaw in this before it was actioned: the
+rubric's existing wording ("critical ... a high read is tolerable") is not
+symmetric -- it states a PREFERENCE (critical is right, high is grudgingly
+accepted), not an equivalence. Flattening it to a hard OR would harden a
+soft hedge into leniency specifically to turn CI green under merge
+pressure -- exactly what "drop-don't-weaken" forbids, and exactly the
+already-banked T-106/ADR-0009 grader-robustness problem (build deferred to
+a future sprint) being hand-patched per-case instead of properly fixed.
+Declined; the rubric was NOT touched.
+
+PRESENTED TO THE USER PLAINLY (AskUserQuestion, non-technical framing):
+hold T-112 this sprint vs. open a further task to fix the grader-variance
+case properly first. **User chose to HOLD.** T-112's real bug fix (case
+(q)) stays fully written, committed, and documented on PR #456 -- NOT
+merged. Nothing forced through on a lucky re-run; nothing hand-patched on
+the shared eval file to manufacture green.
+
+MERGE AUTHORIZATION: moot for now -- PR #456 is deliberately not being
+merged. When this resumes (either the grader-variance case gets its own
+dedicated fix, proven the same way T-110 diagnosed case (i), or the
+T-106/ADR-0009 grader-robustness build lands and this case naturally
+stabilizes), the merge itself still needs the user's own direct Section
+5.1 sign-off -- PR #456 touches `src/inngest/ticket-triage.ts` (the live,
+customer-facing triage prompt) and `evals/ticket-triage.yaml` (the
+live-eval-gate's own fixture file), matching the T-109/T-110 precedent,
+not the T-111/T-113 one.
+
+-> WORK.md Sprint 16 Track A (T-112 row, marked HELD) ; PR #456 (branch
+   t112-triage-high-escalation-clarify, 3 commits, NOT merged) ; runs
+   29309255671 (original cut, case (q) FAILING) ; 29310172459 (fix commit,
+   case (q) PASSING, bundling case still red) ; baseline run 29290482377
+   (bundling case's pre-T-112 raw output, "critical")
+```
+
+### 2026-07-14 — CORRECTION to the T-112 entry above and to WORK.md/the Sprint 16 retro: ADR-0009's grader-robustness mechanism is already BUILT and LIVE (T-109, Sprint 14) — it was miswritten as "not yet built" (Coordinator)
+
+```
+2026-07-14 [Coordinator] Filing this as its own addendum rather than
+silently editing the entry above -- per this project's own standing
+practice of recording a miss, not patching over it.
+
+WHAT WAS WRONG: the T-112 entry above, WORK.md's T-112 row, and
+docs/retros/sprint-16.md all stated that "T-106/ADR-0009's grader-
+robustness BUILD is still not built" and that this is "blocking real
+shipped work (T-112)," framed as an elevated Sprint 17 priority. That is
+FACTUALLY WRONG. `scripts/eval/apply-honor-pass.py`'s own docstring reads
+"T-109 build of ADR-0009 (Option 3, the hybrid)" and is already wired into
+`scripts/eval/live-run.sh` -- confirmed directly in this session's own CI
+log reads (e.g. "post-honor-pass verdict lives in
+/tmp/eval-live/ticket-triage-results.json, which is what compare-baseline
+gates on"). The honor-pass mechanism, its floor/guardrails, and the C6
+deterministic over/under-escalation split are ALL live in production
+today, on every live-eval-gate run, including the T-112 runs analyzed in
+this same session.
+
+WHY THE BUNDLING CASE STILL READ AS AN "ADR-0009 GAP": it isn't one. The
+bundling case's grader returned `pass: false, score: 0.0` -- an outright
+grader disagreement, not a borderline `pass: true, score: 0.7-0.75` near-
+miss. ADR-0009's Guardrail 2 (never-override-a-fail asymmetry) is
+DELIBERATELY designed to never rescue a `pass: false` verdict, at any
+score -- this is the mechanism working exactly as designed, not a hole in
+it. Conflating "grader affirmatively disagreed" with "the P1 threshold-
+discards-pass bug ADR-0009 fixed" was the actual error.
+
+WHAT'S ACTUALLY UNBUILT: ADR-0009's Decision section explicitly retained
+an OPTIONAL, calibration-gated PER-CASE multi-sample escalation for cases
+empirically shown to be genuinely (P2) near-threshold-variance-prone (cost
+bounded to ~$1.50 CAD/month if applied to 2-3 cases, per the ADR's own
+math) -- but this was described as a future option, not built as code.
+Grepped `scripts/eval/` and `evals/*.yaml` for `multiSample` /
+`multi-sample`: zero implementation hits, only the one mention inside
+apply-honor-pass.py's own docstring explaining why it was NOT the chosen
+default. This -- not "rebuild ADR-0009" -- is the real, correctly-scoped
+Sprint 17 candidate if the bundling case needs it: wire the already-
+designed, already-approved optional per-case multi-sample escalation
+(small, scoped, rides ADR-0009's existing acceptance, no new ADR needed)
+and apply it to this one case to determine whether its grader read is
+genuinely variance-prone (an n=1 sample -- this is the FIRST time this
+case has ever graded a "high" answer, since the baseline's model output
+was always "critical" until T-112 -- is not enough evidence either way).
+
+-> WORK.md Sprint 16 T-112 row (corrected) ; docs/retros/sprint-16.md
+   (correction note added) ; scripts/eval/apply-honor-pass.py (source of
+   truth, "T-109 build of ADR-0009" in its own docstring) ; grep of
+   scripts/eval/ + evals/*.yaml for multiSample (zero implementation hits)
+```
+
+### 2026-07-14 — T-114: built ADR-0009's optional multi-sample escalation; diagnosis shows the bundling case is a STABLE grader rejection, not variance -- reinforces T-112's hold, does not clear it (Coordinator, reviewing the Evals Lead's build)
+
+```
+2026-07-14 [Coordinator] T-114 (Sprint 17 anchor) built the optional
+per-case multi-sample grading escalation ADR-0009 designed and cost-
+approved but never coded (Decision/Option 1; ~$1.50 CAD/month for 2-3
+cases). Mechanism: `metadata.multiSample: N` on a case -> promptfoo's
+native `options.repeat: N` -> N REAL target+grader draws -> honor-pass
+applied per-draw (floor + never-override-a-fail intact) -> aggregate
+PASSES only on a strict MAJORITY of honored draws (tie -> fail; no early
+stop; no retry-until-pass). Zero cases opted in by default -> globally
+dormant, zero effect on the other ~43 cases -- verified both by hermetic
+unit tests and by the live diagnostic run itself (24 draws -> 1
+aggregated row, correctly). PR #462 (branch
+`sprint-17-t114-multisample-escalation`), all required checks green,
+correctly NOT self-merged (modifies the shared live-eval-gate mechanism,
+Section 5.1 cat-a, same class as T-109).
+
+DIAGNOSIS (the actual point of T-114): applied the mechanism to the
+bundling case ("total outage + trivial typo") to answer the question n=1
+from PR #456 could not -- is the grader's `pass:false` on a `high` answer
+a STABLE, confident rejection (multi-sample must NOT and cannot overturn
+this, per Guardrail 2), or genuine near-threshold VARIANCE (multi-sample's
+actual intended use)? Two instruments, run live against T-112's EXACT
+proposed prompt (read-only, byte-identical extraction confirmed --
+verified independently below):
+
+  Instrument A (target+grader x24, T-112's prompt): 24/24 -> "critical",
+  zero "high" drawn. (A confirmatory N=8 run: also all-critical.)
+
+  Instrument B (judge-only x12, one frozen "high" output pinned so no
+  target call): 12/12 REJECTED -- 11 at score 0.0, one at 0.3. Reason
+  every time: a full-staff outage IS "system down", so critical is
+  required, not "tolerable-but-high". Confident, repeated, value-based --
+  not scatter near a threshold.
+
+VERIFIED INDEPENDENTLY (not taken on the build agent's word): compared
+Instrument A's extracted system-prompt bytes (run 29345122991's own log,
+"Extracted T-112 eval file... urgency bullets:") against T-112 branch
+`t112-triage-high-escalation-clarify`'s actual HEAD (daff148a, the SAME
+commit T-112's own live-eval-gate run 29310172459 graded) -- BYTE-
+IDENTICAL. The 24-vs-2 discrepancy (this run: 0/24 high; PR #456's own
+gate runs: 2/2 high, one per T-112 cut) is therefore NOT a reconstruction
+artifact. It is genuine, rare target-model stochasticity at the model's
+effectively-temp-0 setting -- a milder instance of the exact same
+phenomenon T-110 diagnosed and fixed for case (i) (there ~50/50; here
+roughly 1-in-13 across the observed draws). The model occasionally, not
+reliably, answers "high" instead of "critical" for this exact ticket
+under T-112's wording.
+
+CORRECTION TO THIS SESSION'S OWN PRIOR RECORDS (WORK.md, DECISIONS.md's
+"T-112" entry, docs/retros/sprint-16.md all said "grader variance" --
+that is now shown to be WRONG, not just imprecise, and is corrected here
+rather than silently edited): the grader is NOT flaky or noisy on this
+case. It is stable and confident, and its reasoning is defensible (a
+full-staff lockout plausibly reads as "system down"). The actual,
+combined finding is: (1) the rubric's own "a high read is tolerable"
+hedge and the deterministic ALLOWED=['critical','high'] both promise a
+tolerance the grader has NEVER, across 13 real+constructed observations,
+actually honored -- an eval-authoring inconsistency, real but SEPARATE
+from T-112; and (2) T-112's reworded prompt, even though it usually
+produces "critical", occasionally (rarely) produces "high" -- and when it
+does, the grader (plausibly correctly) rejects it as an under-escalation
+of a genuine total outage.
+
+WHY THE OBVIOUS-LOOKING FIX (tighten ALLOWED to ['critical'] only) DOES
+NOT UNBLOCK T-112: row success = rubric-honor-pass AND deterministic-
+pass. On a "high" draw: TODAY rubric fails, deterministic passes -> row
+fails (score 0.5). TIGHTENED: rubric fails, deterministic ALSO fails ->
+row still fails (score 0.0). A "high" draw fails either way; a "critical"
+draw passes either way. Tightening only changes the FAILING score, not
+the pass/fail outcome -- it does not touch what actually blocks T-112
+(the target's occasional "high" draw itself). Correctly NOT done as a
+"T-112 unblock" for this reason. It may still be a legitimate, SEPARATE
+eval-honesty fix (a contract that "tolerates" an answer its grader has
+never once actually accepted is incoherent) -- but that is its own
+decision, not something that clears the hold, and not self-executed here.
+
+MULTI-SAMPLE WAS CORRECTLY NOT APPLIED to the bundling case as a "fix":
+majority-voting past an occasional "high" draw would green the case on
+the target's modal "critical" answer while MASKING the real, if rare,
+under-escalation risk T-112's wording introduces on a genuine total
+outage -- exactly the force-to-pass drop-don't-weaken forbids. Declined.
+
+DISPOSITION: T-112's hold is REINFORCED by this finding, not cleared.
+The bundling-case redness is not an artifact of grader flakiness -- it is
+the safety net correctly, if rarely, catching a real under-escalation
+tendency in T-112's reworded prompt on genuine total-outage tickets.
+Whether that rare tendency (roughly 1-in-13 in this sample) is an
+acceptable trade against the over-escalation problem T-112 set out to fix
+is a product-quality judgment call, not something to engineer around.
+Presenting this to the user as: (a) whether to merge PR #462 (the
+multi-sample mechanism itself -- currently zero cases opted in, so it
+would land as dormant/unused code) now or hold it until a genuine
+near-threshold-variance case needs it; and (b) the separate,
+non-T-112-unblocking eval-honesty question (tighten the bundling case's
+stated tolerance to match its actual, always-critical-only enforcement).
+T-112 (PR #456) stays held either way pending a product-quality call on
+the prompt itself, which is the user's to make.
+
+-> PR #462 (branch sprint-17-t114-multisample-escalation, NOT merged) ;
+   diagnostic runs 29345122991 (Instrument A, N=24) + 29344783613
+   (confirmatory N=8) ; T-112 branch HEAD daff148a (byte-identical
+   verification) ; WORK.md Sprint 17 T-114/T-112-resume rows (to be
+   corrected) ; docs/retros/sprint-16.md (correction addendum extended)
+```
