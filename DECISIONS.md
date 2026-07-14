@@ -7477,3 +7477,56 @@ not the T-111/T-113 one.
    case (q) PASSING, bundling case still red) ; baseline run 29290482377
    (bundling case's pre-T-112 raw output, "critical")
 ```
+
+### 2026-07-14 — CORRECTION to the T-112 entry above and to WORK.md/the Sprint 16 retro: ADR-0009's grader-robustness mechanism is already BUILT and LIVE (T-109, Sprint 14) — it was miswritten as "not yet built" (Coordinator)
+
+```
+2026-07-14 [Coordinator] Filing this as its own addendum rather than
+silently editing the entry above -- per this project's own standing
+practice of recording a miss, not patching over it.
+
+WHAT WAS WRONG: the T-112 entry above, WORK.md's T-112 row, and
+docs/retros/sprint-16.md all stated that "T-106/ADR-0009's grader-
+robustness BUILD is still not built" and that this is "blocking real
+shipped work (T-112)," framed as an elevated Sprint 17 priority. That is
+FACTUALLY WRONG. `scripts/eval/apply-honor-pass.py`'s own docstring reads
+"T-109 build of ADR-0009 (Option 3, the hybrid)" and is already wired into
+`scripts/eval/live-run.sh` -- confirmed directly in this session's own CI
+log reads (e.g. "post-honor-pass verdict lives in
+/tmp/eval-live/ticket-triage-results.json, which is what compare-baseline
+gates on"). The honor-pass mechanism, its floor/guardrails, and the C6
+deterministic over/under-escalation split are ALL live in production
+today, on every live-eval-gate run, including the T-112 runs analyzed in
+this same session.
+
+WHY THE BUNDLING CASE STILL READ AS AN "ADR-0009 GAP": it isn't one. The
+bundling case's grader returned `pass: false, score: 0.0` -- an outright
+grader disagreement, not a borderline `pass: true, score: 0.7-0.75` near-
+miss. ADR-0009's Guardrail 2 (never-override-a-fail asymmetry) is
+DELIBERATELY designed to never rescue a `pass: false` verdict, at any
+score -- this is the mechanism working exactly as designed, not a hole in
+it. Conflating "grader affirmatively disagreed" with "the P1 threshold-
+discards-pass bug ADR-0009 fixed" was the actual error.
+
+WHAT'S ACTUALLY UNBUILT: ADR-0009's Decision section explicitly retained
+an OPTIONAL, calibration-gated PER-CASE multi-sample escalation for cases
+empirically shown to be genuinely (P2) near-threshold-variance-prone (cost
+bounded to ~$1.50 CAD/month if applied to 2-3 cases, per the ADR's own
+math) -- but this was described as a future option, not built as code.
+Grepped `scripts/eval/` and `evals/*.yaml` for `multiSample` /
+`multi-sample`: zero implementation hits, only the one mention inside
+apply-honor-pass.py's own docstring explaining why it was NOT the chosen
+default. This -- not "rebuild ADR-0009" -- is the real, correctly-scoped
+Sprint 17 candidate if the bundling case needs it: wire the already-
+designed, already-approved optional per-case multi-sample escalation
+(small, scoped, rides ADR-0009's existing acceptance, no new ADR needed)
+and apply it to this one case to determine whether its grader read is
+genuinely variance-prone (an n=1 sample -- this is the FIRST time this
+case has ever graded a "high" answer, since the baseline's model output
+was always "critical" until T-112 -- is not enough evidence either way).
+
+-> WORK.md Sprint 16 T-112 row (corrected) ; docs/retros/sprint-16.md
+   (correction note added) ; scripts/eval/apply-honor-pass.py (source of
+   truth, "T-109 build of ADR-0009" in its own docstring) ; grep of
+   scripts/eval/ + evals/*.yaml for multiSample (zero implementation hits)
+```
