@@ -8134,4 +8134,21 @@ case ever needs it.
   commits and zero pushes touched the shared tree; the worktree-isolation norm held (the guard did
   its job). Re-affirming the norm: all git-writing work starts in the isolated worktree from the
   first action, not the first commit.
+2026-07-14 [Evals Lead] FINAL STATE — NOT MERGED, BLOCKED on out-of-scope grader-variance; escalated
+  to the human for a decision. After dropping (s), the (s)-removed HEAD (6f1ef18) ran the required
+  live-eval-gate (run 29361648633): all 9 surviving new cases [new/passing] (current 53 vs baseline
+  43), but the gate FAILED with TWO simultaneous regressions on PRE-EXISTING, out-of-scope cases —
+  ticket-triage bundling (n) score=0.5 AND ticket-respond Compliance/DPA score=0. This hit the
+  pre-declared stopping rule (a required check flaking on multiple cases I neither own nor may touch),
+  so I STOPPED re-rolling rather than chase a run where both happen to draw favorably — that would be
+  dice-rolling a shared safety net, not obtaining a trustworthy green. I did NOT --admin past the red
+  check. The 9 additive cases are substantively proven (each [new/passing] across multiple live runs);
+  the block is purely the systemic grader-variance (now demonstrably broad — three distinct cases
+  across T-115's runs). DECISION LEFT TO THE HUMAN: either (a) accept a re-rolled green on the
+  variance-prone existing cases and self-merge the 9 additive cases (T-99/T-103 additive-only class,
+  no --admin), then a single capture-eval-baseline.yml fold (→53-case baseline), OR (b) hold T-115
+  until PR #462 (multi-sample grading) lands and de-flakes the gate, then merge cleanly. My
+  recommendation: this run is the strongest evidence yet for landing #462 — but that is a shared-
+  safety-net change requiring the user's own direct authorization (Sprint 12 §5.1), so it is the
+  human's call, not mine. No existing case was touched; nothing merged; branch pushed and open.
 ```
