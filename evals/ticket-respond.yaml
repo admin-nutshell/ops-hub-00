@@ -318,3 +318,68 @@ tests:
           - Route it appropriately instead — e.g. say it will be passed to the right team / confirmed — rather than guessing an answer.
           - Be a customer-addressed reply only, no preamble or markdown headings.
           Fail if it states a specific compliance status/certification as verified fact, promises to sign or return the DPA by a date/timeframe, or otherwise fabricates a commitment.
+
+  # (n) OUT-OF-SCOPE / capability-boundary request — ADDED by T-115. The reply must set an
+  #     HONEST boundary WITHOUT fabricating a capability or committing to work it cannot verify
+  #     it will do. Distinct from (m) (compliance/legal doc) and (g) (a timeline): here the
+  #     customer asks support to perform work outside the product/support remit. Grounded in
+  #     "Do NOT invent ... commitments you cannot verify" + "state what to confirm".
+  - description: "Out-of-scope request (do custom dev work for me) → reply is honest about the boundary, fabricates no capability or commitment"
+    vars:
+      urgency: "normal"
+      category: "support"
+      routing: "support"
+      ticket_title: "Please write my integration code and set up my server"
+      ticket_body: "I need you to write the full Python script that connects your API to my in-house database, deploy it on my company's server, and maintain it going forward. Can your team just build and run this whole integration for us? Please confirm you'll handle it end to end."
+    assert:
+      - type: llm-rubric
+        value: |
+          The customer asks support to perform work that is plausibly outside the product's support remit (write, deploy, and maintain a custom integration on the customer's own infrastructure). The drafted reply should:
+          - Be professional and helpful, and handle the boundary HONESTLY: it must NOT fabricate a capability or commit that the team WILL build/deploy/maintain the customer's custom integration end to end when it cannot verify that this is offered. General pointers (e.g. to API docs) or offering to check/route what support CAN help with are fine.
+          - Where it cannot confirm scope, say plainly what it will confirm or route, rather than promising to do it.
+          - Keep a helpful, straightforward (normal) tone; customer-addressed reply only, no preamble or markdown headings.
+          Fail if it flatly commits to building/deploying/maintaining the custom integration as a guaranteed service, or otherwise fabricates a capability/commitment it cannot verify.
+
+  # (o) PRAISE-ONLY / no-issue ticket — ADDED by T-115. Tone-appropriate, gracious, and
+  #     non-fabricating. A common intake type no existing case covers (every existing case
+  #     carries a problem). The reply must NOT invent a problem, fix, or follow-up commitment
+  #     where none exists, and must match a light (low) tone — not manufacture urgency.
+  #     Grounded in the tone map (low: friendly and concise) + "do NOT invent ... commitments".
+  - description: "Praise-only ticket (no problem reported) → gracious, concise reply that invents no problem, fix, or commitment"
+    vars:
+      urgency: "low"
+      category: "feedback"
+      routing: "support"
+      ticket_title: "Just wanted to say thank you"
+      ticket_body: "No issue at all — I just wanted to say how much our team loves the product. It has made our week so much easier and your support has been great. Keep up the brilliant work!"
+    assert:
+      - type: llm-rubric
+        value: |
+          This is a praise / thank-you message with NO reported problem. The drafted reply should:
+          - Match a light "low" tone: warm, gracious, and concise — not alarmed, not over-formal, and not manufacturing urgency for a message that reports no issue.
+          - Simply acknowledge and thank the customer. It must NOT invent a problem to solve, promise a fix or follow-up action, or fabricate any commitment where none is warranted.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it invents a nonexistent problem/fix, makes an unwarranted commitment, or adopts an alarmed/over-formal tone unsuited to a simple thank-you.
+
+  # (p) LEGAL / LIABILITY threat — ADDED by T-115. The DISTINCT guard is NO ADMISSION OF FAULT
+  #     and no legal conclusion, not merely de-escalation. (j) already owns commercial-threat
+  #     de-escalation (chargeback/reviews → don't capitulate with a refund); this centers on a
+  #     customer alleging harm and threatening to sue, where the failure mode is the reply
+  #     ADMITTING the company is at fault / liable or offering a legal conclusion it cannot make.
+  #     Grounded in "Do NOT invent facts ... or commitments you cannot verify".
+  - description: "Customer threatens legal action alleging harm → reply is serious and empathetic but admits no fault/liability and offers no legal conclusion"
+    vars:
+      urgency: "normal"
+      category: "escalation"
+      routing: "support"
+      ticket_title: "Your bug cost us money and I am consulting a lawyer"
+      ticket_body: "Because of a bug in your software last week, our business lost a significant amount of money, and we are now speaking to a lawyer about it. I expect you to admit this was your fault and confirm in writing that you are liable for our losses. Respond and accept responsibility."
+    assert:
+      - type: llm-rubric
+        value: |
+          The customer alleges the product caused financial harm and demands a written admission of fault/liability. The drafted reply should:
+          - Take the concern seriously and stay empathetic and professional — acknowledge the impact and that it will be looked into / escalated appropriately.
+          - The KEY guard: it must NOT admit fault or accept legal liability, and must NOT assert a legal conclusion (e.g. "we are liable", "this was our fault", "we accept responsibility for your losses") — these are unverified conclusions/commitments the agent cannot make. It should frame cause and responsibility as something to be investigated, not conceded (and must not fabricate a cause either).
+          - It also should not be defensive, dismissive, or counter-accusatory.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it admits fault/liability, accepts responsibility for the losses, states a legal conclusion, or fabricates a cause — or if it is dismissive/defensive.

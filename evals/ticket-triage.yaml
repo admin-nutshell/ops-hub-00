@@ -670,3 +670,109 @@ tests:
           const ALLOWED = ['critical'];
           if (!ALLOWED.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency=' + p.urgency + ' violates this case allowed-set ' + JSON.stringify(ALLOWED) + ' (over/under-escalation)' };
           return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; urgency in ' + JSON.stringify(ALLOWED) + ')' };
+
+  # (r) DEGENERATE / near-empty input — ADDED by T-115. The closed-enum JSON contract must
+  #     SURVIVE a content-free ticket. Distinct from (g): (g) is a wordy-but-vague message
+  #     tested for the uncertain->normal SEVERITY default; this case's point is CONTRACT
+  #     ROBUSTNESS — a 'test' ticket with essentially no body must still yield a single valid
+  #     JSON object with a closed-enum urgency (not an error, an empty value, or a prose
+  #     apology). Real intake receives blank/'test' tickets; the downstream CHECK-constrained
+  #     UPDATE must not choke on a malformed or out-of-enum output.
+  - description: "Near-empty 'test' ticket still yields the valid closed-enum JSON contract (contract robustness on degenerate input)"
+    vars:
+      ticket_title: "test"
+      ticket_body: "test test"
+    assert:
+      - type: llm-rubric
+        value: |
+          Judge PRIMARILY on the output contract surviving a content-free ticket:
+          - The response MUST be ONLY a single valid JSON object with the keys urgency, category, routing, and reasoning — NOT an error, an empty value, a question back to the user, or any prose.
+          - "urgency" MUST be exactly one of {critical, high, normal, low}. With no discernible issue or impact, the prompt's explicit "If uncertain: urgency=normal, category=support, routing=support" default applies ("low" is also a tolerable read of a no-signal ticket).
+          - Do NOT over-escalate a content-free ticket.
+          Fail if the output is not a single valid JSON object, if urgency is outside the closed enum, or if urgency is "critical" or "high" (over-escalation of a no-signal ticket). (Do not fail solely on a normal-vs-low judgement call.)
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-115. Objective contract split
+        # OUT of the rubric into a deterministic, grader-independent check — valid single
+        # JSON object, urgency in the closed enum, and THIS case's own over/under-
+        # escalation allowed-set — so an over/under-escalation can NEVER be honor-pass'd
+        # through on a grader's erroneous pass:true. Honor-pass (the llm-rubric) then
+        # judges only the subjective residue. Fence-strip mirrors ticket-triage.ts's parse.
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const ENUM = ['critical','high','normal','low'];
+          if (!ENUM.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency outside the closed enum -> ' + JSON.stringify(p.urgency) };
+          const ALLOWED = ['normal','low'];
+          if (!ALLOWED.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency=' + p.urgency + ' violates this case allowed-set ' + JSON.stringify(ALLOWED) + ' (over/under-escalation)' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; urgency in ' + JSON.stringify(ALLOWED) + ')' };
+
+  # (s) UNDERSTATED / casual TONE over a GENUINE total outage — ADDED by T-115. Urgency tracks
+  #     IMPACT, not tone. This is the MIRROR of (j): (j) guards that LOUD, demanding tone does
+  #     not INFLATE a trivial issue; this guards that CASUAL, downplaying tone does not DEFLATE
+  #     a real critical outage. No existing case pairs a downplaying tone with a genuine
+  #     critical trigger — a real under-escalation risk, since customers routinely understate.
+  - description: "Casual, downplaying tone over a genuine total outage still classifies as urgency=critical (tone does not deflate impact)"
+    vars:
+      ticket_title: "no big deal but the site has been down a while"
+      ticket_body: "haha so our whole site has been completely down for about an hour now — none of our staff can log in at all and we are totally locked out of everything, but honestly no rush, whenever you get a chance! just thought i would mention it. thanks so much!"
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to exactly "critical": despite the breezy, "no rush" tone, the actual impact is a full system-down outage — the whole site down for about an hour, all staff completely locked out of everything — which is the prompt's defining system-down critical trigger. Per the prompt, urgency is defined by IMPACT, never by customer tone.
+          - Use an availability/outage category routed to an engineering/ops/incident team.
+          Fail if urgency is "high", "normal", or "low" (tone-driven UNDER-escalation of a genuine outage), if the JSON is malformed, or if an out-of-enum value appears.
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-115. Objective contract split
+        # OUT of the rubric into a deterministic, grader-independent check — valid single
+        # JSON object, urgency in the closed enum, and THIS case's own over/under-
+        # escalation allowed-set — so an over/under-escalation can NEVER be honor-pass'd
+        # through on a grader's erroneous pass:true. Honor-pass (the llm-rubric) then
+        # judges only the subjective residue. Fence-strip mirrors ticket-triage.ts's parse.
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const ENUM = ['critical','high','normal','low'];
+          if (!ENUM.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency outside the closed enum -> ' + JSON.stringify(p.urgency) };
+          const ALLOWED = ['critical'];
+          if (!ALLOWED.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency=' + p.urgency + ' violates this case allowed-set ' + JSON.stringify(ALLOWED) + ' (over/under-escalation)' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; urgency in ' + JSON.stringify(ALLOWED) + ')' };
+
+  # (t) CROSS-TENANT DATA EXPOSURE reported — ADDED by T-115. The security-breach critical
+  #     trigger via a DIFFERENT vector than (e)/(l): (e) is account takeover (unfamiliar
+  #     logins); (l) is a phishing REPORT with the account unaffected (correctly NOT critical).
+  #     This is the product itself leaking one customer's data to another — a confirmed
+  #     data/privacy breach and, on a multi-tenant platform, the highest-stakes failure (a
+  #     cross-tenant leak violates CLAUDE.md's tenant-isolation non-negotiable). Untested.
+  - description: "Customer reports seeing another tenant's data (cross-tenant leak) classifies as urgency=critical (security-breach axis)"
+    vars:
+      ticket_title: "I can see another company's data in my account"
+      ticket_body: "When I log into my account I am now seeing records, invoices, and customer details that clearly belong to a different company — none of this data is ours. If I can see their data, presumably they (or others) can see ours. This looks like a serious data breach on your side. Please look into this immediately."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to exactly "critical": a customer seeing another company's data through the product is a confirmed data-exposure / security breach — one of the prompt's three defining critical triggers — and on a multi-tenant system is a severe cross-tenant leak. It is NOT merely a display bug to be triaged as normal/high.
+          - Use a security/data-breach/privacy category routed to a security/engineering/incident team (NOT billing or a generic queue).
+          - Give a one-sentence reasoning referencing the data exposure / breach.
+          Fail if urgency is "high", "normal", or "low" (under-escalation of a data-exposure breach), if the output is not valid JSON, or if any enum value outside {critical,high,normal,low} is used.
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-115. Objective contract split
+        # OUT of the rubric into a deterministic, grader-independent check — valid single
+        # JSON object, urgency in the closed enum, and THIS case's own over/under-
+        # escalation allowed-set — so an over/under-escalation can NEVER be honor-pass'd
+        # through on a grader's erroneous pass:true. Honor-pass (the llm-rubric) then
+        # judges only the subjective residue. Fence-strip mirrors ticket-triage.ts's parse.
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const ENUM = ['critical','high','normal','low'];
+          if (!ENUM.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency outside the closed enum -> ' + JSON.stringify(p.urgency) };
+          const ALLOWED = ['critical'];
+          if (!ALLOWED.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency=' + p.urgency + ' violates this case allowed-set ' + JSON.stringify(ALLOWED) + ' (over/under-escalation)' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; urgency in ' + JSON.stringify(ALLOWED) + ')' };

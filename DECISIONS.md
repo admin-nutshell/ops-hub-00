@@ -8009,3 +8009,89 @@ case ever needs it.
    merged, held per user decision) ; live-eval-gate run confirming the
    lucky `critical` draw on the merge-time run
 ```
+
+### 2026-07-14 — T-115 (Sprint 18 anchor): product evals grown additively toward ADR-0007 §5.4's ≥20/eval target — triage 17→20, respond 13→16, kb-learn 14→18 (Evals Lead)
+
+```
+2026-07-14 [Evals Lead] T-115: continued the eval-depth arc (T-99 N=4→9; T-103 N=9→15/13/14)
+  a third pass. Grew the three PRODUCT evals ADDITIVELY: ticket-triage 17→20 (+3),
+  ticket-respond 13→16 (+3), kb-learn 14→18 (+4) — +10 net, 44→54 baselined. Triage now HITS
+  §5.4's ≥20 target; respond/kb make meaningful, genuinely-distinct progress (arc continues, as
+  T-99 flagged ≥20 is multi-sprint). ADDITIVE-ONLY: NO existing case's ticket text, rubric,
+  ALLOWED set, or any other content was touched; diff scoped to evals/** + the two deterministic
+  test-count guards. Each triage case carries the ADR-0009 C6 pair (llm-rubric AND a deterministic
+  javascript companion with a valid-JSON + closed-enum + per-case escalation ALLOWED check);
+  respond stays rubric-only by design (free-text output, no JSON/enum contract — the file's own
+  T-109 note); each kb case carries the identical objective JSON-contract javascript block. Every
+  new case is a REGRESSION-LOCK on current behaviour (gate never softened to pass), not an
+  aspiration.
+2026-07-14 [Evals Lead] New cases + the specific gap each closes (all grounded in the matching
+  src/inngest/*.ts system prompt, none a near-duplicate of an existing case):
+    ticket-triage (+3):
+    - (r) DEGENERATE / near-empty 'test' ticket → CONTRACT ROBUSTNESS: the closed-enum JSON must
+      survive a content-free body (not error/empty/prose). Distinct from (g), which tests the
+      uncertain→normal SEVERITY default on a wordy-but-vague message; (r)'s point is contract
+      survival on degenerate input. ALLOWED={normal,low}.
+    - (s) CASUAL/understated tone over a genuine total outage → urgency tracks IMPACT not tone.
+      The MIRROR of (j) (loud tone must not INFLATE a trivial issue); (s) guards that a downplaying
+      "no rush" tone must not DEFLATE a real outage. ALLOWED={critical}.
+    - (t) CROSS-TENANT DATA EXPOSURE (customer sees another tenant's records) → the security-breach
+      critical trigger via a NEW vector: not account-takeover (e) and not an impact-free phishing
+      REPORT (l), but the product itself leaking one tenant's data to another — the highest-stakes
+      multi-tenant failure (CLAUDE.md tenant-isolation non-negotiable). ALLOWED={critical}.
+    ticket-respond (+3):
+    - (n) OUT-OF-SCOPE capability request (write/deploy/maintain my custom integration) → honest
+      boundary, no fabricated capability/commitment. Distinct from (m) compliance-doc and (g)
+      timeline. Grounded in "do NOT invent commitments".
+    - (o) PRAISE-ONLY / no-issue ticket → gracious, concise (low-tone), invents no problem/fix/
+      commitment. A common intake type every existing case (all carry a problem) missed.
+    - (p) LEGAL/LIABILITY threat → serious+empathetic but NO admission of fault/liability and no
+      legal conclusion. Distinct axis from (j)'s commercial-threat-don't-capitulate-on-refund; the
+      failure mode here is conceding fault/liability the agent cannot verify.
+    kb-learn (+4):
+    - (o) NON-ENGLISH (French) source → strict-JSON contract + redaction + faithfulness survive
+      non-English input (no existing kb case is non-English). Output language unjudged; contract +
+      no-PII + faithful pattern are the point.
+    - (p) SYMPTOM vs ROOT CAUSE: the customer's self-diagnosis ("your servers are down") was WRONG;
+      support found the real cause (expired API key). Article must record the ACTUAL cause, not
+      parrot the wrong hypothesis (a distinct faithfulness axis vs (a)/(i) straightforward and
+      (c)/(h)/(n) no-cause).
+    - (q) HIGH-SENSITIVITY identifier redaction: a payment-card number + a government ID number — a
+      fourth cluster beyond (b) name/email/acct/ticket#/date, (e) phone/URL/IP, (k) order#/address/
+      staff-name. PCI/PIPEDA-critical, untested.
+    - (r) USER-EDUCATION resolution (no defect): the customer just hadn't found an EXISTING feature;
+      the article must frame it as guidance, NOT a bug/fix. Distinct from (a)/(i) (real fix), (l)
+      (workaround for an unknown bug), (c)/(h)/(n) (unresolved). Miscasting user-education as a
+      defect-and-fix poisons future retrieval.
+2026-07-14 [Evals Lead] Local (offline) verification done — no live API access in this environment,
+  same posture as every precedent build without it (T-99/T-103/T-105): (1) all three YAML files
+  parse (PyYAML safe_load); structural counts triage 20 tests / 20 llm-rubric / 20 javascript,
+  respond 16/16/0 (rubric-only by design), kb 18/18/18. (2) node scripts/eval/test-triage-
+  deterministic.mjs and test-kb-deterministic.mjs BOTH pass — the triage script generically
+  exercises every case (incl. the 3 new) on a PASSING sample (allowed urgency → pass) AND FAILING
+  samples (out-of-allowed escalation → hard-fail, out-of-enum 'SEV-0' → fail, malformed → fail);
+  the name-pinned (i)/(q) ALLOWED locks and the (p) index-15 injection checks are unaffected (new
+  cases appended AFTER (q), so no index shifted). (3) Both deterministic scripts' hardcoded case
+  counts bumped in lockstep (triage 17→20, kb 14→18) — the ONLY non-eval-YAML change, required to
+  keep those guards green. (4) Re-ran calibration-guards.compute_band on all three: healthy bands
+  (triage floor=220/ceil=1038, respond 207/983, kb 407/2505) with no false-trip — every case's
+  per-call prompt includes the full system prompt, which sits well above each floor, so the short
+  degenerate (r) does not collapse-trip. LIVE model convergence is NOT claimed here: it is confirmed
+  by CI's live-eval-gate on the PR — the plain gate is baseline-relative (a NEW failing test is
+  non-blocking), so a strict_new workflow_dispatch (the T-99/T-103 pattern) is the only signal that
+  actually runs each [new] case live; run IDs + per-new-case pass/fail to be appended once available.
+2026-07-14 [Evals Lead] Banked observations on EXISTING cases (additive-only discipline — flagged,
+  NOT fixed, per WORK.md's Sprint-18 rule): NONE newly found. No existing case looked flaky/wrong
+  during the read-through. The known, already-banked T-112/T-114 grader-variance carry on the
+  triage BUNDLING case (n) — the stable ~1-in-13 rubric rejection on a genuine total outage — was
+  left entirely untouched and is out of scope; T-115 added no case near that boundary and did not
+  interact with it. PR #462 (T-114 multi-sample mechanism) remains dormant/unmerged, untouched.
+2026-07-14 [Evals Lead] PROCESS NOTE (self-caught, no damage): initial branch + file writes landed
+  in the SHARED main checkout (C:/projects/ops-hub) instead of this task's isolated worktree —
+  the exact Sprint-11 shared-main-tree hazard. Caught immediately by the Edit tool's worktree
+  guard, BEFORE any commit; restored the shared tree to clean main (git restore + switch + branch
+  -D), recreated the branch inside the assigned worktree, and re-applied the appends there. Zero
+  commits and zero pushes touched the shared tree; the worktree-isolation norm held (the guard did
+  its job). Re-affirming the norm: all git-writing work starts in the isolated worktree from the
+  first action, not the first commit.
+```

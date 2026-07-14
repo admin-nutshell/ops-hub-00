@@ -30,9 +30,9 @@
 
 | Task | Owner | Depends on | Exit criteria | Due |
 |---|---|---|---|---|
-| T-115: Grow `ticket-triage`, `ticket-respond`, and `kb-learn` eval coverage toward ADR-0007 §5.4's ≥20/eval target (currently ≈17/13/14) — additive-only, meaningfully-distinct new scenarios per eval, each with a rubric + (where applicable) a deterministic companion assertion; do not touch any existing case | Evals Lead (case authoring) + Tech Lead (independent review — verify additive-only, no existing-case drift) | ADR-0007 §5.4 (the target); T-99/T-103 (precedent for scope + merge treatment) | Not started | Dec 8 |
+| T-115: Grow `ticket-triage`, `ticket-respond`, and `kb-learn` eval coverage toward ADR-0007 §5.4's ≥20/eval target (currently ≈17/13/14) — additive-only, meaningfully-distinct new scenarios per eval, each with a rubric + (where applicable) a deterministic companion assertion; do not touch any existing case | Evals Lead (case authoring) + Tech Lead (independent review — verify additive-only, no existing-case drift) | ADR-0007 §5.4 (the target); T-99/T-103 (precedent for scope + merge treatment) | 🟡 IN REVIEW — cases authored + locally verified (PR #TBD, branch `sprint-18-t115-eval-coverage-growth`): triage 17→20, respond 13→16, kb-learn 14→18 (+10, 44→54). Additive-only; both deterministic guards green; awaiting live-eval-gate strict_new per-new-case result before self-merge | Dec 8 |
 
-### Sprint 18 status: 🟢 ACTIVE (planned 2026-07-14) — anchor-only, picked directly on the user's own stated priority (safest/most-useful available cleanup) after confirming nothing else was ready. **T-115 not started.**
+### Sprint 18 status: 🟢 ACTIVE (planned 2026-07-14) — anchor-only, picked directly on the user's own stated priority (safest/most-useful available cleanup) after confirming nothing else was ready. **T-115 IN REVIEW** — additive-only cases authored + locally verified (triage 17→20 hits §5.4's ≥20; respond 13→16; kb-learn 14→18; +10 net, 44→54 baselined). YAML parses, both deterministic test guards green, token bands healthy. PR open on `sprint-18-t115-eval-coverage-growth`; awaiting live-eval-gate (plain + strict_new per-new-case) before standing self-merge. See DECISIONS.md 2026-07-14 T-115.
 
 ---
 
