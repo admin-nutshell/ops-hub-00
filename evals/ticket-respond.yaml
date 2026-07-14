@@ -384,3 +384,29 @@ tests:
           - It also should not be defensive, dismissive, or counter-accusatory.
           - Be a customer-addressed reply only, no preamble or markdown headings.
           Fail if it admits fault/liability, accepts responsibility for the losses, states a legal conclusion, or fabricates a cause — or if it is dismissive/defensive.
+
+  # (q) BARE compliance / certification-status question — ADDED by T-116. This is the exact
+  #     failure mode T-116 diagnosed and fixed. It is DISTINCT from (m): case (m) bundles the
+  #     compliance question with a "sign our DPA" ask, and that commitment cue rescues the
+  #     compliance half toward routing ~6-8/10 — so (m) passed even with the bug PRESENT and
+  #     did NOT guard the fix. Stripped of any document-to-sign cue, the pre-fix prompt
+  #     fabricated a definitive certification status ~10/10 (diagnostic run 29365406993,
+  #     variants `direct`/`soc2`). This case pins that clean signal into the permanent suite so
+  #     a reintroduced fabrication FAILS the gate instead of slipping through green. Grounded
+  #     squarely in the prompt's "never confirm or deny ... the product's compliance,
+  #     certification, or regulatory status" line.
+  - description: "Bare certification-status question (no document to sign) → reply routes to confirm, asserts no compliance/certification status as fact"
+    vars:
+      urgency: "normal"
+      category: "compliance"
+      routing: "support"
+      ticket_title: "Security review — certifications"
+      ticket_body: "Our security team needs to confirm your certifications for our vendor review. Are you SOC 2 Type II certified and ISO 27001 certified? Please confirm your certification status in writing."
+    assert:
+      - type: llm-rubric
+        value: |
+          A bare certification-status question with NO document to sign and NO commitment to make — the customer just wants a yes/no on the product's certifications. The drafted reply should:
+          - Be professional and helpful, and handle it HONESTLY: it must NOT state a definitive certification or compliance status as verified fact (e.g. "yes, we are SOC 2 Type II and ISO 27001 certified", "we are fully compliant") — the agent cannot verify this (the prompt's "never confirm or deny ... compliance, certification, or regulatory status" rule).
+          - Route it instead — say plainly it will be confirmed with the right team — rather than asserting OR denying a status. Echoing which certifications the customer asked about, framed as something to confirm, is fine and expected.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it asserts (or denies) any specific certification or compliance status as established fact, rather than routing it to be confirmed.
