@@ -4,7 +4,39 @@
 
 ---
 
-## Sprint 17 — 🟢 ACTIVE (planned 2026-07-14) — Eval-Gate Optional Multi-Sample Escalation (build) → Diagnose Bundling Case → Resume T-112
+## Sprint 18 — 🟢 ACTIVE (planned 2026-07-14) — Eval Coverage Growth Toward ADR-0007 §5.4's ≥20/eval Target
+
+**Sprint:** Sprint 18 — Eval Coverage Depth (capability/hardening)
+**Sprint goal:** With no forced fix or urgent carry queued (confirmed with the user directly at Sprint 17's close — nothing else was well-scoped/ready), pick up the long-flagged, repeatedly-deferred **eval-coverage growth** carry: grow each of the three product evals (`ticket-triage`, `ticket-respond`, `kb-learn`) toward ADR-0007 §5.4's **≥20 tests/eval** target (currently N≈17/13/14). This has been explicitly named "opportunistic, additive-only, not a committed task" in every retro since Sprint 11 (T-99 grew N=4→9, T-103 grew N=9→15/13/14) — the user was asked directly what to prioritize with nothing else queued, and chose "the safest, most useful cleanup task." **Additive-only, by design:** every existing case's wording, rubric, and pass criteria stay untouched — this sprint only ADDS new, meaningfully-distinct scenarios per eval (not filler/near-duplicates of existing cases), following the exact precedent T-99/T-103 already set. Because it does not modify the grading mechanism, any existing case's behavior, or a live prompt, it rides the normal `live-eval-gate` and standing self-merge authorization — same treatment as T-99/T-103, NOT the T-109/T-110/T-112/T-114 cat-a class.
+**Sprint window:** November 26 – December 10, 2026 (nominal, 2-week cadence from Sprint 17's Nov 26 end; note actual delivery keeps compressing well ahead of window — Sprints 8–17 all effectively landed same-week as planning).
+**Target milestone:** None declared — capability/hardening, same posture as Sprints 6–17. The **Milestone numbering note** still stands: do NOT label this work M7. Charter-M7 is gated on an exogenous tenant-onboarding event that hasn't happened (FQ-43, DNC deferred indefinitely). Revisit numbering only on a founder decision that reopens tenant onboarding.
+**Feeding retro:** `docs/retros/sprint-17.md` §7 (the standing eval-coverage carry, flagged every sprint since Sprint 11, finally picked up here on the user's own direction after being asked what to prioritize with nothing else forced).
+
+**Standing norms reaffirmed this sprint:**
+- **(Sprint 17)** **Don't record a causal/mechanistic claim as fact before verifying it — do the one-command check first, especially for a claim that conveniently closes a loop.** Applies to any claim about which cases already exist, current N counts, or what a new case's addition does or doesn't affect — verify against the actual `evals/*.yaml` files, not a prior sprint's stated count.
+- **(Sprint 16)** **A prompt-quality review must check for behavioral SHIFT, not just per-case pass/fail.** New cases must be genuinely novel scenarios, not near-duplicates that inflate N without adding real coverage.
+- **(Standing)** **Never soften the gate to pass; drop-don't-weaken.** New cases must be as rigorous as existing ones (both an `llm-rubric` and, where the scenario has an objective escalation/contract dimension, a deterministic companion assertion per the C6/ADR-0009 pattern) — growth for its own sake that adds easy-to-pass filler cases would be a hollow metric, not real hardening.
+- **(Sprint 11 §5.1)** **Concurrent git-writing agent work starts in an ISOLATED WORKTREE from the first commit.**
+
+**Explicitly deferred / flagged (not in scope this sprint — do not start early):**
+- **Any change to existing cases' wording, rubrics, or pass criteria.** This sprint is additive-only; if an existing case looks flaky or wrong while working here, BANK the finding (DECISIONS.md) rather than fix it in-scope — that's its own dedicated task, same discipline as T-110/T-112's own findings were banked forward rather than fixed opportunistically.
+- **T-112's accepted trade-off** (~1-in-13 rare under-escalation risk on total-outage tickets) — a known, accepted risk, not an open problem. Do not attempt to fix via new eval cases.
+- **PR #462 (T-114's multi-sample escalation)** — held, unmerged, dormant. Not part of this sprint.
+- **`main`'s `enforce_admins` branch-protection policy, provider-credential divergence, `LITELLM_URL` Coolify dup-row footgun, T-90 observations O1–O3, per-user session auth, FQ-63/FQ-47 4b/FQ-43** — all unchanged standing carries, founder-gated or not-a-task.
+
+### Sprint 18 tasks
+
+#### Track A — Eval coverage growth (sprint anchor, single-track)
+
+| Task | Owner | Depends on | Exit criteria | Due |
+|---|---|---|---|---|
+| T-115: Grow `ticket-triage`, `ticket-respond`, and `kb-learn` eval coverage toward ADR-0007 §5.4's ≥20/eval target (currently ≈17/13/14) — additive-only, meaningfully-distinct new scenarios per eval, each with a rubric + (where applicable) a deterministic companion assertion; do not touch any existing case | Evals Lead (case authoring) + Tech Lead (independent review — verify additive-only, no existing-case drift) | ADR-0007 §5.4 (the target); T-99/T-103 (precedent for scope + merge treatment) | Not started | Dec 8 |
+
+### Sprint 18 status: 🟢 ACTIVE (planned 2026-07-14) — anchor-only, picked directly on the user's own stated priority (safest/most-useful available cleanup) after confirming nothing else was ready. **T-115 not started.**
+
+---
+
+## Sprint 17 — ✅ COMPLETE (closed 2026-07-14, same day as planning) — Eval-Gate Optional Multi-Sample Escalation (build) → Diagnose Bundling Case → Resume T-112
 
 **Sprint:** Sprint 17 — ADR-0009 Optional Per-Case Multi-Sample Escalation (build) + T-112 Resume (capability/hardening)
 **Sprint goal:** Unblock T-112 (held at Sprint 16 close) by properly diagnosing the eval-gate case that's blocking it, and resume/land T-112 once that's resolved. **(Anchor, single-track — no parallel track scoped this sprint; see note below.)** Sprint 16's closeout contained a factual error, corrected same-day (DECISIONS.md 2026-07-14 "CORRECTION" entry, WORK.md, and the Sprint 16 retro all amended): ADR-0009's *mandatory* grader-robustness mechanism (honor-`pass` + the C6 deterministic escalation split) is NOT missing — it was built in **T-109 (Sprint 14)** and is live on every `live-eval-gate` run today. What blocked T-112 is the "total outage bundled with a trivial typo" triage case, whose grader returned `pass: false, score: 0` on a `high` answer — ADR-0009's Guardrail 2 (never-override-a-fail) correctly refusing to rescue an outright grader disagreement, working exactly as designed, not a gap in it. What IS genuinely un-built is ADR-0009's **optional, per-case multi-sample escalation** — designed and cost-approved in the ADR's own Decision/Consequences sections (bounded to ~$1.50 CAD/month if applied to 2–3 cases), but never implemented as code (confirmed via a repo-wide grep for `multiSample` — zero implementation hits). **T-114** builds that already-approved, already-scoped optional mechanism (rides ADR-0009's existing acceptance — no fresh ADR/independent review needed per the ADR's own text), applies it specifically to the bundling case to determine whether the grader's `pass:false` on a `high` answer is genuine, repeatable grader unreliability (only ONE data point exists so far — the case never graded a `high` answer before T-112's wording first produced one) or an unrepresentative single draw, and — once resolved either way without weakening anything — **T-112 resumes**: either it merges clean (if multi-sampling shows the grader reliably tolerates `high` here), or the specific case gets its own T-110-style dedicated fix (if the grader reliably rejects it), same discipline as every prior prompt/eval diagnosis this project has run.
