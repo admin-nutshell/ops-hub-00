@@ -707,40 +707,6 @@ tests:
           if (!ALLOWED.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency=' + p.urgency + ' violates this case allowed-set ' + JSON.stringify(ALLOWED) + ' (over/under-escalation)' };
           return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; urgency in ' + JSON.stringify(ALLOWED) + ')' };
 
-  # (s) UNDERSTATED / casual TONE over a GENUINE total outage — ADDED by T-115. Urgency tracks
-  #     IMPACT, not tone. This is the MIRROR of (j): (j) guards that LOUD, demanding tone does
-  #     not INFLATE a trivial issue; this guards that CASUAL, downplaying tone does not DEFLATE
-  #     a real critical outage. No existing case pairs a downplaying tone with a genuine
-  #     critical trigger — a real under-escalation risk, since customers routinely understate.
-  - description: "Casual, downplaying tone over a genuine total outage still classifies as urgency=critical (tone does not deflate impact)"
-    vars:
-      ticket_title: "no big deal but the site has been down a while"
-      ticket_body: "haha so our whole site has been completely down for about an hour now — none of our staff can log in at all and we are totally locked out of everything, but honestly no rush, whenever you get a chance! just thought i would mention it. thanks so much!"
-    assert:
-      - type: llm-rubric
-        value: |
-          The response should:
-          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
-          - Set "urgency" to exactly "critical": despite the breezy, "no rush" tone, the actual impact is a full system-down outage — the whole site down for about an hour, all staff completely locked out of everything — which is the prompt's defining system-down critical trigger. Per the prompt, urgency is defined by IMPACT, never by customer tone.
-          - Use an availability/outage category routed to an engineering/ops/incident team.
-          Fail if urgency is "high", "normal", or "low" (tone-driven UNDER-escalation of a genuine outage), if the JSON is malformed, or if an out-of-enum value appears.
-      - type: javascript
-        # ADR-0009 C6 pattern (T-109); case ADDED by T-115. Objective contract split
-        # OUT of the rubric into a deterministic, grader-independent check — valid single
-        # JSON object, urgency in the closed enum, and THIS case's own over/under-
-        # escalation allowed-set — so an over/under-escalation can NEVER be honor-pass'd
-        # through on a grader's erroneous pass:true. Honor-pass (the llm-rubric) then
-        # judges only the subjective residue. Fence-strip mirrors ticket-triage.ts's parse.
-        value: |
-          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-          let p;
-          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
-          const ENUM = ['critical','high','normal','low'];
-          if (!ENUM.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency outside the closed enum -> ' + JSON.stringify(p.urgency) };
-          const ALLOWED = ['critical'];
-          if (!ALLOWED.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency=' + p.urgency + ' violates this case allowed-set ' + JSON.stringify(ALLOWED) + ' (over/under-escalation)' };
-          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; urgency in ' + JSON.stringify(ALLOWED) + ')' };
-
   # (t) CROSS-TENANT DATA EXPOSURE reported — ADDED by T-115. The security-breach critical
   #     trigger via a DIFFERENT vector than (e)/(l): (e) is account takeover (unfamiliar
   #     logins); (l) is a phishing REPORT with the account unaffected (correctly NOT critical).

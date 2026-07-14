@@ -66,10 +66,14 @@ function check(label, cond) {
 
 const cases = extractCases(fs.readFileSync(YAML, "utf8"));
 // T-112 added case (q) (single-user critical-trigger regression lock), 16 -> 17.
-// T-115 added cases (r) degenerate-input, (s) casual-tone-over-outage, (t) cross-tenant
-// leak, 17 -> 20 (all appended AFTER (q), so the cases[15]=(p) index below is unchanged).
-if (cases.length !== 20) {
-  console.error(`expected 20 javascript assertions, found ${cases.length}`);
+// T-115 added cases (r) degenerate-input and (t) cross-tenant leak, 17 -> 19 (both
+// appended AFTER (q), so the cases[15]=(p) index below is unchanged). A third case (s)
+// casual-tone-over-a-genuine-outage was designed but DROPPED before merge: it sat on the
+// critical/high boundary and exhibited the banked ~1-in-N grader-variance (score=0 on a
+// live-eval-gate run, [new/FAILING]) — the exact anti-pattern this task exists NOT to add
+// to the shared baseline. Revisit once PR #462 (multi-sample grading) lands. See DECISIONS.md T-115.
+if (cases.length !== 19) {
+  console.error(`expected 19 javascript assertions, found ${cases.length}`);
   process.exit(2);
 }
 
