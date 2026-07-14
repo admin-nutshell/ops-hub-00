@@ -65,8 +65,9 @@ function check(label, cond) {
 }
 
 const cases = extractCases(fs.readFileSync(YAML, "utf8"));
-if (cases.length !== 16) {
-  console.error(`expected 16 javascript assertions, found ${cases.length}`);
+// T-112 added case (q) (single-user critical-trigger regression lock), 16 -> 17.
+if (cases.length !== 17) {
+  console.error(`expected 17 javascript assertions, found ${cases.length}`);
   process.exit(2);
 }
 

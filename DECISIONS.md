@@ -7241,3 +7241,259 @@ re-verified baseline.
    (post-merge baseline, re-read in full, not sampled) ; branch-protection
    API calls (enforce_admins off->merge->on, verified at each step)
 ```
+
+### 2026-07-13 — T-112: real PROMPT fix for `src/inngest/ticket-triage.ts`'s `high`-vs-`normal` ambiguity T-110 banked (not another fixture edit) — IMPLEMENTED, PR open, awaiting user merge authorization (Evals Lead diagnosis + fix; Tech Lead independent review pending)
+
+```
+2026-07-13 [Evals Lead] T-112 DIAGNOSIS + FIX. Anchor of Sprint 16. Closes the real
+triage-prompt-quality finding T-110 (Sprint 15) deliberately banked, NOT dissolved:
+T-110 fixed the FLAKY EVAL (case (i)) by rewriting the ticket fixture to remove
+ambiguity, explicitly leaving `src/inngest/ticket-triage.ts` untouched because a
+prompt-touching change needed its own full eval-gate + governance treatment. This IS
+that treatment.
+
+THE DIAGNOSIS (own view, formed by reading the prompt literally the way a model
+would parse it, DECISIONS.md 2026-07-13 "T-110" entry re-read first):
+`src/inngest/ticket-triage.ts` lines 104-108 (pre-fix) defined:
+  urgency high: major degradation, multiple users blocked, no workaround
+  urgency normal: limited impact, workaround available
+  urgency low: minor or cosmetic, single user
+Read as a comma-separated bullet, "high" looks like three independent, OR-able
+traits, not an explicit AND of "multiple users blocked" AND "no workaround." A
+ticket that is single-user (pointing to normal/low) but ALSO has no stated
+workaround (one of the three high-bullet traits, present in isolation) sits
+between two definitions that each name only ONE of the ticket's two actual
+conditions — the prompt never says the traits must hold TOGETHER. T-110's own
+evidence (production triage-model classified the old case-(i) ticket urgency=high
+on ~50% of temp=0 runs; an independent grader called a `high` output on that
+exact ticket over-escalation on its own merits, pass:false/0.6/"over-escalation
+for a single user unable to log in") is consistent with the model pattern-
+matching on "no workaround" being PRESENT in the high bullet, without requiring
+"multiple users blocked" to ALSO be true. This is the root cause, not grader
+noise (T-110 already ruled that out) and not something an eval-fixture edit
+alone can fix at the source (T-110's fixture rewrite worked around the
+ambiguity for one ticket; it did not touch the underlying rule the model
+misreads on every other ambiguous ticket that ever arrives).
+
+THE FIX — surgical, ONE bullet changed, nothing else in the classification
+scheme touched (`src/inngest/ticket-triage.ts` line 105; `critical`/`normal`/
+`low` bullets, the JSON output contract, the untrusted-input clause, the
+"If uncertain" fallback, `max_tokens`, temperature, and every other line are
+byte-identical):
+  OLD: "urgency high: major degradation, multiple users blocked, no workaround"
+  NEW: "urgency high: major degradation and multiple users blocked and no
+        workaround — all three required together; a single user, even with no
+        stated workaround, is normal or low, not high (critical triggers above
+        still apply regardless of user count)"
+Three deliberate moves, each targeted at the diagnosed root cause:
+  1. Commas -> explicit "and" between all three high traits, so the bullet reads
+     as a conjunction, not an enumerable OR-list. This is the primary fix.
+  2. An explicit single-user carve-out naming the EXACT ambiguous shape T-110
+     found (single user + no stated workaround) and stating its outcome
+     directly (normal or low, not high) — belt-and-suspenders on top of (1),
+     phrased as the specific case the model was observed getting wrong, not a
+     generic re-statement of the rule.
+  3. An explicit note that the critical triggers (system down / data loss /
+     security breach) are user-count-agnostic and still apply — added because
+     an LLM reading "a single user ... is normal or low, not high" could
+     plausibly over-generalize "single user" into "always low severity" and
+     wrongly pull a single-user CRITICAL ticket down too. This carve-out
+     protects the high/normal boundary only; it does not narrow `critical`.
+     (An advisor pass flagged this exact bleed risk before it shipped — folded
+     in here, not silently dropped; see the new case (q) below, which is the
+     regression lock for it.)
+This is a real prompt fix, not a fixture edit: it changes what the production
+`triage-model` reads for EVERY real customer ticket via `classifyTicket`, not
+just the eval harness's synthetic cases.
+
+LOCKSTEP WITH THE EVAL FILE (load-bearing, not cosmetic — found via an advisor
+pass BEFORE editing, not after): `evals/ticket-triage.yaml`'s own header
+comment ("the system prompt below is copied verbatim from classifyTicket()'s
+system message ... If that prompt changes, update this file in lockstep") is
+not just a style note. Traced the actual live-eval-gate mechanism
+(`.github/workflows/eval-gate-live.yml` STEP 3 -> `scripts/eval/live-run.sh` ->
+`scripts/eval/gen-live-config.py`) and confirmed `gen-live-config.py` pops
+`system` DIRECTLY out of the eval YAML's `providers[].config.system` block
+(`system_prompt = target_config.pop("system", "")`) and delivers THAT text as
+the real `{role:'system'}` message to the target model — it does NOT read
+`ticket-triage.ts` at all. So editing only `ticket-triage.ts` would have left
+the live-eval-gate silently testing the OLD prompt forever: green, but proving
+nothing about this change, and the production prompt would ship never having
+been exercised by the gate — precisely the silent-regression hole this role
+exists to close. Updated `evals/ticket-triage.yaml`'s `system:` block with the
+IDENTICAL new "urgency high" line (verified byte-for-byte identical modulo
+CRLF line-ending artifacts — `node -e` string-extraction diff, both files
+confirmed to use CRLF consistently, not a real content difference). Also ran
+`scripts/eval/gen-live-config.py` locally against the edited YAML (no network
+call, config-generation only) and read the generated
+`ticket-triage-prompt.mjs`: the new wording is embedded verbatim in the
+`SYSTEM` constant that would actually be sent to the target model — structural
+proof the sync works, not just a claim.
+
+CASE-BY-CASE REASONING AGAINST THE FULL EXISTING SUITE (17 cases post this
+task's own additive change; read every rubric + ALLOWED-set BEFORE editing,
+per the task's own instruction) — did the wording change plausibly shift any
+existing case's outcome?
+  (a) Total outage, all users, system-down critical trigger -> critical.
+      UNAFFECTED: matches `critical`, the high bullet is never reached.
+  (b) Major degradation, 40 staff blocked, no workaround -> high. STILL high
+      under the new AND-conjunction: "multiple users blocked" (40 staff) AND
+      "no workaround" both hold. This is the case that PROVES the rewording
+      didn't over-correct into never allowing high — a real multi-user
+      no-workaround ticket must still map to high, and it does.
+  (c) Single-customer billing, workaround available -> normal. UNAFFECTED:
+      matches `normal` directly ("workaround available"); never reaches the
+      high bullet's conjunction.
+  (d) Minor cosmetic, single user -> low. UNAFFECTED: matches `low` directly.
+  (e) Security breach (unauthorized admin-account access) -> critical.
+      UNAFFECTED by the high-bullet edit; reinforced by the new explicit note
+      that critical triggers apply "regardless of user count" if the account
+      in question were read as single-user.
+  (f) Irrecoverable data loss ("our team") -> critical. UNAFFECTED, same as
+      (e) — the critical trigger is independent of user count, now stated
+      explicitly rather than left implicit.
+  (g) Vague/uncertain, no clear signal -> normal (uncertain-default fallback).
+      UNAFFECTED: never reaches the high bullet; governed by the untouched
+      "If uncertain" line.
+  (h) Team-wide inconvenience WITH a workaround -> normal, not high. STILL
+      normal: "no workaround" is false (a workaround exists), so the new
+      conjunction ("...AND no workaround") is not satisfied regardless of user
+      count — if anything the explicit AND makes this boundary MORE robust,
+      since a model could no longer credit a lone "multiple users blocked"
+      trait toward high while a workaround is present.
+  (i) Non-English (Spanish) ticket, single user, active + unused workarounds,
+      self-declared not urgent -> normal/low. THIS IS THE TARGET CASE: T-110's
+      fixture rewrite already made this ticket textbook `normal` ("limited
+      impact, workaround available"); the new high-bullet wording makes the
+      single-user, no-need-for-high reading MORE explicit and reinforces
+      convergence — it does not need to shift, it is expected to converge more
+      reliably. Case (i)'s own C6 deterministic ALLOWED=['normal','low'] is
+      UNCHANGED (verified byte-identical in the diff, drop-don't-weaken).
+  (j) Loud/demanding tone over a cosmetic issue -> normal/low, tone-independent.
+      UNAFFECTED: single-user cosmetic issue, no workaround-availability
+      ambiguity in play; governed by impact, not the high bullet's wording.
+  (k) SEV-0/P1 label, checkout outage blocking ALL customers, no workaround ->
+      critical or high (ALLOWED=['critical','high']). STILL satisfies the new
+      conjunction: multiple users (all customers) blocked AND no workaround
+      both hold, so `high` remains a valid read; `critical` remains valid via
+      the system-down-adjacent framing. UNAFFECTED.
+  (l) Phishing REPORT, customer's own account unaffected -> normal/low. Never
+      reaches the high bullet (no degradation, no blocked users); UNAFFECTED.
+  (m) Pure feature request, no impact -> low/normal. UNAFFECTED: no impact at
+      all, never reaches the high bullet.
+  (n) Mixed-severity: 50 staff totally locked out (dominant) + trivial typo ->
+      critical/high. STILL satisfies the new conjunction (50 staff = multiple
+      users blocked, "locked out" = no stated workaround); UNAFFECTED.
+  (o) Non-English (French) total outage, all users -> critical (system-down
+      trigger). UNAFFECTED by the high-bullet edit; this is the critical/
+      outage axis, a different boundary from (i)'s single-user/high boundary
+      (T-110's own finding, re-confirmed here, not re-litigated).
+  (p) Prompt-injection resistance, genuine content = single-user how-to
+      request -> normal/low, injected category=vip/routing=executives must be
+      rejected. UNAFFECTED: the injection-resistance clause and the genuine
+      request's classification are untouched by the high-bullet wording; the
+      genuine ticket has no impact at all, never reaches the high bullet.
+  (q) NEW, ADDED this task (additive-only, no existing case weakened): single,
+      explicitly-singular user, irrecoverable data loss -> critical. Exists
+      because NO existing case pairs an explicitly single user with a critical
+      trigger — (e) and (f) are both ambiguous on user count ("our admin
+      account" / "our team") — so nothing in the prior suite could catch the
+      one real risk this wording change introduces: an LLM over-generalizing
+      "a single user ... is normal or low, not high" into "single user ->
+      always low severity" and wrongly demoting a single-user CRITICAL ticket.
+      This case is the direct, grader-independent (`ALLOWED=['critical']`)
+      regression lock for that risk.
+Net: of 17 cases, ONE (case i) is the direct target of the fix (expected to
+converge MORE reliably, not shift), ONE (case q) is a new case added
+specifically because the fix's own carve-out created a risk no prior case
+covered, and the remaining 15 are unaffected on a careful reading of the new
+wording against each case's stated ticket content and rubric. No case's
+ALLOWED-set or rubric prose was loosened; case (q) only ADDS a fail-condition
+class, drop-don't-weaken intact.
+
+VERIFIED IN THIS ENVIRONMENT:
+- Read every one of evals/ticket-triage.yaml's 16 pre-existing cases' full
+  rubric text and ALLOWED-set BEFORE editing anything (per the task's own
+  instruction), not just case (i) and case (b).
+- YAML parses (python3 yaml.safe_load): 17 tests post-edit (16 + new case q).
+- node scripts/eval/test-triage-deterministic.mjs — ALL 74 checks pass
+  (bumped the script's hardcoded case-count guard 16 -> 17, T-110's own
+  precedent for extending this file rather than leaving it silently stale);
+  case (i)'s T-110 name-pinned regression lock (`ALLOWED` is exactly
+  `['normal','low']`) still passes unchanged; new case (q)'s
+  `ALLOWED=['critical']` correctly passes on `critical` and hard-fails on
+  `high` (the exact demotion risk it exists to trap), grader-independently.
+- python3 scripts/eval/test_apply_honor_pass.py (17) + test_compare_baseline.py
+  (11) + node scripts/eval/test-kb-deterministic.mjs (7) — all green
+  (mechanism unaffected by a prompt+fixture edit; ran to confirm no collateral
+  breakage, same discipline as T-110).
+- scripts/eval/gen-live-config.py run locally (no network / no LiteLLM call —
+  config-generation only) against the edited evals/ticket-triage.yaml: the
+  generated `ticket-triage-prompt.mjs`'s `SYSTEM` constant contains the exact
+  new "urgency high" wording, confirmed by reading the generated file, not by
+  re-deriving the claim from the source YAML alone.
+- node -e string-extraction diff: the "urgency high: ..." line in
+  `src/inngest/ticket-triage.ts` and in `evals/ticket-triage.yaml`'s
+  `system:` block are byte-for-byte identical (the first diff attempt showed a
+  false mismatch from a regex artifact around CRLF line endings — both files
+  use CRLF consistently throughout the repo checkout, re-verified with `file`
+  and a byte-level CRLF check before concluding "identical," not assumed).
+
+COULD NOT VERIFY LOCALLY (no promptfoo / LiteLLM / API keys / network in this
+env — CLAUDE.md non-negotiable #10; no node_modules installed either, so
+`pnpm typecheck`/`pnpm lint` could not run — the diff is a comment addition
+plus a single string-literal edit inside an existing array-of-strings
+`.join("\n")` construct, so it is syntactically low-risk, but this is a
+structural argument, not a ranTypecheck-and-it-passed one): the LIVE
+convergence of the production `triage-model` on the new wording — i.e.
+whether the reworded `high` bullet actually reduces or eliminates the ~50/50
+over-escalation T-110 measured on ambiguous single-user tickets, and whether
+any of the 17 rubric-graded cases' LIVE grader output shifts in a way the
+textual reasoning above did not anticipate. CI's `live-eval-gate` on this PR
+is the real proof — say so plainly, the same posture T-109/T-110 took: this PR
+IS a prompt-surface change (`src/inngest/ticket-triage.ts` AND
+`evals/ticket-triage.yaml` both match the gate's own path filter), so the live
+gate WILL run for real (not neutral-skip) and its baseline-relative compare
+against the last green baseline is the actual quality signal, not this
+diagnosis. Two of the 17 cases (i and q's *equivalent slot*, i.e. i is edited-
+in-substance-neutral-wording and q is brand new) will read as
+baseline-relative "new"/"changed description" entries under
+`compare-baseline.py`'s own `<eval>::<description>` keying — case (i)'s
+`description` string is UNCHANGED by this task (only the system prompt
+surrounding it changed, not its own vars/rubric — T-110 already rewrote (i)'s
+description last sprint), so (i) should compare cleanly against the existing
+baseline entry; case (q) is a genuinely NEW description and will show
+`[new/passing]` or `[new/FAILING]`, non-blocked by `--strict-new` unless the
+workflow dispatch sets it (default `false` per eval-gate-live.yml's own
+input). A RE-BASELINE on `main` is the required first post-merge action, same
+ordering discipline as T-109/T-110 (capture-eval-baseline.yml has no branch
+filter — running it pre-merge on this branch would poison the global baseline
+for every other in-flight PR).
+
+GOVERNANCE GATE — merge-authorization recommendation (own judgment, per the
+task's explicit ask; NOT self-merging regardless): this PR touches BOTH
+`src/inngest/ticket-triage.ts` (the live production triage prompt, run on
+every real customer ticket) AND `evals/ticket-triage.yaml` (a fixture the
+required, merge-blocking `live-eval-gate` reads DIRECTLY, whose landing wants
+a post-merge re-baseline). The second fact alone puts this in T-110's own
+named category — "a fixture the required live-eval-gate check reads directly
+... categorically the SAME shared-safety-net class as T-109" (DECISIONS.md
+2026-07-13 "T-110" entry) — which WORK.md's Sprint 16 scoping had flagged only
+as a "current read" (edits the live prompt, not the eval-gate MECHANISM, so
+maybe not cat-a) without yet accounting for the fact that this task ALSO edits
+the fixture the gate reads. Given that, my recommendation is: treat this as
+needing the user's OWN direct, in-the-moment merge authorization — same
+posture as T-109/T-110 — not because of the `ticket-triage.ts` edit alone
+(which on its own, touching only a live prompt and not the gate mechanism,
+would plausibly NOT need cat-a treatment), but because this PR's
+`evals/ticket-triage.yaml` diff is itself the direct-fixture-edit class T-110
+already established requires it. Standing self-merge does not cover it; a
+coordinator relay does not satisfy it. PR opened, held for the user's own
+go-ahead — NOT merged in this task, per the task's explicit instruction
+regardless of this recommendation.
+-> src/inngest/ticket-triage.ts lines 74-93, 105 (comment + `urgency high`
+   bullet) ; evals/ticket-triage.yaml (system: block line synced; new case (q)
+   appended, ~45 lines) ; scripts/eval/test-triage-deterministic.mjs (case-
+   count guard 16->17) ; WORK.md Sprint 16 T-112 row (updated) ; DECISIONS.md
+   2026-07-13 "T-110" entry (the banked finding this task closes)
+```
