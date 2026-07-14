@@ -55,6 +55,19 @@ import yaml
 
 BUNDLING_DESC = "Ticket bundling a total outage with a trivial typo classifies on the dominant (critical) issue"
 
+# Representative `high` answer for this ticket, used for Instrument B ONLY IF Instrument A
+# draws no natural `high` (temp=0 target-output variance can leave a run all-`critical`).
+# It mirrors the shape the model actually emits on this ticket (category/routing/reasoning
+# seen in the live `critical` draws) but with urgency=high, so the grader is asked exactly
+# the question in dispute: does it stably reject a `high` answer the rubric calls tolerable?
+# Provenance is CONSTRUCTED and is labelled as such in the output — B measures GRADER
+# behaviour on a fixed high output; the grader cannot tell (nor should it care) who wrote it.
+FALLBACK_HIGH_OUTPUT = (
+    '{"urgency":"high","category":"login issue","routing":"IT support",'
+    '"reasoning":"All 50 staff are locked out of the system by a login failure — a major '
+    'degradation blocking multiple users with no workaround; the footer typo is trivial."}'
+)
+
 
 def sh(cmd, env=None):
     print(f"\n$ {' '.join(cmd)}", flush=True)
@@ -189,9 +202,12 @@ def main():
     # ---- INSTRUMENT B: judge-only re-grade of ONE frozen high output, N_B draws ----
     print(f"\n########## INSTRUMENT B -- judge-only x{args.nb} on ONE frozen `high` output ##########")
     if frozen_high is None:
-        print("  SKIPPED: Instrument A produced no `high` draw to freeze. "
-              "Report A's distribution; B cannot isolate grader variance without a real high output.")
-    else:
+        frozen_high = FALLBACK_HIGH_OUTPUT
+        print("  NOTE: Instrument A drew no natural `high` (all-critical target run). Using a "
+              "CONSTRUCTED representative `high` output so the grader-stability question is still "
+              "answered. B measures the GRADER's behaviour on a fixed `high` answer; provenance "
+              "does not change what the grader does.")
+    if True:
         print(f"  frozen high output being graded {args.nb}x:\n    {frozen_high!r}")
         b_case = {
             "description": BUNDLING_DESC,

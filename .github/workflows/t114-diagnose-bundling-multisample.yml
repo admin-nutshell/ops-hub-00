@@ -132,7 +132,7 @@ jobs:
             --judge-alias "$JUDGE_ALIAS" \
             --litellm-base "$LITELLM_BASE" \
             --out-dir "$OUT_DIR" \
-            --na "${{ github.event.inputs.na || '8' }}" \
+            --na "${{ github.event.inputs.na || '24' }}" \
             --nb "${{ github.event.inputs.nb || '12' }}" 2>&1 | tee "$OUT_DIR/diagnosis.log"
 
       - name: Upload diagnostic artifacts (raw draws — the deliverable)
