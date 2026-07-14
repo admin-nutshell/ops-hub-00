@@ -7951,3 +7951,61 @@ the prompt itself, which is the user's to make.
    verification) ; WORK.md Sprint 17 T-114/T-112-resume rows (to be
    corrected) ; docs/retros/sprint-16.md (correction addendum extended)
 ```
+
+### 2026-07-14 — T-112 MERGED — user's own direct authorization, plain product trade-off decision, held one sprint late by design (Coordinator)
+
+```
+2026-07-14 [Coordinator] T-112 (PR #456) merged. Full sequence, in order:
+
+1. Presented the user two plain-language decisions (AskUserQuestion,
+   non-technical framing per user_not_technical): (a) hold or merge PR
+   #462 (the T-114 multi-sample mechanism, currently unused/dormant) --
+   user chose HOLD, not merged; (b) T-112's actual product trade-off
+   (fixes a real, constant single-user over-escalation problem; accepts a
+   rare, ~1-in-13 under-escalation risk on total-outage tickets, per
+   T-114's diagnosis) -- first phrasing ("1 in 13", "under-flag") drew
+   "That so technical!" -- re-asked with a concrete story instead of a
+   number; user chose SHIP IT.
+2. PR #456's `live-eval-gate` was still red (the bundling case) at the
+   product-decision point. Per standing norm, asked SEPARATELY and
+   EXPLICITLY for the override mechanism itself (naming
+   "enforce_admins"/admin-override directly in the question, not folded
+   into the product-decision question) -- user authorized the override.
+3. Toggled `enforce_admins` off, attempted `gh pr merge --squash --admin`
+   -> hit a REAL merge conflict (main had moved on with this session's own
+   docs commits) -- toggled `enforce_admins` back ON immediately rather
+   than force past a conflict (standing rule: --admin is for bypassing an
+   honest-red check, never a conflict).
+4. Resolved the conflict by hand in the T-112 worktree (`git merge
+   origin/main`, WORK.md conflicts resolved by keeping the corrected/newer
+   text, DECISIONS.md auto-merged clean), re-ran
+   `test-triage-deterministic.mjs` locally post-merge (77/77 including
+   case (i) and case (q) name-pinned regressions) before pushing.
+5. Re-checked CI on the updated PR: `live-eval-gate` PASSED this run --
+   the bundling case happened to draw `critical` (the modal, expected
+   answer) rather than `high` this time. **This is NOT evidence the
+   underlying rare-misread risk is resolved** -- it is exactly the kind of
+   lucky draw this project has repeatedly warned against over-reading (the
+   T-109/T-110 precedent). The user's ship-it decision was made WITH full
+   knowledge of the ~1-in-13 risk, independent of any one CI run's luck --
+   this green did not change that decision or retroactively validate it,
+   it just meant no override was actually needed for this specific merge
+   (plain `gh pr merge --squash --delete-branch`, no `--admin`, no
+   branch-protection toggle required this time).
+6. Confirmed `enforce_admins` still ON post-merge. Confirmed PR #456
+   `state=MERGED`. Cleaned up the local worktree/branch (benign
+   worktree-lock warning on branch deletion, same non-issue seen on prior
+   merges this session -- merge itself unaffected).
+
+DISPOSITION: T-112 ships as a deliberate, informed product trade-off, not
+a resolved bug -- the ~1-in-13 rare total-outage-under-escalation risk is
+real and known, accepted by the user's own explicit choice, not engineered
+away. T-114's multi-sample mechanism (PR #462) remains unmerged/dormant
+per the user's separate choice, available if a genuine near-threshold
+case ever needs it.
+
+-> PR #456 (MERGED, commit range ending 37dd586) ; WORK.md Sprint 16 T-112
+   row + status line (updated to reflect merge) ; PR #462 (still open, NOT
+   merged, held per user decision) ; live-eval-gate run confirming the
+   lucky `critical` draw on the merge-time run
+```
