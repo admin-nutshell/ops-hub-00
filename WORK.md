@@ -22,7 +22,7 @@
 
 **Explicitly deferred / flagged (not in scope this sprint — do not start early):**
 - **Broader triage-prompt escalation-language audit beyond the single-user/no-workaround ambiguity class.** T-112 is scoped to the ONE concrete finding T-110 banked; do not generalize into a full prompt rewrite without new empirical evidence of other ambiguous boundaries.
-- **Eval-coverage growth toward ADR-0007 §5.4's ≥20/eval** — currently N≈16/13/14. Still explicitly out of scope; grow opportunistically, additive-only; not a committed task.
+- **Eval-coverage growth toward ADR-0007 §5.4's ≥20/eval** — was N≈16/13/14; now N≈17/13/14 (T-112 added triage case (q), additive-only, as a direct regression lock for its own prompt change — not a general coverage-growth push). Still explicitly out of scope as a committed task; grow opportunistically only.
 - **Root-cause-of-the-root-cause of provider-CREDENTIAL divergence** (FQ-69's 401 master-key-rejection class). **Flagged carry, still NOT committed; trigger has still NOT fired.**
 - **`main`'s `enforce_admins` branch-protection policy itself** — documented as a mechanical fact this sprint (Sprint 15 retro §7); whether to ever change that policy is a founder-level question, not a task, and nothing is currently broken by it. Not scheduled.
 - **`LITELLM_URL` Coolify duplicate-row footgun** — standing Coolify quirk; not a task.

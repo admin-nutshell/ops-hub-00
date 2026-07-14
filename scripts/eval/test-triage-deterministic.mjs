@@ -152,6 +152,24 @@ if (spanish) {
   );
 }
 
+// T-112 NAME-PINNED REGRESSION LOCK for case (q) ("Single user's irrecoverable data
+// loss"), same pattern and same reason as T-110's lock on case (i) above: the generic
+// loop only proves "an urgency outside THIS case's own declared set fails" — it would
+// silently accept a FUTURE widening of case (q) to include 'high' (e.g. if a future edit
+// tried to make the single-user carve-out apply to critical tickets too). Case (q) exists
+// specifically to trap the single-user carve-out bleeding into `critical` demotion; pin
+// the exact set by NAME so any future edit that loosens THIS case's gate trips this test.
+const dataLoss = cases.find((c) => /Single user's irrecoverable data loss/.test(c.desc));
+check("case (q) is present and name-matched", !!dataLoss);
+if (dataLoss) {
+  const qm = dataLoss.js.match(/const ALLOWED = (\[[^\]]*\]);/);
+  const qAllowed = qm ? JSON.parse(qm[1].replace(/'/g, '"')) : null;
+  check(
+    "case (q) ALLOWED is exactly ['critical'] (single-user carve-out cannot demote a critical trigger)",
+    JSON.stringify(qAllowed) === JSON.stringify(["critical"])
+  );
+}
+
 console.log(
   failures === 0 ? "\nALL DETERMINISTIC-ASSERTION CHECKS PASSED" : `\n${failures} FAILURE(S)`
 );

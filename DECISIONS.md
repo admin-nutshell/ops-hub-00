@@ -7306,6 +7306,16 @@ This is a real prompt fix, not a fixture edit: it changes what the production
 `triage-model` reads for EVERY real customer ticket via `classifyTicket`, not
 just the eval harness's synthetic cases.
 
+RESIDUAL, NAMED RATHER THAN RE-ENGINEERED (small, accepted): the carve-out
+says a single-user, no-workaround ticket is "normal or low," but `normal` is
+itself defined as "workaround available" — so a non-cosmetic single-user
+ticket with genuinely NO workaround fits neither `normal` nor `low` cleanly
+by their own literal definitions. This is not a new problem this fix
+introduces; it falls to the untouched "If uncertain: urgency=normal" fallback,
+the same safety net the suite already relies on for case (g). Acceptable as
+the existing fallback design, not re-engineered here — flagged so it is not
+mistaken for an oversight.
+
 LOCKSTEP WITH THE EVAL FILE (load-bearing, not cosmetic — found via an advisor
 pass BEFORE editing, not after): `evals/ticket-triage.yaml`'s own header
 comment ("the system prompt below is copied verbatim from classifyTicket()'s
@@ -7451,24 +7461,38 @@ over-escalation T-110 measured on ambiguous single-user tickets, and whether
 any of the 17 rubric-graded cases' LIVE grader output shifts in a way the
 textual reasoning above did not anticipate. CI's `live-eval-gate` on this PR
 is the real proof — say so plainly, the same posture T-109/T-110 took: this PR
-IS a prompt-surface change (`src/inngest/ticket-triage.ts` AND
-`evals/ticket-triage.yaml` both match the gate's own path filter), so the live
-gate WILL run for real (not neutral-skip) and its baseline-relative compare
-against the last green baseline is the actual quality signal, not this
-diagnosis. Two of the 17 cases (i and q's *equivalent slot*, i.e. i is edited-
-in-substance-neutral-wording and q is brand new) will read as
-baseline-relative "new"/"changed description" entries under
-`compare-baseline.py`'s own `<eval>::<description>` keying — case (i)'s
-`description` string is UNCHANGED by this task (only the system prompt
-surrounding it changed, not its own vars/rubric — T-110 already rewrote (i)'s
-description last sprint), so (i) should compare cleanly against the existing
-baseline entry; case (q) is a genuinely NEW description and will show
-`[new/passing]` or `[new/FAILING]`, non-blocked by `--strict-new` unless the
-workflow dispatch sets it (default `false` per eval-gate-live.yml's own
-input). A RE-BASELINE on `main` is the required first post-merge action, same
-ordering discipline as T-109/T-110 (capture-eval-baseline.yml has no branch
-filter — running it pre-merge on this branch would poison the global baseline
-for every other in-flight PR).
+touches a prompt surface (`src/inngest/ticket-triage.ts` AND
+`evals/ticket-triage.yaml` both match the gate's own path filter), so the
+live gate is ELIGIBLE to run for real (not the "no prompt surface touched"
+neutral-skip). IMPORTANT CAVEAT the reviewer should know, distinct from that:
+the gate has a SEPARATE neutral-skip path if its judge alias (`fallback-model`)
+is unreachable (the FQ-70 detector, STEP 2 judge preflight) — Sprint 15's
+post-merge re-baseline (run 29290482377) produced real grader scores, so the
+judge is very likely healthy, but if this PR's gate run instead shows a
+judge-unavailable neutral-skip, that is "did not evaluate," NOT "passed" —
+do not read that shape of green as quality confirmation.
+
+Unlike T-110 (which changed a test's `description` — forcing a mechanical
+`[REGRESSION: DROPPED]` on the old key and an EXPECTED red requiring an admin
+override, independent of whether the fix actually worked), this PR keeps
+every one of cases (a)-(p)'s `description` strings UNCHANGED (case (i)'s
+description was already rewritten by T-110 last sprint; not touched again
+here) and only ADDS case (q), a genuinely new description. Under
+`compare-baseline.py`'s `<eval>::<description>` keying, that means: NO
+forced-red DROPPED key on this PR; cases (a)-(p) compare directly against
+their existing baseline entries; case (q) shows `[new/passing]` or
+`[new/FAILING]`, non-blocking either way (`--strict-new` defaults `false` per
+eval-gate-live.yml's own input). CONSEQUENCE, stated plainly because it
+changes how a red result on THIS PR should be read: a RED live-eval-gate here
+would be a GENUINE regression signal (the reworded `high` bullet shifted some
+existing case's live output in a way the case-by-case textual reasoning above
+did not anticipate) — not a re-baseline artifact to override past, the way
+T-110's red was. If this PR goes red, the right response is to re-diagnose
+the wording, not to treat it as an expected mechanical red. A RE-BASELINE on
+`main` is still the required first post-merge action regardless of color
+(same ordering discipline as T-109/T-110 — capture-eval-baseline.yml has no
+branch filter, so running it pre-merge on this branch would poison the global
+baseline for every other in-flight PR).
 
 GOVERNANCE GATE — merge-authorization recommendation (own judgment, per the
 task's explicit ask; NOT self-merging regardless): this PR touches BOTH
