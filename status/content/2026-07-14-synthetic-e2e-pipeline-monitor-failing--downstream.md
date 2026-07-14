@@ -1,7 +1,8 @@
 ---
 Title: "Synthetic E2E pipeline monitor failing — downstream chain broken (T-98)"
 date: 2026-07-14T05:23:27Z
-resolved: false
+resolved: true
+resolvedWhen: 2026-07-14T05:24:00Z
 severity: disrupted
 affected:
   - Ops Hub Production
