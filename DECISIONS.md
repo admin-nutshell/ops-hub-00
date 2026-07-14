@@ -7530,3 +7530,110 @@ was always "critical" until T-112 -- is not enough evidence either way).
    truth, "T-109 build of ADR-0009" in its own docstring) ; grep of
    scripts/eval/ + evals/*.yaml for multiSample (zero implementation hits)
 ```
+
+### 2026-07-14 — T-114: built ADR-0009's optional multi-sample escalation; diagnosis shows the bundling case is a STABLE grader rejection, not variance -- reinforces T-112's hold, does not clear it (Coordinator, reviewing the Evals Lead's build)
+
+```
+2026-07-14 [Coordinator] T-114 (Sprint 17 anchor) built the optional
+per-case multi-sample grading escalation ADR-0009 designed and cost-
+approved but never coded (Decision/Option 1; ~$1.50 CAD/month for 2-3
+cases). Mechanism: `metadata.multiSample: N` on a case -> promptfoo's
+native `options.repeat: N` -> N REAL target+grader draws -> honor-pass
+applied per-draw (floor + never-override-a-fail intact) -> aggregate
+PASSES only on a strict MAJORITY of honored draws (tie -> fail; no early
+stop; no retry-until-pass). Zero cases opted in by default -> globally
+dormant, zero effect on the other ~43 cases -- verified both by hermetic
+unit tests and by the live diagnostic run itself (24 draws -> 1
+aggregated row, correctly). PR #462 (branch
+`sprint-17-t114-multisample-escalation`), all required checks green,
+correctly NOT self-merged (modifies the shared live-eval-gate mechanism,
+Section 5.1 cat-a, same class as T-109).
+
+DIAGNOSIS (the actual point of T-114): applied the mechanism to the
+bundling case ("total outage + trivial typo") to answer the question n=1
+from PR #456 could not -- is the grader's `pass:false` on a `high` answer
+a STABLE, confident rejection (multi-sample must NOT and cannot overturn
+this, per Guardrail 2), or genuine near-threshold VARIANCE (multi-sample's
+actual intended use)? Two instruments, run live against T-112's EXACT
+proposed prompt (read-only, byte-identical extraction confirmed --
+verified independently below):
+
+  Instrument A (target+grader x24, T-112's prompt): 24/24 -> "critical",
+  zero "high" drawn. (A confirmatory N=8 run: also all-critical.)
+
+  Instrument B (judge-only x12, one frozen "high" output pinned so no
+  target call): 12/12 REJECTED -- 11 at score 0.0, one at 0.3. Reason
+  every time: a full-staff outage IS "system down", so critical is
+  required, not "tolerable-but-high". Confident, repeated, value-based --
+  not scatter near a threshold.
+
+VERIFIED INDEPENDENTLY (not taken on the build agent's word): compared
+Instrument A's extracted system-prompt bytes (run 29345122991's own log,
+"Extracted T-112 eval file... urgency bullets:") against T-112 branch
+`t112-triage-high-escalation-clarify`'s actual HEAD (daff148a, the SAME
+commit T-112's own live-eval-gate run 29310172459 graded) -- BYTE-
+IDENTICAL. The 24-vs-2 discrepancy (this run: 0/24 high; PR #456's own
+gate runs: 2/2 high, one per T-112 cut) is therefore NOT a reconstruction
+artifact. It is genuine, rare target-model stochasticity at the model's
+effectively-temp-0 setting -- a milder instance of the exact same
+phenomenon T-110 diagnosed and fixed for case (i) (there ~50/50; here
+roughly 1-in-13 across the observed draws). The model occasionally, not
+reliably, answers "high" instead of "critical" for this exact ticket
+under T-112's wording.
+
+CORRECTION TO THIS SESSION'S OWN PRIOR RECORDS (WORK.md, DECISIONS.md's
+"T-112" entry, docs/retros/sprint-16.md all said "grader variance" --
+that is now shown to be WRONG, not just imprecise, and is corrected here
+rather than silently edited): the grader is NOT flaky or noisy on this
+case. It is stable and confident, and its reasoning is defensible (a
+full-staff lockout plausibly reads as "system down"). The actual,
+combined finding is: (1) the rubric's own "a high read is tolerable"
+hedge and the deterministic ALLOWED=['critical','high'] both promise a
+tolerance the grader has NEVER, across 13 real+constructed observations,
+actually honored -- an eval-authoring inconsistency, real but SEPARATE
+from T-112; and (2) T-112's reworded prompt, even though it usually
+produces "critical", occasionally (rarely) produces "high" -- and when it
+does, the grader (plausibly correctly) rejects it as an under-escalation
+of a genuine total outage.
+
+WHY THE OBVIOUS-LOOKING FIX (tighten ALLOWED to ['critical'] only) DOES
+NOT UNBLOCK T-112: row success = rubric-honor-pass AND deterministic-
+pass. On a "high" draw: TODAY rubric fails, deterministic passes -> row
+fails (score 0.5). TIGHTENED: rubric fails, deterministic ALSO fails ->
+row still fails (score 0.0). A "high" draw fails either way; a "critical"
+draw passes either way. Tightening only changes the FAILING score, not
+the pass/fail outcome -- it does not touch what actually blocks T-112
+(the target's occasional "high" draw itself). Correctly NOT done as a
+"T-112 unblock" for this reason. It may still be a legitimate, SEPARATE
+eval-honesty fix (a contract that "tolerates" an answer its grader has
+never once actually accepted is incoherent) -- but that is its own
+decision, not something that clears the hold, and not self-executed here.
+
+MULTI-SAMPLE WAS CORRECTLY NOT APPLIED to the bundling case as a "fix":
+majority-voting past an occasional "high" draw would green the case on
+the target's modal "critical" answer while MASKING the real, if rare,
+under-escalation risk T-112's wording introduces on a genuine total
+outage -- exactly the force-to-pass drop-don't-weaken forbids. Declined.
+
+DISPOSITION: T-112's hold is REINFORCED by this finding, not cleared.
+The bundling-case redness is not an artifact of grader flakiness -- it is
+the safety net correctly, if rarely, catching a real under-escalation
+tendency in T-112's reworded prompt on genuine total-outage tickets.
+Whether that rare tendency (roughly 1-in-13 in this sample) is an
+acceptable trade against the over-escalation problem T-112 set out to fix
+is a product-quality judgment call, not something to engineer around.
+Presenting this to the user as: (a) whether to merge PR #462 (the
+multi-sample mechanism itself -- currently zero cases opted in, so it
+would land as dormant/unused code) now or hold it until a genuine
+near-threshold-variance case needs it; and (b) the separate,
+non-T-112-unblocking eval-honesty question (tighten the bundling case's
+stated tolerance to match its actual, always-critical-only enforcement).
+T-112 (PR #456) stays held either way pending a product-quality call on
+the prompt itself, which is the user's to make.
+
+-> PR #462 (branch sprint-17-t114-multisample-escalation, NOT merged) ;
+   diagnostic runs 29345122991 (Instrument A, N=24) + 29344783613
+   (confirmatory N=8) ; T-112 branch HEAD daff148a (byte-identical
+   verification) ; WORK.md Sprint 17 T-114/T-112-resume rows (to be
+   corrected) ; docs/retros/sprint-16.md (correction addendum extended)
+```
