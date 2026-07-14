@@ -7241,3 +7241,135 @@ re-verified baseline.
    (post-merge baseline, re-read in full, not sampled) ; branch-protection
    API calls (enforce_admins off->merge->on, verified at each step)
 ```
+
+### 2026-07-14 — T-113: `monitor-e2e-pipeline.yml` now requires 2 consecutive fails before paging the status page; failure path proven with 2 chained dispatches + verified cleanup (Production Manager)
+
+```
+2026-07-14 [Production Manager] T-113 (Sprint 16 Track B, carry flagged
+since Sprint 12 / T-102's own header, never picked up until now) --
+`monitor-e2e-pipeline.yml` used to open a customer-facing status-page
+incident on a SINGLE failed run. FIX (PR #457, branch
+t113-e2e-monitor-fail-threshold, NOT MERGED -- awaiting coordinator review): `FAIL_THRESHOLD: "2"` (env var), gating
+ONLY the status-page incident-open call -- NOT this Actions run's own
+red/green conclusion, and NOT the existing GitHub failed-run-notification
+email backstop, both of which still fire on a SINGLE failure, unchanged.
+Team-facing detection latency is therefore UNTOUCHED by this change; only
+the customer-facing page now waits for a 2nd CONSECUTIVE failure (+6h vs
+the old +0h).
+
+EVIDENCE CHECKED FIRST (not a guess, not a copy of T-102's N=3): `gh run
+list --workflow=monitor-e2e-pipeline.yml --limit 50` at decision time showed
+the workflow's FULL history (12 runs since T-98's 2026-07-12 build). All 7
+`event=schedule` runs are `conclusion=success` -- zero observed self-healing
+noise on the real cron cadence, unlike T-102's monitor (whose N=3 was
+justified REACTIVELY by two OBSERVED self-healing hiccups, 07-10/07-11 per
+sprint-10 retro). The only 3 `conclusion=failure` runs in the file's entire
+history are all `event=workflow_dispatch`, and step-by-step log inspection
+(searching each run's log for the `mode=simulate-failure` notice string)
+confirmed all 3 are deliberate verification dispatches, not real prod
+noise. On that evidence alone "no threshold" would have been defensible --
+NOT chosen, because the no-noise sample is thin (7 runs / ~2 days, not
+symmetric proof nothing will ever blip) and `reset`/`dispatch`/`langfuse`
+are each a single-shot HTTP/DB call with NO internal retry (unlike `poll`,
+which already tolerates transient blips via its own 30x20s loop) -- a
+single transient Inngest 503 or LangFuse rate-limit would, under the OLD
+single-failure-pages behavior, immediately open a customer-facing
+"disrupted" notice for ops-tooling noise, not a broken pipeline. N=2 buys
+that down at effectively zero added cost to TEAM-facing detection (still
+red+emailed at T+0); N=3 (a literal T-102 copy) would double the
+customer-facing page delay to +12h, which T-102's own header and this
+sprint's WORK.md scoping both explicitly named as working against T-98's
+whole purpose.
+
+MECHANISM: reuses T-102's PROVEN `gh run list` lookback exactly (same
+event-name scoping so a manual verification dispatch can never contaminate
+the real schedule-driven streak, and vice versa), with ONE recalibration:
+`STREAK_LOOKBACK_HOURS: "10"` (T-102 used 2h for a 15-minute cadence) --
+sized from first principles for a 6-hourly cadence: above 6h for scheduler-
+jitter headroom, below 12h (two full cycles) so a run from two cycles back
+can never be mistaken for "the immediately-prior run" in the NEED=1
+lookback.
+
+CLEAN-SKIP EXCLUSION -- VERIFIED AGAINST REAL DATA, NOT ASSUMED: checked
+whether T-111's `staging_guard` clean-skip (or the pre-existing
+missing-secrets dormant guard) ever reports `conclusion=failure` in `gh run
+list`. Real evidence: run 29284121758 (T-111's own `mode=simulate-
+staging-running` proof run, Sprint 15) concluded `success` even though
+`staging_guard` tripped and every downstream step was skipped. The
+missing-secrets dormant guard shares the identical shape (guard step always
+exits 0; every downstream step cascades to `skipped` via its own `if:`, no
+step ever exits non-zero) so it reports `success` for the same reason.
+CONCLUSION: T-102's `conclusion == 'failure'` filter already excludes BOTH
+clean-skip classes for free -- no special-casing was added.
+
+IMPLEMENTATION: split the old single "On failure -> open incident" step
+into three -- "Determine consecutive-fail streak" (id: streak, same
+trigger condition + BC1 `failure()` requirement as before), "On failure
+(threshold met) -> open incident + fail" (adds `steps.streak.outputs.
+threshold_met == 'true'`), "On failure (sub-threshold) -> self-clear
+silently, no page" (`!= 'true'`, still `exit 1` to preserve the run's own
+red status). Fail-safe: an unset/empty `threshold_met` (e.g. the streak
+step itself erroring) takes the sub-threshold branch, never the
+incident-open one. The unrelated "On success -> resolve" step is
+byte-for-byte untouched.
+
+HARD EXIT GATE (Sprint 10 Section 5.1 norm -- proven on the FAILURE path
+via real dispatches, not YAML review, same discipline as T-98's BC1 fix and
+T-102's own 4-dispatch proof): 2 chained `mode=simulate-failure` dispatches
+on branch `t113-e2e-monitor-fail-threshold` via `--ref`, each awaited to
+`status=completed` before the next was fired:
+  1. Run 29308352294, conclusion=failure (forced reset-step failure against
+     a guaranteed-nonexistent ticket id, as designed). Streak step found 1
+     prior same-event completed run (29284121758, success) in the 10h
+     window -> threshold_met=false -> "Sub-threshold: only 1/2" -> NO
+     incident opened (confirmed: "On failure (threshold met)" step
+     `conclusion=skipped`). PROVES (a): a single failure self-clears
+     silently.
+  2. Run 29308381789, conclusion=failure. Streak step found Run 1
+     (29308352294, failure) as the sole prior same-event completed run ->
+     threshold_met=true -> "Streak confirmed: this is consecutive failure
+     #2" -> incident OPENED: status-incident.yml run 29308402903 ->
+     status-content file `status/content/2026-07-14-synthetic-e2e-pipeline-
+     monitor-failing--downstream.md` (`resolved: false`, severity:
+     disrupted). PROVES (b): the Nth (2nd) consecutive fail DOES open a
+     real incident.
+  3. CLEANUP (not left dangling, mirroring T-102's own close-out
+     discipline): dispatched `status-incident.yml` directly with
+     `action=resolve` + the same title (run 29308426198, conclusion=success)
+     -- deliberately NOT a `mode=live` monitor dispatch, since the resolve
+     step's own code path is byte-for-byte unchanged by T-113 and a live
+     run against real prod infra would have added risk with no new proof
+     value. Re-cloned the `status-content` branch afterward and read the
+     file directly: `resolved: true, resolvedWhen: 2026-07-14T05:24:00Z`
+     (opened 05:23:27Z -- resolved within 33s). Full scan of
+     `status/content/*.md` for any remaining `resolved: false` -> zero
+     found, nothing left open.
+
+CI: PR #457 open, checks pending at time of this entry -- see WORK.md for
+current status.
+
+KNOWN LIMITATION (T-102-style -- noted in the workflow's own header, not
+fixed): if a clean skip (staging_guard trips) lands between two real
+downstream failures, the lookback's "previous run was ALSO a failure" check
+sees the skip's `success` conclusion and resets the streak to 0, even
+though the two real failures are only one skipped cycle apart. Considered
+rare (skips are themselves an infrequent deploy-overlap condition) and
+self-correcting (the next cycle's failure restarts the count and can still
+reach threshold one cycle later) -- not fixed here, same posture as
+T-102's own known-limitation entry.
+
+MERGE AUTHORIZATION: does NOT need the user's own direct Section 5.1 cat.
+a/b sign-off -- edits monitor logic only (same class as T-111), reads
+existing GH Actions run history read-only, mutates nothing in Coolify/prod,
+touches no shared eval-gate safety net and no new credential. Matches
+WORK.md's own pre-stated Sprint 16 scoping ("T-113 edits monitor logic
+only, same class as T-111 -- does not need cat. a/b treatment on the
+current read"). Per this task's explicit instruction: opening the PR, NOT
+merging it -- coordinator review requested.
+
+-> WORK.md Sprint 16 Track B (T-113 row) ; workflow header comment block in
+   `.github/workflows/monitor-e2e-pipeline.yml` (full rationale) ; runs
+   29308352294, 29308381789, 29308402903, 29308426198 ; status-content file
+   `status/content/2026-07-14-synthetic-e2e-pipeline-monitor-failing--
+   downstream.md` (resolved: true)
+```

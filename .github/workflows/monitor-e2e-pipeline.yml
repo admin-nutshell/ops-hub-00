@@ -218,6 +218,96 @@ name: Monitor — Synthetic-ticket downstream E2E pipeline (T-98)
 #   infrastructure. Same "extend the existing mode input, don't invent a
 #   second one" pattern as mode=simulate-failure. See DECISIONS.md for the
 #   run that used this to verify.
+#
+# T-113 (Sprint 16 Track B) — CONSECUTIVE-FAIL THRESHOLD, gating the
+# CUSTOMER-FACING page ONLY: this monitor used to open a status-page incident
+# on a SINGLE failed run. Flagged as an undecided carry since Sprint 12
+# (T-102's own header explicitly deferred it, warning that copying its
+# FAIL_THRESHOLD=3 onto this file's 6-hourly cadence would push detection to
+# 12-18+ hours — working against the whole reason T-98 exists). This is NOT a
+# copy-paste of T-102: it is its own calibration, grounded in this file's own
+# real run history, not a guess.
+#
+# EVIDENCE CHECKED (`gh run list --workflow=monitor-e2e-pipeline.yml`, full
+# history at decision time, 2026-07-14): 7 of 7 `event=schedule` runs are
+# `conclusion=success` — ZERO observed transient/self-healing failures on the
+# real cron cadence, unlike T-102's monitor (whose threshold was justified
+# REACTIVELY by two OBSERVED self-healing hiccups, 07-10/07-11). The only
+# `conclusion=failure` runs in this file's entire history (3 of 3) are
+# `event=workflow_dispatch` and independently confirmed, step-by-step, to be
+# deliberate `mode=simulate-failure` verification dispatches — not real noise.
+# On that evidence alone, "no threshold" would be a defensible read. It is
+# NOT what was chosen, for the reason below.
+#
+# WHY N=2, NOT "NONE": the no-noise evidence is thin (7 runs over ~2 days) and
+# is not symmetric proof that no future single-shot blip will ever occur.
+# Critically, `reset` / `dispatch` / `langfuse` are each a SINGLE HTTP or DB
+# round-trip with NO internal retry (unlike `poll`, which already tolerates
+# transient blips via its own 30x20s loop) — a single transient Inngest 503,
+# LangFuse rate-limit, or DB connection hiccup fails the run immediately and,
+# under the OLD single-failure-pages behavior, would have immediately opened
+# a customer-facing "Ops Hub Production disrupted" notice for what is
+# ops-tooling noise, not a broken pipeline. That is the real, symmetric risk
+# a threshold buys down, even with zero observed history of it firing yet.
+#
+# THE KEY DESIGN CHOICE THAT MAKES N=2 CHEAP: the threshold gates ONLY the
+# status-page incident-open call below — it does NOT touch this Actions run's
+# own red/green conclusion, and does NOT touch the existing GitHub
+# failed-run-notification email backstop (fires to repo watchers on ANY
+# single failed run, unchanged, same backstop T-102's header already relies
+# on). So:
+#   - TEAM-facing detection latency: UNCHANGED. A single failure still shows
+#     red at T+0 and still emails watchers at T+0.
+#   - CUSTOMER-facing page latency: was T+0 (single fail), now T+6h (2nd
+#     CONSECUTIVE fail) for a genuine sustained break.
+# N=2 filters exactly the single-shot-blip risk above at effectively zero
+# added cost to the team's own detection speed, for +6h before a REAL
+# sustained break reaches the customer-facing status page — comfortably
+# inside "catch it before a founder notices missing replies" for a
+# 6-hourly-cadence system. N=3 (a literal T-102 copy) would double that to
+# +12h, which is exactly the outcome T-102's own header, and this sprint's
+# scoping (WORK.md), explicitly named as working against T-98's purpose.
+#
+# MECHANISM: reuses T-102's PROVEN `gh run list` lookback technique exactly
+# (see monitor-litellm-internal-auth.yml's "Determine consecutive-fail
+# streak" step) — same event-name scoping (a manual `mode=simulate-failure`
+# verification dispatch, event=workflow_dispatch, can never count towards or
+# be counted by the real event=schedule prod streak, and vice versa) — with
+# ONE recalibration: STREAK_LOOKBACK_HOURS=10 instead of T-102's 2h. Sized
+# from first principles for THIS file's 6-hourly cadence: comfortably above
+# 6h to absorb GitHub Actions scheduler jitter, comfortably below 12h (two
+# full cycles) so a run from two cycles ago can never be mistaken for "the
+# immediately-prior run" in the NEED=1 (FAIL_THRESHOLD-1) lookback.
+#
+# CLEAN-SKIP EXCLUSION — VERIFIED AGAINST REAL DATA, NOT ASSUMED: does a
+# `staging_guard`/`guard` clean skip (T-111's case 2, or the pre-existing
+# missing-secrets dormant guard) ever land in `gh run list` as
+# `conclusion=failure`? Checked against real history: run 29284121758 (T-111's
+# own `mode=simulate-staging-running` proof run) concluded `success` even
+# though `staging_guard` tripped and every downstream step (reset/dispatch/
+# poll/langfuse/incident-open) was skipped. The missing-secrets dormant guard
+# shares the exact same shape (the guard step itself always exits 0; every
+# downstream step cascades to `skipped`, not `failure`, via its own `if:`
+# condition; no step ever exits non-zero) so it reports `success` for the
+# identical reason. **T-102's `conclusion == 'failure'` filter therefore
+# already excludes BOTH clean-skip classes for free — no special-casing was
+# added for this.**
+#
+# KNOWN LIMITATION (T-102-style — noted, not fixed): the lookback inspects
+# only the immediately-prior COMPLETED same-event run. If a clean skip (guard
+# trips) lands between two real downstream failures, that skip's `success`
+# conclusion breaks the "previous run was ALSO a failure" check, resetting
+# the streak to 0 even though the two real failures are only one skipped
+# cycle apart. Considered rare (skips are themselves an infrequent deploy-
+# overlap condition) and self-correcting (the next cycle's failure re-starts
+# the count and can still reach threshold one cycle later) — not fixed here,
+# same posture as T-102's own "flaky status-incident.yml dispatch could nudge
+# the streak" known limitation.
+#
+# FAILURE-PATH PROOF (Sprint 10 §5.1 norm — required before this is trusted
+# live): two chained `mode=simulate-failure` dispatches, same technique T-102
+# used to prove its own threshold. Run links + outcomes in DECISIONS.md's
+# 2026-07-14 "T-113" entry.
 
 on:
   schedule:
@@ -246,6 +336,18 @@ env:
   # refining this threshold once real run-time data exists; not tuned here.
   POLL_MAX_ATTEMPTS: "30"
   POLL_INTERVAL_SECONDS: "20"
+  # T-113: consecutive-fail threshold before this monitor opens a
+  # CUSTOMER-FACING status-page incident. Does NOT gate this Actions run's
+  # own red/green conclusion or the GitHub failed-run-notification email —
+  # both fire on a SINGLE failure, unchanged. See the header comment block
+  # above for the full rationale (deliberately NOT a copy of T-102's
+  # FAIL_THRESHOLD=3 — that value was calibrated for a 15-minute cadence).
+  FAIL_THRESHOLD: "2"
+  # Lookback window for the streak check, recalibrated from T-102's 2h (sized
+  # for 15-min cadence) to this file's 6-hourly cadence: above 6h for
+  # scheduler-jitter headroom, below 12h (two cycles) so a run from two
+  # cycles back can't be mistaken for "the immediately-prior run."
+  STREAK_LOOKBACK_HOURS: "10"
   # T-111 / SC7 option (ii): same pinned Coolify app UUID main-deploy.yml uses
   # (that file's own comment, T-54/WORK.md: pinned by UUID, not name, because
   # ops-hub-prod's app happens to share the display name "ops-hub-app" in a
@@ -479,21 +581,64 @@ jobs:
           print(f"LangFuse trace confirmed: name={name} id={trace_id} timestamp={ts}")
           PYEOF
 
-      - name: On failure — open a status-page incident + fail the run
-        # BC1 fix: `failure()` is required here. A bare if-expression is
-        # implicitly ANDed with success() by GitHub Actions, so without a
-        # status function this step was SKIPPED (not run) the moment any
-        # upstream step actually failed — see the BC1 header comment above.
+      - name: Determine consecutive-fail streak (read-only run-history lookback, T-113)
+        id: streak
+        # Same trigger condition as the old single "On failure" step (BC1's
+        # `failure()` requirement carried forward — a bare if-expression is
+        # implicitly ANDed with success() by GitHub Actions).
         if: failure() && steps.guard.outputs.ready == 'true' && (steps.reset.outcome == 'failure' || steps.dispatch.outcome == 'failure' || steps.poll.outcome == 'failure' || steps.langfuse.outcome == 'failure')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::error::T-98 downstream E2E monitor failed — opening a status-page incident."
+          NEED=$((FAIL_THRESHOLD - 1))
+          EVENT="${{ github.event_name }}"
+          RUN_ID="${{ github.run_id }}"
+          CUTOFF=$(date -u -d "-${STREAK_LOOKBACK_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)
+          echo "This run's downstream chain failed. A CUSTOMER-FACING incident only opens once this is the ${FAIL_THRESHOLD}th CONSECUTIVE failure (T-113) — this Actions run itself still fails red and GitHub's own failed-run-notification email still fires regardless (team-facing detection is unchanged by this threshold). Checking whether the previous $NEED completed run(s) of this workflow (same trigger event=$EVENT, created since $CUTOFF, excluding this in-progress run $RUN_ID) were ALSO failures."
+          echo "Same event-scoping + recency-window technique as monitor-litellm-internal-auth.yml's T-102 (see this file's header for the full rationale) — recalibrated to STREAK_LOOKBACK_HOURS=${STREAK_LOOKBACK_HOURS}h for this file's 6-hourly cadence (T-102 used 2h for a 15-minute cadence)."
+
+          RUNS_JSON=$(gh run list --repo "${{ github.repository }}" --workflow monitor-e2e-pipeline.yml \
+            --json databaseId,conclusion,status,createdAt,event --limit 30)
+
+          PREV=$(echo "$RUNS_JSON" | jq --arg cur "$RUN_ID" --arg ev "$EVENT" --arg cutoff "$CUTOFF" \
+            '[.[] | select((.databaseId|tostring) != $cur and .status == "completed" and .event == $ev and .createdAt >= $cutoff)] | sort_by(.createdAt) | reverse | .[0:'"$NEED"']')
+          PREV_COUNT=$(echo "$PREV" | jq 'length')
+          FAIL_COUNT=$(echo "$PREV" | jq '[.[] | select(.conclusion == "failure")] | length')
+
+          echo "Previous completed same-event runs considered (need $NEED): $PREV_COUNT. Of those, $FAIL_COUNT were failures."
+          echo "$PREV" | jq -r '.[] | "  run \(.databaseId): conclusion=\(.conclusion) createdAt=\(.createdAt)"'
+
+          if [ "$PREV_COUNT" -ge "$NEED" ] && [ "$FAIL_COUNT" -eq "$NEED" ]; then
+            echo "threshold_met=true" >> "$GITHUB_OUTPUT"
+            echo "Streak confirmed: this is consecutive failure #$FAIL_THRESHOLD — opening a real status-page incident."
+          else
+            echo "threshold_met=false" >> "$GITHUB_OUTPUT"
+            echo "Sub-threshold: only $((FAIL_COUNT + 1))/$FAIL_THRESHOLD consecutive failures so far (or insufficient recent same-event run history) — self-clearing on the CUSTOMER-FACING page only. No incident opened."
+          fi
+
+      - name: On failure (threshold met) — open a status-page incident + fail the run
+        # BC1 fix carried forward: `failure()` is required here — see the
+        # streak step's comment above for why a bare if-expression is not
+        # enough.
+        if: failure() && steps.guard.outputs.ready == 'true' && (steps.reset.outcome == 'failure' || steps.dispatch.outcome == 'failure' || steps.poll.outcome == 'failure' || steps.langfuse.outcome == 'failure') && steps.streak.outputs.threshold_met == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::error::T-98 downstream E2E monitor failed on consecutive failure #$FAIL_THRESHOLD (T-113 threshold reached) — opening a status-page incident."
           gh workflow run status-incident.yml --repo "${{ github.repository }}" --ref main \
             -f action=open \
             -f title="$INCIDENT_TITLE" \
             -f affected="Ops Hub Production,LiteLLM Production" \
             -f severity=disrupted
+          exit 1
+
+      - name: On failure (sub-threshold) — self-clear silently, no customer-facing page
+        # threshold_met defaults to unset (not 'true') if the streak step
+        # itself never ran or errored before writing its output — fail-safe:
+        # an unset/'' value takes this branch, never the incident-open one.
+        if: failure() && steps.guard.outputs.ready == 'true' && (steps.reset.outcome == 'failure' || steps.dispatch.outcome == 'failure' || steps.poll.outcome == 'failure' || steps.langfuse.outcome == 'failure') && steps.streak.outputs.threshold_met != 'true'
+        run: |
+          echo "::warning::T-98 downstream E2E monitor failed but the T-113 consecutive-fail threshold (FAIL_THRESHOLD=$FAIL_THRESHOLD) has not been met yet — self-clearing on the CUSTOMER-FACING status page only (no incident opened). This Actions run still fails red and GitHub's own failed-run-notification email still fires — team-facing detection is unchanged. If this repeats until $FAIL_THRESHOLD consecutive failures, the next run's run-history lookback will open a real incident."
           exit 1
 
       - name: On success — resolve any open incident from this monitor
