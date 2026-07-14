@@ -7373,3 +7373,107 @@ merging it -- coordinator review requested.
    `status/content/2026-07-14-synthetic-e2e-pipeline-monitor-failing--
    downstream.md` (resolved: true)
 ```
+
+### 2026-07-14 — T-112: real single-user-critical under-escalation bug found and fixed via live-eval-gate; a second, pre-existing grader-variance issue is NOT fixed — user chose to HOLD the PR (Coordinator, on independent review of the build agent's PR)
+
+```
+2026-07-14 [Coordinator] T-112 (Sprint 16 Track A, anchor) set out to fix
+the real finding T-110 banked: the production triage prompt's `high`
+bullet used to read as three independent, OR-able traits ("major
+degradation, multiple users blocked, no workaround"), letting a
+single-user, no-stated-workaround ticket satisfy ONE trait and
+over-escalate to `high` on ~50% of runs. The build agent's PR (#456,
+branch t112-triage-high-escalation-clarify) rewrote the bullet to state
+the AND explicitly and added a single-user carve-out, plus a new eval
+case (q) specifically to guard that the carve-out doesn't bleed into
+demoting a genuine single-user CRITICAL (e.g. data-loss) ticket.
+
+INDEPENDENT REVIEW FOUND A REAL BUG THE BUILD AGENT'S OWN CASE-BY-CASE
+REASONING MISSED: live-eval-gate on PR #456 failed with case (q) itself
+scoring 0 (not the mechanical description-rename false-positive seen on
+T-109/T-110 -- a genuine new-case failure). Pulled the raw request/
+response evidence (not inferred): the model's actual output was
+`{"urgency":"normal","category":"support","routing":"support",
+"reasoning":"The issue affects a single user with no workaround
+available, but does not involve system-wide impact or critical data
+loss."}` for a ticket explicitly describing ONE user's irrecoverable data
+loss. The prompt's own PRE-EXISTING `critical: system down, data loss,
+security breach` trigger is user-count-agnostic and was completely
+unmodified by T-112 -- yet the model skipped past it entirely, missing
+even the `high` threshold, straight to `normal`. Root cause: the first
+cut's critical-triggers-still-apply exception was a trailing parenthetical
+ON the `high` bullet ("...not high (critical triggers above still apply
+regardless of user count)") -- a weak, easily-discounted hedge physically
+distant from the critical bullet itself. The newly-prominent, specific
+"single user -> not high" carve-out out-competed it.
+
+FIX (one targeted revision, per the anti-flakiness/anti-serial-tuning
+discipline from T-110's own session -- attempt once, verify, don't guess
+across CI cycles): moved the user-count invariance INTO the `critical`
+bullet itself (front-loaded, not a hedge on a different bullet) --
+"urgency critical: system down, data loss, security breach -- these
+ALWAYS apply regardless of how many users are affected; a single user's
+data loss, security breach, or total lockout is still critical, never
+normal or low" -- and narrowed the `high` bullet's carve-out to an
+explicit "AND none of the critical triggers above apply" instead of
+relying on the model to cross-reference a parenthetical. Committed as a
+follow-up commit on the same branch/PR (not a new PR), ticket-triage.ts
+and evals/ticket-triage.yaml's system block kept byte-identical (T-105's
+lockstep discipline). Re-ran live-eval-gate: case (q) now PASSES; case (i)
+(T-110's regression check) unaffected; no other case shifted.
+
+A SECOND, SEPARATE ISSUE SURFACED AND IS NOT RESOLVED: the SAME re-run
+showed a REGRESSION on a pre-existing, untouched-by-T-112 case --
+"Ticket bundling a total outage with a trivial typo classifies on the
+dominant (critical) issue" -- scoring 0.5 (its own deterministic
+ALLOWED=['critical','high'] check PASSED; only the llm-rubric component
+scored 0/pass:false). This case's OWN rubric text already says "Set
+urgency to critical (a high read is tolerable)" -- explicit tolerance for
+either answer -- yet the grader reasoned "This is a full access outage, so
+'critical' is required," effectively overriding its own rubric's stated
+hedge. Checked whether this was pure pre-existing grader noise or a real
+T-112 side-effect by pulling the LAST GREEN BASELINE's raw output for the
+identical ticket (run 29290482377, captured before T-112 touched anything):
+the baseline model answer was `"urgency":"critical"`. BOTH of T-112's runs
+(original cut and the case-(q) fix) instead returned `"urgency":"high"` --
+byte-identical between the two T-112 cuts, confirming the fix commit did
+NOT cause this, but T-112's underlying wording change (making the `high`
+bullet longer/more specific) DID measurably shift the model's own answer
+on this case from critical to high, a real (if in-spec-tolerable) behavior
+drift.
+
+CONSIDERED AND DECLINED: rewriting this case's rubric to an explicit
+"pass if critical OR high" OR-clause to stop the grader flip-flopping.
+Advisor review caught the flaw in this before it was actioned: the
+rubric's existing wording ("critical ... a high read is tolerable") is not
+symmetric -- it states a PREFERENCE (critical is right, high is grudgingly
+accepted), not an equivalence. Flattening it to a hard OR would harden a
+soft hedge into leniency specifically to turn CI green under merge
+pressure -- exactly what "drop-don't-weaken" forbids, and exactly the
+already-banked T-106/ADR-0009 grader-robustness problem (build deferred to
+a future sprint) being hand-patched per-case instead of properly fixed.
+Declined; the rubric was NOT touched.
+
+PRESENTED TO THE USER PLAINLY (AskUserQuestion, non-technical framing):
+hold T-112 this sprint vs. open a further task to fix the grader-variance
+case properly first. **User chose to HOLD.** T-112's real bug fix (case
+(q)) stays fully written, committed, and documented on PR #456 -- NOT
+merged. Nothing forced through on a lucky re-run; nothing hand-patched on
+the shared eval file to manufacture green.
+
+MERGE AUTHORIZATION: moot for now -- PR #456 is deliberately not being
+merged. When this resumes (either the grader-variance case gets its own
+dedicated fix, proven the same way T-110 diagnosed case (i), or the
+T-106/ADR-0009 grader-robustness build lands and this case naturally
+stabilizes), the merge itself still needs the user's own direct Section
+5.1 sign-off -- PR #456 touches `src/inngest/ticket-triage.ts` (the live,
+customer-facing triage prompt) and `evals/ticket-triage.yaml` (the
+live-eval-gate's own fixture file), matching the T-109/T-110 precedent,
+not the T-111/T-113 one.
+
+-> WORK.md Sprint 16 Track A (T-112 row, marked HELD) ; PR #456 (branch
+   t112-triage-high-escalation-clarify, 3 commits, NOT merged) ; runs
+   29309255671 (original cut, case (q) FAILING) ; 29310172459 (fix commit,
+   case (q) PASSING, bundling case still red) ; baseline run 29290482377
+   (bundling case's pre-T-112 raw output, "critical")
+```
