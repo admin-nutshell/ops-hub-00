@@ -95,6 +95,44 @@ def build_prompt_function(user_template: str, system_prompt: str) -> str:
     )
 
 
+def apply_multisample(cfg: dict) -> list[tuple[str, int]]:
+    """T-114 (ADR-0009 Option 1, the OPTIONAL per-case escalation): translate a case's
+    opt-in `metadata.multiSample: N` marker into promptfoo's NATIVE per-test
+    `options.repeat: N` primitive, so the harness makes N REAL target+grader calls for
+    that one case (each `repeatIndex` is a distinct execution with its own cache
+    namespace; verified against promptfoo 0.121 `runEvalInternal`'s repeat loop). This
+    is NOT the default grading mechanism (that is T-109 honor-pass, applied per draw);
+    it is a bounded, per-case add-on for cases empirically shown to be near-threshold
+    variance-prone, aggregated majority-vote by scripts/eval/aggregate-multisample.py
+    AFTER honor-pass has decided each draw. Cases WITHOUT the marker are left exactly
+    as-is (repeat defaults to 1) — zero effect on the rest of the suite.
+
+    We set `options.repeat` and PRESERVE `metadata.multiSample` so the aggregator can
+    find and collapse the N result rows. Provider (the grader) still flows in from
+    defaultTest.options via promptfoo's per-test merge — we only add `repeat`.
+
+    Returns [(description, N), ...] for the run log.
+    """
+    marked: list[tuple[str, int]] = []
+    for t in cfg.get("tests") or []:
+        if not isinstance(t, dict):
+            continue
+        n = (t.get("metadata") or {}).get("multiSample")
+        if n is None:
+            continue
+        if not isinstance(n, int) or n < 2:
+            sys.exit(
+                f"::error::metadata.multiSample must be an integer >= 2 (got {n!r}) on "
+                f"test '{t.get('description', '?')}'. It opts a case into N-draw grading; "
+                f"N<2 is meaningless. Remove the marker to run the case once."
+            )
+        opts = dict(t.get("options") or {})
+        opts["repeat"] = n
+        t["options"] = opts
+        marked.append((str(t.get("description", "?")), n))
+    return marked
+
+
 def generate(eval_file: str, target_alias: str, judge_alias: str,
              litellm_base: str, out_dir: str) -> tuple[str, str]:
     with open(eval_file, encoding="utf-8") as f:
@@ -104,6 +142,14 @@ def generate(eval_file: str, target_alias: str, judge_alias: str,
         sys.exit(f"::error::{eval_file} has no providers block")
     if not cfg.get("prompts"):
         sys.exit(f"::error::{eval_file} has no prompts block")
+
+    # T-114: opt-in per-case multi-sample escalation (ADR-0009 Option 1). No-op unless a
+    # test carries metadata.multiSample. Runs BEFORE the provider/prompt rewrite so the
+    # translated options.repeat is preserved through the rest of the generation.
+    ms_marked = apply_multisample(cfg)
+    for desc, n in ms_marked:
+        print(f"  [multiSample] '{desc}': opted into N={n} draws (options.repeat={n}) — "
+              f"majority-vote aggregation after honor-pass (T-114 / ADR-0009 Option 1).")
 
     # TARGET provider: preserve every tuning key (temperature, max_tokens, ...),
     # point at LiteLLM, and move the system prompt OUT of config (it is inert once

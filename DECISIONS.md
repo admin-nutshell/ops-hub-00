@@ -7845,6 +7845,185 @@ was always "critical" until T-112 -- is not enough evidence either way).
    scripts/eval/ + evals/*.yaml for multiSample (zero implementation hits)
 ```
 
+### 2026-07-14 — T-114: built ADR-0009 Option 1 (optional per-case multi-sample escalation); diagnosed the bundling case and DID NOT apply it — the case is target-output variance, not the near-threshold GRADER variance the escalation is for (Evals Lead)
+
+```
+2026-07-14 [Evals Lead] BUILT the optional per-case multi-sample grading
+escalation ADR-0009 designed + cost-approved (~$1.50 CAD/month at 2-3
+cases, N=3) but never coded (the CORRECTION entry above scoped it as the
+real un-built piece). DIAGNOSED the "total outage bundled with a trivial
+typo" triage case that held T-112 (PR #456). CONCLUSION: the mechanism
+ships, but it is NOT applied to the bundling case, because the decisive
+evidence shows the bundling case is TARGET-OUTPUT variance, not the (P2)
+near-threshold GRADER variance this escalation exists to smooth. Shipping
+it against this case would be forcing a stably-disagreed case to green ->
+declined. This is item 4 of the T-114 brief ("if the grader genuinely,
+repeatedly rejects `high` here even though the rubric calls it tolerable,
+say so plainly -- do not try to force the case to pass") triggering on
+real evidence, not an oversight of item 3's "apply to the bundling case."
+
+WHAT WAS BUILT (mechanism, provider-neutral, additive, dormant by default):
+  - gen-live-config.py: `apply_multisample(cfg)` translates a case's opt-in
+    `metadata.multiSample: N` (N>=2, else hard exit) into promptfoo's NATIVE
+    per-test `options.repeat: N`, so the SHARED runner makes N REAL
+    target+grader draws for that one case (verified against promptfoo 0.121
+    `runEvalInternal`'s repeat loop: each repeatIndex is a distinct
+    execution with its own cache namespace -- real repeated live calls, no
+    dedup, not synthesized variance). Runs BEFORE the provider/prompt
+    rewrite so the marker survives generation.
+  - aggregate-multisample.py (NEW): runs AFTER apply-honor-pass.py (so every
+    per-draw floor + never-override-a-fail guardrail is already applied per
+    draw), groups marked rows by description, collapses the N honored draws
+    to ONE row: aggregated PASS <=> a STRICT MAJORITY of the N honored draws
+    passed (tie on even N -> FAIL). MAJORITY, never "any draw passed" -- no
+    early stop, no best-of, no retry-until-pass (the drop-don't-weaken /
+    "no gate-softening by attrition" constraint). It can smooth a case that
+    genuinely FLIPS around the line; it CANNOT rescue a case the grader
+    stably rejects (majority pass:false -> aggregated FAIL) -- by design.
+    Keeps the first draw's row (preserving tokenUsage for the token-band
+    guard + componentResults), attaches per-draw evidence under
+    `gradingResult.multiSampleAggregate`, drops the extras; the kept row's
+    description is unchanged so `test_id` stays stable against the baseline
+    (which holds one row per case). FAIL-LOUD (exit 6) if a marked case
+    exposes <2 draws (repeat did not take effect) -- never silently grade a
+    "multi-sample" case on one draw.
+  - live-run.sh: wires aggregate-multisample.py in after the honor-pass
+    block.
+
+ZERO EFFECT ON THE REST OF THE SUITE (the "must not change behavior for any
+non-opted case" constraint): `apply_multisample` is a strict no-op on a case
+without the marker (repeat defaults to 1), and aggregate-multisample.py is a
+strict no-op when no marked rows exist. Confirmed `apply_multisample` returns
+[] on all three current product evals (triage/respond/kb-learn -- zero cases
+carry the marker). Since NO case is opted in, the shipped mechanism is
+globally dormant -- the strongest possible proof of zero effect on the other
+~43 cases: it does not execute at all on any current gate run.
+
+MECHANISM PROVEN END-TO-END ON REAL OUTPUT (not just synthetic unit tests):
+  - Hermetic Python unit tests PASS: gen-live translation (only marked cases
+    get repeat; marker preserved; N=1 rejected), aggregation (2/3->PASS,
+    1/3->FAIL, even-tie->FAIL, no-marker no-op, <2-draws->exit 6).
+  - LIVE verification on the real 24-row diagA-results.json from the CI
+    diagnostic (the load-bearing check -- confirms the grouping key survives
+    a real promptfoo run, not just hand-shaped fixtures): `metadata.multiSample`
+    DOES survive into `testCase.metadata` on every result row, `options.repeat`
+    took effect (24 distinct rows produced, no dedup), and aggregate collapsed
+    24->1 with the correct majority verdict (24/24 passes -> PASS). If the key
+    had NOT survived, aggregate would silently no-op even when opted in -- it
+    does not.
+
+THE DIAGNOSTIC (two instruments, run live in CI against T-112's PROPOSED
+prompt read READ-ONLY from PR #456's branch -- main's prompt reliably answers
+`critical` here so it cannot elicit the `high` answer in question; PR #456's
+branch was never written to):
+
+  INSTRUMENT A -- target+grader, N=24, through the shipped mechanism (real
+  repeated live draws on T-112's exact prompt):
+    24/24 draws -> urgency=`critical`; grader accepted all at score 1.0.
+    ZERO `high` draws. (run 29345122991; earlier N=8 confirmatory run
+    29344783613 also all-critical.)
+
+  INSTRUMENT B -- judge-only re-grade of ONE fixed `high` output, 12 draws
+  (promptfoo `providerOutput` pins the output; llm-rubric ONLY -> isolates
+  PURE GRADER variance -- this is exactly ADR-0009 Option 1's originally-
+  costed shape, "re-grade a single fixed output N times"):
+    12/12 draws -> grader REJECTED (pass:false). Scores: 0.0 x11, 0.3 x1 --
+    NOT scatter around the 0.6 floor / 0.8 band; a confident, repeated
+    rejection far below any near-threshold region. Reason consistently
+    value-based: "urgency is set to 'high' when it MUST be 'critical' for a
+    full outage." (Provenance of the graded output is CONSTRUCTED and labelled
+    as such -- Instrument A drew no natural `high` to freeze. B measures what
+    the GRADER does to a fixed `high` answer; the grader cannot tell nor
+    should it care who authored the JSON. The rejection is value-based and
+    provenance-independent, and it MATCHES the real n=1 from T-112's own PR
+    #456 runs, where the model answered `high` and the grader returned
+    pass:false/score:0.0 for the same reason. Real n=1 + constructed n=12 ->
+    identical rationale -> the stable-reject finding holds.)
+
+INTERPRETATION -- the crux is a THREE-WAY inconsistency, and it is NOT a
+grader-mechanism problem:
+  (1) the case's rubric PROSE says critical preferred, "a high read is
+      tolerable"; its deterministic ALLOWED set includes `high`;
+  (2) BUT the llm-rubric GRADER stably rejects `high` at score 0.0 (12/12) --
+      it does not honor the prose's stated tolerance;
+  (3) AND the TARGET occasionally draws `high` (2/2 on PR #456; 0/24 now on
+      the same prompt) -- genuine target-output non-determinism at temp=0.
+  Honor-pass (T-109) correctly cannot touch this: Guardrail 2 (never-override-
+  a-fail) refuses to rescue a `pass:false` at any score -- working exactly as
+  designed (the CORRECTION entry above). NEITHER built grading mechanism
+  addresses this, because it is not a grader-mechanism problem: it is rubric-
+  CONTENT vs grader-JUDGMENT vs target-BEHAVIOR. Its resolution lives ABOVE
+  the mechanism, at T-112 resume / rubric-authoring review.
+
+WHY MULTI-SAMPLE IS NOT THE FIT FOR THIS CASE (three independent reasons):
+  - ADR-0009's OWN admission criterion for the escalation is "cases
+    EMPIRICALLY shown to be near-threshold variance-prone." Instrument B
+    proves the grader has ZERO near-threshold scatter here (0.0, not
+    0.6-0.8). The case FAILS the ADR's admission test.
+  - As-costed, Option 1 re-grades a FIXED output N times to smooth GRADER
+    scatter. There is no grader scatter here to smooth (grader is rock-stable
+    in BOTH directions: accepts `critical` @1.0 x24, rejects `high` @0.0 x12).
+    This is the PM MISTAKE-1 precedent (DECISIONS 2026-07-13, case (i))
+    generalizing: target-output variance is NOT a multi-sample fit.
+  - The task's built variant re-samples the TARGET too (broader than the
+    ADR's judge-only costing -- noted honestly; the ~$1.50/mo budget still
+    holds for a future single-case N=3 opt-in). Precisely BECAUSE it
+    re-samples the target, applying it here would majority-VOTE past the
+    occasional `high` draw and green the case on the target's modal
+    `critical` -- masking the (2) rubric-vs-grader inconsistency rather than
+    resolving it. That is force-to-pass, which item 4 + drop-don't-weaken
+    forbid.
+
+DID NOT CHASE THE LUCKY GREEN: the 24/24-critical Instrument A result is the
+target's MODAL behavior PLUS direct evidence of temporal instability (the
+SAME T-112 prompt produced `high` 2/2 in PR #456's runs hours earlier the
+same day, and `critical` 24/24 now). This must NOT be read as "so re-run
+T-112, it'll pass now" -- that is the forbidden chase-a-lucky-green anti-
+pattern this project has banked. The case can go red again whenever the
+target next draws `high`; the underlying inconsistency is unresolved.
+
+WHAT THIS MEANS FOR T-112 (informational -- T-112 resume is its own task,
+not done here): the honest resolution is above the mechanism. Either (a) the
+rubric's "high is tolerable" is made authoritative and the grader aligned to
+honor it (a genuine rubric-authoring decision with grader alignment -- NOT
+the already-declined "flatten to a hard OR" leniency hack), or (b) the case
+is tightened to critical-only if `high` is in fact not acceptable for a full
+outage (the grader's actual stance) -- with the target prompt then expected
+to produce `critical`. That is a T-112 / rubric-authoring call requiring
+evidence + review, not a mechanism opt-in.
+
+COVERAGE-BOUNDARY NOTE: this PR touches only `scripts/eval/**` and a new
+diagnostic workflow -- NO prompt surface (no evals/*.yaml, no
+src/inngest/*.ts, no model-allowlist). So the product `live-eval-gate` will
+NEUTRAL-SKIP on this PR (spends nothing, by its own path filter). The
+mechanism was exercised by the DEDICATED T-114 diagnostic workflow (live,
+metered, budget-capped LITELLM_EVAL_KEY only) + hermetic unit tests + the
+real-output aggregate verification above -- not by the product gate. The
+coverage boundary is explicit and intentional: shipping the runner does not
+itself re-baseline any product eval.
+
+GOVERNANCE: this modifies the SHARED `live-eval-gate` grading mechanism (the
+harness/runner -- gen-live-config.py, aggregate-multisample.py, live-run.sh),
+which is Section 5.1 category-a (shared merge-blocking safety net), same
+class as T-109. Its merge REQUIRES the user's OWN direct, in-the-moment,
+freshly-given authorization -- standing self-merge does NOT cover it, and it
+must NOT be self-merged even on fully green CI. PR opened, CI to be run, NOT
+merged.
+
+-> WORK.md Sprint 17 T-114 row (updated) ; PR (branch
+   sprint-17-t114-multisample-escalation, off origin/main) ; scripts/eval/
+   {gen-live-config.py, aggregate-multisample.py, live-run.sh,
+   diagnose-bundling-multisample.py} ; .github/workflows/
+   t114-diagnose-bundling-multisample.yml ; diagnostic runs 29345122991
+   (Instrument A N=24 all-critical + Instrument B 12/12 reject) and
+   29344783613 (N=8 confirmatory) ; T-112 PR #456 runs 29309255671 /
+   29310172459 (real n=1 `high` + grader pass:false) ; baseline 29290482377
+   (bundling case's pre-T-112 raw output "critical") ; ADR-0009 (Option 1,
+   Accepted) ; DECISIONS 2026-07-14 "CORRECTION" (scoped this as the un-built
+   piece) ; DECISIONS 2026-07-13 PM MISTAKE-1 (target-variance != multi-
+   sample fit)
+```
+
 ### 2026-07-14 — T-114: built ADR-0009's optional multi-sample escalation; diagnosis shows the bundling case is a STABLE grader rejection, not variance -- reinforces T-112's hold, does not clear it (Coordinator, reviewing the Evals Lead's build)
 
 ```
