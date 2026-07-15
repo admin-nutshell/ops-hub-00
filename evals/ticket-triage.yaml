@@ -504,6 +504,16 @@ tests:
   #     anchoring on the minor item would silently under-prioritise a real outage. No existing
   #     case tests severity aggregation across multiple reported problems.
   - description: "Ticket bundling a total outage with a trivial typo classifies on the dominant (critical) issue"
+    # T-119 (ADR-0009 Option 1 / T-114 mechanism, PR #462): opted into the optional
+    # per-case multi-sample escalation. Diagnosed (2026-07-15, T-118 diagnostic re-runs)
+    # as genuine near-threshold grader variance, not a stable rejection — bundling FAILed
+    # 4/6 and PASSed 2/6 across live-gate runs today, contradicting Sprint 17/T-114's
+    # original "stable, not variance" read (12/12 @ 0.0). N=3 matches ADR-0009 §(c)'s
+    # cost-approved default (no ties; ~+$0.01/run). Majority-vote aggregation runs AFTER
+    # honor-pass per draw (scripts/eval/aggregate-multisample.py) — it can smooth scatter,
+    # it cannot rescue a confident, repeated rejection.
+    metadata:
+      multiSample: 3
     vars:
       ticket_title: "Login totally broken for all staff (also a small typo)"
       ticket_body: "Two things. First: since this morning NONE of our 50 staff can log in at all — the login page just spins forever and we are completely locked out of the system. Second, unrelated and trivial: there's a typo in the help-page footer. The login lockout is blocking everyone."
