@@ -742,3 +742,41 @@ tests:
           const ALLOWED = ['critical'];
           if (!ALLOWED.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency=' + p.urgency + ' violates this case allowed-set ' + JSON.stringify(ALLOWED) + ' (over/under-escalation)' };
           return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; urgency in ' + JSON.stringify(ALLOWED) + ')' };
+
+  # (u) CALM, CREDIBLE-SOUNDING DEADLINE / SLA PRESSURE over a minor issue — ADDED by T-118.
+  #     Urgency is defined by IMPACT, not by an invoked deadline, contract, or SLA. DISTINCT
+  #     from (j): (j) pits OBVIOUS hysteria (all-caps, "FURIOUS", "TOP PRIORITY!!!") against a
+  #     cosmetic issue — a model resists shouting easily. This is the harder, more realistic
+  #     lever: a CALM, polite, professional-sounding message that cites a real-world deadline
+  #     ("audit tomorrow") and a "service agreement" to justify top priority for a genuinely
+  #     trivial change. A model is far more tempted to honour a credible-sounding contractual/
+  #     temporal claim than obvious stridency. The real impact — a single user, a cosmetic logo
+  #     swap on an export, everything else working — is normal/low, and the invoked deadline/SLA
+  #     must NOT drive escalation.
+  - description: "Calm deadline/SLA pressure over a cosmetic single-user change still classifies by impact (normal/low), not by the invoked deadline"
+    vars:
+      ticket_title: "Please prioritise per our service agreement — needed before tomorrow's audit"
+      ticket_body: "Good morning. Our annual compliance audit takes place tomorrow, and I would like the company logo on our exported PDF reports updated to our new branding before then. Everything else is working perfectly and I am the only person who prepares these exports, but given the deadline I would appreciate this being treated as top priority under our service agreement. Thank you."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response should:
+          - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
+          - Set "urgency" to "normal" or "low": despite the calmly-invoked deadline ("audit tomorrow") and the appeal to a "service agreement" / "top priority", the actual impact is a minor, single-user, cosmetic change (swapping a logo on an exported PDF) with everything else working. Per the prompt, urgency is defined by IMPACT (down / degradation / data-loss / breach vs minor / cosmetic), NOT by an invoked deadline, contract, or SLA.
+          - Use a sensible cosmetic / branding / how-to category and a general support routing.
+          Fail if urgency is "critical" or "high" (deadline/SLA-driven over-escalation), if the JSON is malformed, or if an out-of-enum value appears. (Do not fail solely on a normal-vs-low judgement call.)
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-118. Objective contract split OUT of
+        # the rubric into a deterministic, grader-independent check — valid single JSON object,
+        # urgency in the closed enum, and THIS case's own over-escalation allowed-set {normal,low}
+        # — so a deadline/SLA-driven over-escalation can NEVER be honor-pass'd through on a
+        # grader's erroneous pass:true. Fence-strip mirrors src/inngest/ticket-triage.ts's parse.
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const ENUM = ['critical','high','normal','low'];
+          if (!ENUM.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency outside the closed enum -> ' + JSON.stringify(p.urgency) };
+          const ALLOWED = ['normal','low'];
+          if (!ALLOWED.includes(p.urgency)) return { pass: false, score: 0, reason: 'objective: urgency=' + p.urgency + ' violates this case allowed-set ' + JSON.stringify(ALLOWED) + ' (over/under-escalation)' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; urgency in ' + JSON.stringify(ALLOWED) + ')' };
