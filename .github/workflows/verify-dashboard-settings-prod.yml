@@ -44,7 +44,7 @@ jobs:
             exit 1
           fi
           echo "=== marker checks ==="
-          for MARKER in "Model Routing" "SLA" "Feature Flag" "triage" "respond" "kb_learn"; do
+          for MARKER in "Model Routing" "SLA" "Feature Flag" "triage" "respond" "kb_learn" "OpenAI" "Anthropic" "GPT-4o mini" "Claude Haiku"; do
             if grep -qi "$MARKER" /tmp/settings.html; then
               echo "  FOUND: $MARKER"
             else
