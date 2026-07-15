@@ -176,3 +176,19 @@ export const MODEL_ROUTING_ALLOWLIST: Readonly<Record<RoutingFunctionKey, readon
 export function isAllowedModel(functionKey: RoutingFunctionKey, alias: string): boolean {
   return MODEL_ROUTING_ALLOWLIST[functionKey]?.includes(alias) ?? false;
 }
+
+/**
+ * Cosmetic-only display names for the dashboard's Model Routing dropdowns
+ * (founder feedback, 2026-07-15: the raw LiteLLM alias strings gave no clue
+ * which provider each one actually calls). The underlying alias string —
+ * what's rendered as each <option>'s value, persisted via the settings API,
+ * and sent to LiteLLM — is completely unchanged; this map only swaps the
+ * label a person reads. A newly-admitted alias without an entry here still
+ * renders correctly (falls back to the raw alias, never crashes or hides
+ * the option) — see ModelRoutingForm's `MODEL_DISPLAY_NAMES[model] ?? model`.
+ */
+export const MODEL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  "triage-model": "OpenAI — GPT-4o mini",
+  "fallback-model": "Anthropic — Claude Haiku 4.5",
+  "meta/llama-3.3-70b-instruct": "Meta — Llama 3.3 70B (via NVIDIA)",
+} as const;
