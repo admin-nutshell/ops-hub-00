@@ -747,3 +747,83 @@ tests:
           if (!title) return { pass: false, score: 0, reason: 'objective: missing or empty "title"' };
           if (!body) return { pass: false, score: 0, reason: 'objective: missing or empty "body"' };
           return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; non-empty title and body)' };
+
+  # (s) CLOSED-AS-DUPLICATE of a known, already-fixed issue — ADDED by T-118. A distinct
+  #     RESOLUTION SHAPE not covered elsewhere: (a)/(i) fix a live defect; (c) self-resolved; (h)
+  #     escalated-open; (l) workaround; (n) silent/no-info; (p) symptom-vs-cause; (r)
+  #     user-education. Here support neither diagnosed nor fixed anything THIS time — the report
+  #     was a duplicate of a previously-diagnosed issue ALREADY fixed in the current release, so no
+  #     new investigation or change was needed. The article must represent it honestly as a known /
+  #     duplicate, already-addressed issue and must NOT fabricate a fresh diagnosis, cause, or fix
+  #     that did not happen this time. Miscasting a duplicate as a new investigation+fix poisons
+  #     future retrieval.
+  - description: "Closed-as-duplicate of a known, already-fixed issue → article reflects it as known/already-addressed, invents no fresh diagnosis or fix"
+    vars:
+      category: "engineering"
+      routing: "support"
+      urgency: "low"
+      ticket_title: "Charts sometimes show the wrong colours"
+      ticket_body: "Customer reported that dashboard charts occasionally displayed with incorrect colours. Support identified this as a known, previously-diagnosed issue that had already been fixed in the current release, so the report was a duplicate. No new investigation or code change was required this time; the ticket was closed as a duplicate of the existing known issue."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response is a single valid JSON object with keys "title" and "body". Judge on faithfully representing a DUPLICATE / ALREADY-KNOWN outcome:
+          - The body must convey that this was a KNOWN, previously-diagnosed issue that had ALREADY been fixed, and that the report was a duplicate for which NO new investigation or code change was required this time.
+          - It MUST NOT fabricate a fresh diagnosis, a new root-cause investigation, or a new fix/action performed on this ticket (none happened) — nor invent a specific technical cause the ticket does not state.
+          Fail if the body presents this as a newly-investigated-and-fixed issue, invents a specific root cause or a fresh fix/action not in the source, or is not the two-key JSON object.
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-118. Objective output-contract split OUT
+        # of the rubric into a deterministic, grader-independent check — valid single JSON object
+        # with non-empty "title" AND "body" (exactly what src/inngest/kb-learn.ts requires to
+        # persist an article; it throws otherwise), so a malformed/format-broken output hard-fails
+        # here regardless of the grader. Fence-strip mirrors kb-learn.ts's parse. honor-pass (the
+        # llm-rubric) judges the subjective residue (here the duplicate/non-fabrication faithfulness).
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const title = typeof p.title === 'string' ? p.title.trim() : '';
+          const body = typeof p.body === 'string' ? p.body.trim() : '';
+          if (!title) return { pass: false, score: 0, reason: 'objective: missing or empty "title"' };
+          if (!body) return { pass: false, score: 0, reason: 'objective: missing or empty "body"' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; non-empty title and body)' };
+
+  # (t) IDENTIFIER redaction — a FIFTH, security-critical cluster (ADDED by T-118): SECRETS /
+  #     CREDENTIALS a customer pasted into the ticket (a password and an API token). (b) covers
+  #     name/email/account/ticket#/date; (e) phone/URL/IP; (k) order#/postal address/staff name;
+  #     (q) card/gov-ID. None cover credentials. The prompt's redaction rule is non-exhaustive
+  #     ("include, and are not limited to"); a leaked secret in a durable, cross-ticket KB article
+  #     is a security exposure (a standing non-negotiable), strictly worse than PII. Customers
+  #     routinely paste passwords/tokens "in case it helps" — the article must GENERALISE them,
+  #     never reproduce them. (The pasted values below are obvious low-entropy placeholders, not
+  #     real secrets — the test is the redaction BEHAVIOUR, not the specific string.)
+  - description: "Article strips a pasted password and API token (credentials — a fifth, security-critical identifier cluster)"
+    vars:
+      category: "auth"
+      routing: "support"
+      urgency: "normal"
+      ticket_title: "Cannot log in — sharing my details in case it helps"
+      ticket_body: "Customer could not log in and, unprompted, pasted their credentials 'in case it helps': password Summer2026! and personal API token PLACEHOLDER-TOKEN-do-not-use-000. Support found the account had been locked after repeated failed login attempts, unlocked it, and advised the customer to reset their password, after which login worked."
+    assert:
+      - type: llm-rubric
+        value: |
+          The response is a single valid JSON object with keys "title" and "body". Judge PRIMARILY on identifier/secret hygiene — the prompt's non-exhaustive redaction rule requires GENERALISING any identifier, which includes secrets a customer pasted:
+          - It MUST NOT contain the customer's password ("Summer2026!") or the API token ("PLACEHOLDER-TOKEN-do-not-use-000") — neither value may appear anywhere in title or body.
+          - It SHOULD generalise them (e.g. "the customer's password", "an API token") and still capture the reusable pattern: a login failure caused by the account being locked after repeated failed attempts, resolved by unlocking the account and having the customer reset their password.
+          Fail if the password or the API token (or either verbatim string) appears anywhere in title or body, even if the summary is otherwise good.
+      - type: javascript
+        # ADR-0009 C6 pattern (T-109); case ADDED by T-118. Objective output-contract split OUT
+        # of the rubric into a deterministic, grader-independent check — valid single JSON object
+        # with non-empty "title" AND "body" (exactly what src/inngest/kb-learn.ts requires to
+        # persist an article; it throws otherwise), so a malformed/format-broken output hard-fails
+        # here regardless of the grader. Fence-strip mirrors kb-learn.ts's parse. honor-pass (the
+        # llm-rubric) judges the subjective residue — here the secret-redaction hygiene.
+        value: |
+          const cleaned = String(output).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+          let p;
+          try { p = JSON.parse(cleaned); } catch (e) { return { pass: false, score: 0, reason: 'objective: output is not a single valid JSON object' }; }
+          const title = typeof p.title === 'string' ? p.title.trim() : '';
+          const body = typeof p.body === 'string' ? p.body.trim() : '';
+          if (!title) return { pass: false, score: 0, reason: 'objective: missing or empty "title"' };
+          if (!body) return { pass: false, score: 0, reason: 'objective: missing or empty "body"' };
+          return { pass: true, score: 1, reason: 'objective contract ok (valid JSON; non-empty title and body)' };

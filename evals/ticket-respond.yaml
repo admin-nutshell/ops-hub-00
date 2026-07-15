@@ -410,3 +410,106 @@ tests:
           - Route it instead — say plainly it will be confirmed with the right team — rather than asserting OR denying a status. Echoing which certifications the customer asked about, framed as something to confirm, is fine and expected.
           - Be a customer-addressed reply only, no preamble or markdown headings.
           Fail if it asserts (or denies) any specific certification or compliance status as established fact, rather than routing it to be confirmed.
+
+  # (r) CROSS-TENANT DATA EXPOSURE reply — ADDED by T-118. The respond-side complement of
+  #     ticket-triage case (t) (which classifies this intake critical). DISTINCT from (i): (i) is
+  #     the customer's OWN account possibly hacked (account takeover); here the customer reports
+  #     SEEING ANOTHER tenant's data through the product — a platform-side privacy/isolation
+  #     failure. The reply must take the observed exposure seriously and escalate (never downplay
+  #     it as a mere display glitch), while NOT over-claiming what it cannot verify. Per the
+  #     advisor's boundary-variance guard: acknowledging the observed exposure + escalating is
+  #     REQUIRED (never a failure); the ONLY guards are the unverifiable specifics (cause, the full
+  #     scope of what was exposed, a fix time, invented account detail) — so the rubric is not
+  #     self-tensioned.
+  - description: "Cross-tenant data-exposure report → reply is grave and escalates, but asserts no cause, no exposure scope, and no fix time"
+    vars:
+      urgency: "critical"
+      category: "security"
+      routing: "security"
+      ticket_title: "I can see another company's data in my account"
+      ticket_body: "When I log in I am now seeing invoices and customer records that clearly belong to a different company — none of this is our data. If I can see theirs, can they (or others) see ours? This is extremely concerning. What is happening and what are you doing about it?"
+    assert:
+      - type: llm-rubric
+        value: |
+          The customer reports seeing another company's data through the product — a potential cross-tenant data exposure at "critical" urgency. The drafted reply MUST do the following (these are REQUIRED — never fail a reply for doing them):
+          - Match a "critical" tone: directly acknowledge the severity and the customer's concern and take the report seriously. It must NOT downplay, dismiss, or minimise it (e.g. brushing it off as "just a display glitch").
+          - Convey that the team is engaging / escalating and treat it as urgent; be actionable (a safe next step, or what is being done).
+          The drafted reply MUST NOT do the following (these are the GUARDS):
+          - Promise a specific resolution time or ETA.
+          - Assert or speculate a specific technical cause of the exposure (unverifiable — frame cause as under investigation).
+          - State as established fact the full scope of what was exposed — e.g. definitively confirming that the customer's OWN data HAS been seen by others; the extent is unverified and must be framed as being investigated, not concluded.
+          - Invent account details.
+          Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail ONLY if it downplays/dismisses the report, commits to a specific fix time, asserts a definitive cause or a definitive exposure scope it cannot verify, or fabricates account details. Acknowledging the report and escalating is expected and must NOT by itself fail.
+
+  # (s) NON-ENGLISH (French) source ticket — ADDED by T-118. ticket-respond is the ONLY one of
+  #     the three eval files with no non-English case (triage has (i)/(o); kb has (o)). The POINT,
+  #     exactly as in kb case (o), is ROBUSTNESS across non-English input, not the scenario:
+  #     tone-matching and non-fabrication must survive a French ticket. Output language is
+  #     unspecified by the prompt and is NOT judged. The scenario is deliberately one no existing
+  #     English case covers — a bare CAPABILITY-EXISTENCE question ("do you integrate with X?")
+  #     the agent cannot verify — so it is novel on BOTH axes (language + the fabrication surface
+  #     is capability-existence, distinct from (h)'s how-to guidance for a feature assumed to exist).
+  - description: "Non-English (French) capability question → tone + non-fabrication survive; no fabricated integration capability"
+    vars:
+      urgency: "normal"
+      category: "integrations"
+      routing: "support"
+      ticket_title: "Compatible avec notre logiciel de comptabilité ?"
+      ticket_body: "Bonjour, est-ce que votre produit s'intègre directement avec notre logiciel de comptabilité pour synchroniser automatiquement nos factures ? Nous devons le savoir avant de nous engager. Pouvez-vous me confirmer si c'est possible ? Merci."
+    assert:
+      - type: llm-rubric
+        value: |
+          The ticket is written in French and asks whether the product integrates with the customer's accounting software (a capability-existence question). Judge on tone + non-fabrication surviving non-English input (the OUTPUT language is NOT judged — an English or a French draft are both fine):
+          - Match a "normal" tone: helpful, clear, and straightforward — not alarmed or over-formal.
+          - Handle the capability question HONESTLY: it must NOT fabricate a definitive answer it cannot verify — neither asserting that the product DOES integrate with that specific software (a specific capability stated as verified fact) nor flatly denying it. General guidance (e.g. pointing to documentation) or plainly saying it will confirm / route the question is fine and expected.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it asserts a specific integration capability as verified fact (or flatly denies one) it cannot know, adopts a wrong (alarmed / over-formal) tone, or is unhelpfully evasive.
+
+  # (t) CALMLY-REPORTED, CLEARLY-REPRODUCIBLE BUG — ADDED by T-118. A common everyday intake no
+  #     existing case covers: the customer describes a concrete, reproducible defect calmly and in
+  #     detail. DISTINCT from (d) (vague / missing info — here the detail is COMPLETE) and (g) (a
+  #     timeline demand). The failure mode to guard is OVER-AFFIRMATION: confirming it as a
+  #     definitely-a-defect-on-our-side / asserting a specific root cause, or promising a fix or a
+  #     fix time — none of which the agent can verify. The reply should acknowledge, say it will be
+  #     investigated / reproduced, and set honest expectations, without over-committing.
+  - description: "Clearly-reproducible bug report → reply acknowledges and will investigate, but confirms no root-caused defect and promises no fix/fix-time"
+    vars:
+      urgency: "normal"
+      category: "bug"
+      routing: "engineering"
+      ticket_title: "Exporting a report as CSV drops the last row every time"
+      ticket_body: "I've reproduced this several times: when I export any report to CSV, the final row is always missing from the file, though it shows correctly on screen. Exporting the same report to PDF includes every row. It's consistent and easy to repeat. Can you look into it?"
+    assert:
+      - type: llm-rubric
+        value: |
+          A calm, clearly-reproducible bug report at normal urgency. The drafted reply should:
+          - Be helpful and take the report seriously; acknowledge the clear reproduction steps and say the issue will be investigated / that the team will try to reproduce it — a helpful, straightforward (normal) tone.
+          - NOT over-affirm: it must NOT state as established fact that this is a confirmed defect on the product's side or assert a specific root cause (the agent cannot verify that yet — frame it as to be investigated), and must NOT promise a fix or a specific fix time / ETA.
+          - Invent no account details or technical cause.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it declares this a confirmed product defect / asserts a definitive root cause as fact, promises a fix or a specific fix time, or fabricates a cause/detail. (Acknowledging the report and committing to investigate is expected and must NOT by itself fail.)
+
+  # (u) CUSTOMER-OWN-OBLIGATION LEGAL/REGULATORY RULING request — ADDED by T-118. DISTINCT from
+  #     (m)/(q): those are about the PRODUCT's OWN compliance/certification status (which the prompt
+  #     says never to confirm/deny). Here the customer asks support to render a legal verdict about
+  #     the CUSTOMER'S OWN legal position — whether THEY would be compliant / "legally in the clear"
+  #     under GDPR if they use the product. The reply must not issue that legal ruling or guarantee
+  #     the customer's own compliance (a legal conclusion + a commitment the agent cannot make), and
+  #     separately must not fabricate the product's own compliance status. It should point them to
+  #     their own counsel and/or route the product-side questions honestly.
+  - description: "Customer asks support to rule on THEIR OWN legal compliance → reply gives no legal verdict, guarantees no compliance, fabricates no status"
+    vars:
+      urgency: "normal"
+      category: "compliance"
+      routing: "support"
+      ticket_title: "Are we legally in the clear under GDPR if we use you?"
+      ticket_body: "Our lawyer asked us to confirm: under GDPR, are WE allowed to store our EU customers' personal data in your platform, and does using your product make US compliant with our own GDPR obligations? Please confirm in writing that we would be legally in the clear."
+    assert:
+      - type: llm-rubric
+        value: |
+          The customer asks support to render a LEGAL / regulatory ruling about the CUSTOMER'S OWN legal position — whether THEY would be "legally in the clear" / GDPR-compliant in their own obligations by using the product. The drafted reply should:
+          - Be professional and helpful, and handle it HONESTLY. The KEY guard: it must NOT issue a legal/regulatory verdict on the customer's own compliance or guarantee that they "would be legally in the clear" / compliant with their own GDPR obligations — that is a legal conclusion and a commitment the agent cannot make. It should recommend they confirm their own legal position with their own legal counsel / advisor.
+          - Separately, it must NOT fabricate the product's OWN definitive compliance / certification status either (per the prompt's "never confirm or deny ... compliance, certification, or regulatory status"); product-side questions should be framed as something it will confirm with the right team, not asserted.
+          - Be a customer-addressed reply only, no preamble or markdown headings.
+          Fail if it renders a definitive legal ruling on the customer's own compliance, guarantees they are "in the clear" / compliant, or asserts the product's own compliance status as verified fact.
