@@ -8380,3 +8380,77 @@ Artifact eval-baseline-0f73564b4eed6bae72527f23b9d2ccb0ee0c9196.
    raw) ; run 29380929011 (baseline recapture, 54/54 PASS) ; WORK.md
    Sprint 19 T-116 row (to be updated)
 ```
+
+### 2026-07-15 — T-117 MERGED — PR #462 (T-114's multi-sample escalation) landed after a clean rebase, zero logic drift; ships dormant (Coordinator, reviewing the Evals Lead's rebase)
+
+```
+2026-07-15 [Coordinator] Sprint 19 closed with nothing forced queued for
+Sprint 20; asked the user directly what to prioritize (per the Sprint
+17/18 precedent of not self-selecting an anchor) and the user chose to
+land PR #462 -- T-114's (Sprint 17) already-built, ADR-0009-approved
+optional per-case multi-sample grading escalation, held unmerged since
+Sprint 17 by the user's own explicit choice.
+
+The branch (`sprint-17-t114-multisample-escalation`) had gone 12 commits
+stale behind `main` since Sprint 17 (Sprints 18-19 both touched
+WORK.md/DECISIONS.md); `gh pr view 462` confirmed `CONFLICTING`/`DIRTY`
+before any work started. Dispatched to an Evals Lead agent in an
+ISOLATED WORKTREE (Sprint 11 §5.1 norm) with explicit instructions: merge
+main in, resolve conflicts, do NOT touch the mechanism's safety logic
+(majority-vote-of-honored-draws, tie->fail, fail-loud-on-<2-draws) --
+stop and report rather than resolve any code-file conflict -- and do NOT
+merge the PR (shared-safety-net boundary, needs the user's own direct
+authorization).
+
+Result: only two conflicts, both docs, both exactly as predicted --
+zero code-file conflicts. `WORK.md`: both sides had rewritten the same
+Sprint 17 table rows; the agent took main's closed-out version rather
+than trying to keep both (these were NOT append-style, unlike
+DECISIONS.md), then verified the branch's unique substance wasn't lost --
+the T-112 truth-table argument and the ~1-in-13 accepted-risk framing
+both already live on in `docs/retros/sprint-17.md`, and the T-114
+diagnosis numbers (24/24, 12/12) already live in main's own DECISIONS.md.
+`DECISIONS.md`: genuinely append-style, kept both the original Evals Lead
+build entry and main's later Coordinator review + T-115/T-116 entries;
+one dangling code-fence left by the diff3 merge (would have swallowed a
+heading into the wrong entry) was caught and closed.
+
+INDEPENDENTLY VERIFIED BEFORE ASKING FOR MERGE AUTHORIZATION (not taken
+on the build agent's report): `gh pr view 462` showed `mergeable:
+MERGEABLE`, `mergeStateStatus: CLEAN`. Pulled the actual `live-eval-gate`
+run log (29382982408) directly rather than trusting the checkmark -- its
+GREEN was a legitimate neutral-skip ("This PR touches no eval/prompt
+surface... spends nothing"), correct because the PR's real diff vs. main
+is only the mechanism/workflow files, no `evals/**` or prompt-body delta.
+Confirmed via git hash comparison that `live-run.sh`,
+`aggregate-multisample.py`, `diagnose-bundling-multisample.py`,
+`gen-live-config.py`, and the diagnostic workflow yml are byte-identical
+to Sprint 17's original build -- zero logic drift from the rebase. All 5
+required checks (Eval Gate, live-eval-gate, Lint & Type Check, Unit
+Tests, Security Scan) confirmed green from real run logs.
+
+PRESENTED TO THE USER PLAINLY (AskUserQuestion): merge now vs. hold
+longer. User chose merge now.
+
+MERGE: squash-merged (PR #462, commit e5ed240). `gh pr merge --squash
+--delete-branch` hit a benign error deleting the LOCAL branch (still
+checked out in the original, now-stale Sprint 17 build worktree) -- same
+known non-issue as prior merges (T-116's own entry notes an identical
+class of warning). The remote branch did not appear deleted either on
+first check, so it was cleaned up explicitly via `git push origin
+--delete sprint-17-t114-multisample-escalation`, confirmed deleted.
+
+NO BASELINE RECAPTURE NEEDED -- confirmed via the diff itself (not
+assumed) that this PR touches zero prompt/eval surface, so the
+live-eval-gate baseline is entirely unaffected by this merge.
+
+Mechanism ships DORMANT, same as originally built in Sprint 17: zero
+cases currently opt into `metadata.multiSample`. Turning it on for any
+specific case (the bundling case was already diagnosed as a stable
+rejection, not a good candidate) remains a separate, not-yet-made
+decision -- explicitly out of this task's scope.
+
+-> PR #462 (MERGED, commit e5ed240) ; run 29382982361 / 29382982408
+   (post-rebase CI, verified raw logs) ; remote branch deleted ; WORK.md
+   Sprint 20 T-117 row updated ; mechanism dormant, no case opted in
+```
