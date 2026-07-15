@@ -512,9 +512,9 @@ tests:
         value: |
           The response should:
           - Be ONLY a single valid JSON object with keys urgency, category, routing, reasoning.
-          - Set "urgency" to "critical" (a "high" read is tolerable): the ticket bundles a severe issue (all 50 staff completely locked out / system unusable — a full access outage) with a trivial one (a footer typo). Urgency MUST track the DOMINANT, most-severe problem, not be dragged down by the minor typo.
+          - Set "urgency" to "critical" or "high" (both are acceptable — see below): the ticket bundles a severe issue (all 50 staff completely locked out / system unusable — a full access outage) with a trivial one (a footer typo). Urgency must track the DOMINANT, most-severe problem, not be dragged down by the minor typo — the only wrong answers are the ones that anchor on the typo instead.
           - Use an availability/auth-outage category routed to an engineering/ops team.
-          Fail if urgency is "normal" or "low" (under-escalation by anchoring on the trivial typo), if the JSON is malformed, or if an out-of-enum value appears.
+          Fail if urgency is "normal" or "low" (under-escalation by anchoring on the trivial typo), if the JSON is malformed, or if an out-of-enum value appears. (Do not fail solely on a critical-vs-high judgement call — "high" is an accepted read of this same severe outage, not a separate under-escalation.)
       - type: javascript
         # ADR-0009 C6 (T-109): objective contract split OUT of the rubric into a
         # deterministic, grader-independent check — valid single JSON object, urgency in
