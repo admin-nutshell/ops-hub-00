@@ -8633,3 +8633,114 @@ decision -- explicitly out of this task's scope.
    (post-rebase CI, verified raw logs) ; remote branch deleted ; WORK.md
    Sprint 20 T-117 row updated ; mechanism dormant, no case opted in
 ```
+
+### 2026-07-15 — T-118/T-119/T-120 — the triage "bundling" case's live-gate instability root-caused to a genuine rubric defect, not grader variance, not the target model, not LiteLLM routing (Evals Lead, self-correcting across three rounds in one session)
+
+```
+2026-07-15 [Evals Lead] Sprint 21's anchor (T-118, PR #475: grow
+ticket-triage/ticket-respond/kb-learn to >=20 cases each, additive-only)
+hit the pre-existing, unchanged triage "bundling" case (total outage +
+trivial typo -> dominant-issue critical) failing the required
+live-eval-gate on every attempt. Diagnosing this correctly took three
+rounds and two corrected mid-session conclusions -- recorded here in
+full rather than only the final answer, because the wrong turns are
+themselves the finding a future session should not repeat.
+
+ROUND 1 (mischaracterized): read the case's reported row-level "score"
+of 0.5 across every failure as a near-threshold grader hedge and
+concluded "genuine grader/model variance" (6 single-draw live-gate runs,
+4 fail / 2 pass). This was WRONG. The 0.5 is an artifact of promptfoo
+averaging the case's TWO assertions (llm-rubric + ADR-0009 C6's
+deterministic javascript check) -- every failure was actually rubric
+0.0 + deterministic 1.0 (the deterministic check passes because `high`
+is in the case's own allowed-set) averaged to 0.5, never a real
+near-threshold score. Not caught until Round 2's per-draw evidence
+existed to compare against.
+
+ROUND 2 (T-119, at the user's direct request -- "turn on multi-sample
+escalation for the bundling case"): opted the case into T-114/PR #462's
+already-built, already-merged, previously-dormant `metadata.multiSample:
+3` mechanism (PR #477). Verified the mechanism itself works correctly
+(3 real target+grader draws, correct majority-vote aggregation, full
+per-draw logging -- confirmed against the actual live-gate run log, not
+assumed from a green checkmark). It did NOT unblock the case: all 3
+draws had the target answer `urgency:"high"`, and the grader returned an
+identical, substantive `pass:false, score:0.0` on all 3 -- a confident,
+unanimous rejection, not the near-floor hedge multi-sample exists to
+smooth (per ADR-0009's own design: "it can only smooth a case that
+genuinely flips around the line... it cannot rescue a case the grader
+stably rejects"). This also surfaced the Round-1 correction above (the
+0.5-as-artifact finding) and disproved Sprint 17/T-114's original
+"stable rejection, not variance" read of this same case (12/12 @ 0.0
+then; today a mix of firm 0.0-on-`high` and clean-pass-on-`critical`) --
+recorded as a correction to a prior session's conclusion, not silently
+overwritten.
+
+ROUND 3 (T-120, root cause -- pulled RAW target completions, not
+grader summaries): matched the target model's actual completions across
+all 9 draws gathered in Rounds 1-2 by their `system_fingerprint` field.
+Confirmed the SAME exact OpenAI `gpt-4o-mini` deployment (identical
+fingerprint every time -- ruling out the plausible-looking alternative
+hypothesis that `triage-model` was load-balancing between its two
+registered LiteLLM backends, NVIDIA NIM llama-3.3-70b and OpenAI
+gpt-4o-mini; it was not, this run's provider was consistently OpenAI),
+same prompt, same `temperature:0`, answered `critical` on some calls and
+`high` on others. That is genuine model-level output inconsistency at
+temperature 0 -- a real, known characteristic of hosted inference at
+scale, not a bug in the eval harness, the grading mechanism, or the
+routing config.
+
+Given that target inconsistency is real and not something an eval
+change can fix, the actual defect was then found in the RUBRIC, not the
+model: the case's rubric prose already said "(a 'high' read is
+tolerable)" and its own explicit fail-list only ever named `normal`/
+`low` as failing -- `high` was never a stated fail condition. But the
+grader failed `high` outright every time regardless, most plausibly
+reading the adjacent "Urgency MUST track the DOMINANT... problem"
+phrasing as a de facto requirement for `critical` specifically,
+contradicting the case's own stated tolerance one sentence earlier. This
+is the identical failure class ADR-0009 (P1: grader disagreeing with a
+tolerance the rubric itself states) was built to address, and the fix
+is the identical shape as PR #439 (case (g)'s original normal-vs-low
+calibration): remove the ambiguity, and add the same house idiom the
+sibling cases (i/j/m/p) already carry -- "(Do not fail solely on a
+critical-vs-high judgement call...)" (PR #478, 2-line change, no
+assertion type or deterministic check touched).
+
+VERIFIED, NOT ASSUMED CLEAN: the fix's first live-gate run passed, but
+the target happened to answer `critical` that draw -- not proof. A
+second, deliberately dispatched diagnostic run caught a `high` draw
+post-fix: grader returned `pass:true, score:1.0`, reasoning verbatim
+"the urgency is set to 'high', which is explicitly acceptable per the
+rubric for a severe outage." Direct confirmation on the exact failure
+mode, not an inference from a lucky pass. Separately, built a throwaway
+branch combining T-118's eval-growth branch with T-120's fix commit
+(clean cherry-pick, no conflicts) and confirmed a full zero-regression
+live-gate pass, then deleted the branch -- so the fix is confirmed to
+unblock BOTH open PRs once merged, not just #478 in isolation.
+
+One unrelated, single-occurrence data point surfaced along the way and
+deliberately NOT chased: `ticket-triage::Non-English (French)
+total-outage ticket...` regressed once (score 0) during T-119's run.
+Reported to the user as an open item, not escalated to an infrastructure
+claim -- one occurrence is not a pattern, per this session's own
+"verify before calling variance" standing norm.
+
+NONE of PRs #475/#477/#478 were self-merged -- all three touch either
+new eval content, the shared merge-blocking gate's per-case escalation
+opt-in, or an existing case's calibration, and stayed open awaiting the
+user's/Coordinator's review throughout. Two small pure-docs PRs (#476,
+#479 -- WORK.md status updates only, zero code/gate/prod surface) WERE
+self-merged during this session as routine record-keeping, consistent
+with how this repo has always treated docs-only PRs.
+
+-> PR #475 (T-118, OPEN, eval growth, still needs the rubric fix
+   rebased in) ; PR #477 (T-119, OPEN, multiSample opt-in -- now
+   optional, not required, if #478 merges) ; PR #478 (T-120, OPEN, the
+   actual fix, recommended for merge) ; runs 29384509222 (PR #475
+   original 4 attempts) / 29409858412, 29410129950 (diagnostic re-runs)
+   / 29411239349 (T-119) / 29413319263, 29413651460 (T-120 verification)
+   / 29414410282 (combined T-118+T-120 throwaway-branch check, deleted
+   after) ; WORK.md Sprint 21 T-118/T-119/T-120 rows ; PR #476 and #479
+   (MERGED, docs-only)
+```
