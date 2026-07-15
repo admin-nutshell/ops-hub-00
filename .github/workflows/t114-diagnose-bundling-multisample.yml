@@ -1,0 +1,147 @@
+name: T-114 diagnose bundling multi-sample
+
+# T-114 (ADR-0009 Option 1). A DISPATCH-ONLY diagnostic — NOT a gate, NOT merge-blocking.
+# It answers ONE empirical question the n=1 evidence from PR #456 cannot: does the grader
+# STABLY reject a `high` answer on the "bundling total outage + trivial typo" case (a
+# confident disagreement multi-sample must not overturn), or does it FLIP across repeated
+# draws (genuine near-threshold variance multi-sample is the right tool for)?
+#
+# It runs the shipped multi-sample mechanism against T-112's PROPOSED prompt wording, read
+# READ-ONLY from PR #456's branch (git fetch/show — we never write to that branch). main's
+# prompt reliably answers `critical` here, so it cannot elicit the `high` answer in question;
+# only T-112's reworded `high` bullet does.
+#
+# SECRET POSTURE (mirrors eval-gate-live.yml): only the scoped, budget-capped
+# LITELLM_EVAL_KEY (T-90) enters the job. The master key is never referenced. A judge
+# preflight neutral-skips loudly if the grader alias is unreachable (FQ-70 detector).
+
+on:
+  # push trigger scoped to the diagnostic's own files (this branch), because a
+  # workflow_dispatch workflow is only dispatchable once it exists on the default
+  # branch — which this one deliberately does not. Scoped paths keep later doc/marker
+  # commits from re-spending metered calls; touch the driver/workflow to re-run.
+  push:
+    branches: [sprint-17-t114-multisample-escalation]
+    paths:
+      - scripts/eval/diagnose-bundling-multisample.py
+      - .github/workflows/t114-diagnose-bundling-multisample.yml
+  workflow_dispatch:
+    inputs:
+      target_alias:
+        description: 'LiteLLM target alias (model under test)'
+        required: false
+        default: 'triage-model'
+      judge_alias:
+        description: 'LiteLLM grader alias — MUST differ from target (§5.3)'
+        required: false
+        default: 'fallback-model'
+      na:
+        description: 'Instrument A draws (target+grader on T-112 prompt)'
+        required: false
+        default: '8'
+      nb:
+        description: 'Instrument B draws (judge-only re-grade of one frozen high output)'
+        required: false
+        default: '12'
+      t112_ref:
+        description: 'Branch/ref to read T-112 proposed prompt from (read-only)'
+        required: false
+        default: 't112-triage-high-escalation-clarify'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_ALIAS: ${{ github.event.inputs.target_alias || 'triage-model' }}
+      JUDGE_ALIAS: ${{ github.event.inputs.judge_alias || 'fallback-model' }}
+      LITELLM_BASE: https://litellm-staging.inatechshell.ca/v1
+      OUT_DIR: /tmp/t114-diag
+    steps:
+      - name: Checkout (this branch — has the driver + shipped mechanism)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5
+        with:
+          python-version: '3.11'
+
+      - name: Extract T-112's proposed triage prompt (READ-ONLY from PR #456's branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          REF='${{ github.event.inputs.t112_ref || 't112-triage-high-escalation-clarify' }}'
+          git fetch origin "$REF"
+          git show "FETCH_HEAD:evals/ticket-triage.yaml" > "$OUT_DIR/t112-ticket-triage.yaml"
+          echo "Extracted T-112 eval file ($(wc -l < "$OUT_DIR/t112-ticket-triage.yaml") lines). urgency bullets:"
+          grep -E '^\s*urgency ' "$OUT_DIR/t112-ticket-triage.yaml" || true
+
+      - name: Guard — scoped eval key present (NOT the master key)
+        id: keyguard
+        env:
+          LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "${LITELLM_EVAL_KEY:-}" ]; then
+            echo "::error::LITELLM_EVAL_KEY absent — cannot run the diagnostic (needs the scoped LiteLLM key)."
+            exit 1
+          fi
+          echo "::add-mask::$LITELLM_EVAL_KEY"
+          echo "Scoped eval key present."
+
+      - name: Judge preflight (grader != target; FQ-70 detector)
+        id: preflight
+        env:
+          LITELLM_EVAL_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          echo "::add-mask::$LITELLM_EVAL_KEY"
+          HTTP=$(curl -s -o "$OUT_DIR/judge-preflight.json" -w "%{http_code}" --max-time 30 \
+            -H "Authorization: Bearer $LITELLM_EVAL_KEY" -H "Content-Type: application/json" \
+            -d "{\"model\":\"$JUDGE_ALIAS\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":1}" \
+            "$LITELLM_BASE/chat/completions" || echo "000")
+          echo "Judge preflight -> HTTP ${HTTP} for model=$JUDGE_ALIAS"
+          head -c 300 "$OUT_DIR/judge-preflight.json" || true
+          case "$HTTP" in
+            2*) echo "Judge reachable — proceeding." ;;
+            *) echo "::error::Judge alias '$JUDGE_ALIAS' returned HTTP ${HTTP}. If FQ-70 (fallback-model credit exhaustion) has re-fired this is expected; otherwise the judge is broken. Cannot run the diagnostic."; exit 1 ;;
+          esac
+
+      - name: Run the two-instrument diagnostic
+        env:
+          OPENAI_API_KEY: ${{ secrets.LITELLM_EVAL_KEY }}
+        run: |
+          set -uo pipefail
+          echo "::add-mask::$OPENAI_API_KEY"
+          pip install --quiet pyyaml
+          python3 scripts/eval/diagnose-bundling-multisample.py \
+            --t112-eval-file "$OUT_DIR/t112-ticket-triage.yaml" \
+            --target-alias "$TARGET_ALIAS" \
+            --judge-alias "$JUDGE_ALIAS" \
+            --litellm-base "$LITELLM_BASE" \
+            --out-dir "$OUT_DIR" \
+            --na "${{ github.event.inputs.na || '24' }}" \
+            --nb "${{ github.event.inputs.nb || '12' }}" 2>&1 | tee "$OUT_DIR/diagnosis.log"
+
+      - name: Upload diagnostic artifacts (raw draws — the deliverable)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: t114-diagnosis
+          path: |
+            /tmp/t114-diag/diagnosis.log
+            /tmp/t114-diag/diagA-results.json
+            /tmp/t114-diag/diagB-results.json
+          if-no-files-found: warn
