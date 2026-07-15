@@ -235,7 +235,10 @@ describe("learnFromResolvedTicket", () => {
         .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
         .mockResolvedValueOnce({
           ok: true,
-          json: async () => ({ model: "meta/llama-3.3-70b-instruct", choices: [{ message: { content: KB_JSON } }] }),
+          json: async () => ({
+            model: "meta/llama-3.3-70b-instruct",
+            choices: [{ message: { content: KB_JSON } }],
+          }),
         })
     );
 
@@ -254,7 +257,11 @@ describe("learnFromResolvedTicket", () => {
       vi
         .fn()
         .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
-        .mockResolvedValueOnce({ ok: false, status: 429, text: async () => "Fallback rate limited" })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          text: async () => "Fallback rate limited",
+        })
     );
 
     await expect(learnFromResolvedTicket(pool, "t1", "proj-1", "tenant-1")).rejects.toThrow(
@@ -276,8 +283,14 @@ describe("learnFromResolvedTicket", () => {
       "fetch",
       vi
         .fn()
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: leaky } }] }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: leaky } }] }) })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ choices: [{ message: { content: leaky } }] }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ choices: [{ message: { content: leaky } }] }),
+        })
     );
 
     await expect(learnFromResolvedTicket(pool, "t1", "proj-1", "tenant-1")).rejects.toThrow(

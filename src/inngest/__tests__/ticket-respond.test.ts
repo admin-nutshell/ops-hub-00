@@ -331,7 +331,11 @@ describe("respondOneTicket", () => {
       vi
         .fn()
         .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
-        .mockResolvedValueOnce({ ok: false, status: 429, text: async () => "Fallback rate limited" })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          text: async () => "Fallback rate limited",
+        })
     );
     const deliver = vi.fn<FreeScoutDelivery>().mockResolvedValue(undefined);
 
