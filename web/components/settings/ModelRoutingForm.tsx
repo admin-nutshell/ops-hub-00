@@ -2,7 +2,7 @@
 
 import { useId, useState } from "react";
 import { useRouter } from "next/navigation";
-import { isAllowedModel, type RoutingFunctionKey } from "../../../src/config/model-allowlist";
+import { isAllowedModel, MODEL_DISPLAY_NAMES, type RoutingFunctionKey } from "../../../src/config/model-allowlist";
 import { postSettings, friendlyWriteError } from "../../lib/apiClient";
 import { WriteStatus, type WriteStatusState } from "./WriteStatus";
 
@@ -59,7 +59,10 @@ export function ModelRoutingForm({
     });
 
     if (result.ok) {
-      setStatus({ kind: "success", message: `Saved — ${FUNCTION_LABEL[functionKey]} now pinned to "${primary}".` });
+      setStatus({
+        kind: "success",
+        message: `Saved — ${FUNCTION_LABEL[functionKey]} now pinned to "${MODEL_DISPLAY_NAMES[primary] ?? primary}".`,
+      });
       // Re-run the page's Server Component reads so the "override set" /
       // "no override" header (and every other section's initial values)
       // reflect what was just written, instead of staying keyed to the props
@@ -98,7 +101,7 @@ export function ModelRoutingForm({
             </option>
             {allowedPrimary.map((model) => (
               <option key={model} value={model}>
-                {model}
+                {MODEL_DISPLAY_NAMES[model] ?? model}
               </option>
             ))}
           </select>
@@ -116,7 +119,7 @@ export function ModelRoutingForm({
               <option value={NO_FALLBACK}>No fallback</option>
               {allowedFallback.map((model) => (
                 <option key={model} value={model}>
-                  {model}
+                  {MODEL_DISPLAY_NAMES[model] ?? model}
                 </option>
               ))}
             </select>
