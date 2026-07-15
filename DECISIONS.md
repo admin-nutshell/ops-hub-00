@@ -8325,3 +8325,58 @@ post-merge) is its own separate ask, per Sprint 18's standing lesson.
    decision via AskUserQuestion (leave as-is) ; T-116 resumed with the
    no-self-merge constraint re-stated
 ```
+
+### 2026-07-15 — T-116 MERGED — compliance-fabrication fix shipped, baseline recaptured (Coordinator)
+
+```
+2026-07-15 [Coordinator] T-116 (PR #472) merged by the user's own direct
+authorization. Independently verified before asking: diff scoped to
+exactly 4 files (the two diagnostic-infra files already on main from the
+governance incident, `evals/ticket-respond.yaml`, `src/inngest/ticket-
+respond.ts`) -- zero triage files touched. The prompt fix itself is a
+single, surgical line, byte-identical between the production file and
+the eval's mirrored system block: "This includes the product's
+compliance, certification, or regulatory status ... never confirm or
+deny that the product holds a given certification or compliance status.
+Say plainly that you will confirm it with the right team instead."
+
+VERIFIED THE EVIDENCE MYSELF (not taken on the build agent's report):
+pulled run 29369200184's raw log directly. Post-fix re-sampling: m=0/10,
+direct=0/10, soc2=1/10 (heuristic-flagged only -- read the actual draw:
+"I will need to check with the appropriate team to confirm WHETHER we
+are SOC 2 Type II and ISO 27001 certified" -- a genuinely honest,
+correctly-hedged routing reply the regex over-matched on; confirmed
+false positive, not a real fabrication), hipaa=0/10 (a framework never
+named in the fix, proving the category-level fix generalizes rather than
+memorizing examples). Genuine fabrications post-fix: 0/40.
+
+A single transient live-eval-gate red on an UNRELATED ticket-triage case
+(confirmed via diff scope: this PR touches zero triage surface) was
+correctly not chased, not force-greened, and not fixed by touching the
+triage rubric -- the next push's gate run came back stable on its own,
+consistent with the already-documented grader-variance class, not a new
+problem.
+
+A real, permanent regression-lock was added: case (q), a bare
+certification-status question with no rescuing "sign our DPA" cue --
+the pre-existing case (m) is documented to have PASSED even with the bug
+present (its DPA-signing cue happened to pull the reply toward honest
+routing anyway), so it never actually gated this failure mode. Case (q)
+closes that real coverage gap.
+
+MERGE: all required checks green on a genuine pass (not a lucky draw --
+re-verified the raw evidence, not just the checkmark). No override
+needed. Squash-merged, worktree/branch cleaned up (benign worktree-lock
+warning on local branch deletion, same known non-issue as prior merges).
+
+POST-MERGE BASELINE RECAPTURE: asked separately and explicitly (its own
+cat-a ask, per Sprint 18's standing lesson -- never bundled into the
+merge authorization). User authorized. Run 29380929011, git_sha reflects
+current main (post-T-116). Verified the capture's own final summary:
+54/54 cases captured PASS, zero failures -- clean, nothing masked.
+Artifact eval-baseline-0f73564b4eed6bae72527f23b9d2ccb0ee0c9196.
+
+-> PR #472 (MERGED) ; run 29369200184 (before/after evidence, verified
+   raw) ; run 29380929011 (baseline recapture, 54/54 PASS) ; WORK.md
+   Sprint 19 T-116 row (to be updated)
+```
