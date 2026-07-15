@@ -8744,3 +8744,95 @@ with how this repo has always treated docs-only PRs.
    after) ; WORK.md Sprint 21 T-118/T-119/T-120 rows ; PR #476 and #479
    (MERGED, docs-only)
 ```
+
+### 2026-07-15 — T-121: real fallback-model support added to Respond and KB Learn, superseding ADR-0006's Triage-only scope (build agent, at the user's own "go ahead")
+
+```
+2026-07-15 [build agent] Founder asked directly whether the current
+model configuration was robust enough; the honest answer was no --
+Triage has a fallback model, but Respond and KB Learn have none, so a
+single outage on their one configured model (triage-model, OpenAI) stops
+drafting/KB-learning outright. Founder said "go ahead" to adding real
+backups for both. ADR-0006 had explicitly deferred this ("separate
+backend work and a separate capability change (own eval), explicitly
+out of Sprint 7 scope"), so this is scoped and recorded as its own
+decision, not folded silently into the earlier one.
+
+RESEARCHED BEFORE BUILDING: the DB schema (`agent_model_routing.
+fallback_model`) already supported a fallback value for all three
+functions -- no migration needed. Three separate application-code gates
+were the only thing restricting fallback to `triage`:
+`modelRouting.ts`'s FUNCTION_ROUTING config (respond/kb_learn omitted
+fallbackEnv/fallbackLiteral entirely), `settingsWrite.ts`'s explicit
+`fk !== "triage"` validation guard, and the dashboard's
+ModelRoutingSection.tsx hardcoding `allowedFallback` to null for both
+functions. Four existing unit tests (`modelRouting.test.ts` x2,
+`settingsWrite.test.ts` x2) actively asserted the OLD primary-only
+behavior as correct -- these were intentional invariants pinning
+ADR-0006's scope, not stale coverage, so they were deliberately
+inverted rather than silently widened.
+
+MODEL CHOICE: `meta/llama-3.3-70b-instruct` was picked as the fallback
+literal for both functions, not `fallback-model` (Anthropic, Triage's
+own fallback). Reasoning: (1) it is a genuinely different provider
+(NVIDIA-hosted Llama vs. triage-model's OpenAI), which is the actual
+redundancy value being bought -- a single provider's outage cannot take
+either function down; (2) it was ALREADY live-vetted for both respond
+and kb_learn specifically (T-100: evals/ticket-respond.yaml LIVE 9/9;
+T-96 C7: evals/kb-learn.yaml LIVE 4/4 -- both cited in
+src/config/model-allowlist.ts), so turning this on required zero new
+eval-gate admission work. `fallback-model` was never vetted for
+respond/kb_learn and stays off both allowlists.
+
+ERROR-TYPE JUDGEMENT CALL (kb-learn specifically): generateKbArticle()
+throws on missing env, non-OK HTTP, JSON-parse failure, AND a PII-leak
+rejection (findPiiKind, T-88) -- a content-safety throw, not a transport
+failure, that respond/triage don't have an equivalent of. Considered
+whether a PII rejection should be excluded from the fallback retry (to
+avoid ever "masking" a safety rejection) and concluded a scoped
+catch-all is safe here BECAUSE the retry re-invokes the SAME
+generateKbArticle() function against the fallback model, so the
+redaction check re-runs on the fallback's own output automatically --
+the gate is never bypassed, only re-applied to a second draw. If the
+primary leaks AND the fallback also leaks (or fails for any other
+reason), the code re-throws the PRIMARY error (not the fallback's),
+mirroring ticket-triage's established "surface the primary failure"
+pattern -- so a genuine rejection is never silently swallowed into a
+false "created" result. A new unit test pins this exact scenario
+(primary leaks, fallback also leaks -> throws, no INSERT).
+
+Both respond and kb-learn now log a console.warn on entering the
+fallback attempt (function, ticket id, fallback alias, primary error
+string) -- added specifically so a primary-model failure is observable
+even when the fallback succeeds and the ticket completes normally,
+which triage's own pattern does not currently do (its primary error is
+only ever recorded if BOTH attempts fail). Not backported into
+ticket-triage.ts itself -- T-23's original scope forbade touching that
+file, and it is working, tested, production code; out of scope here.
+
+VERIFIED: full backend suite green (7369 passed, 1191 skipped --
+skips are staging-credential-gated integration tests, expected in this
+environment), `tsc --noEmit` clean. web/'s own typecheck could not run
+in this environment (web/node_modules was never installed here -- a
+pre-existing environment gap, confirmed unrelated to this change by
+checking it fails identically on files this task never touched, e.g.
+app/layout.tsx). The web-layer change itself is a one-line prop swap
+(ModelRoutingSection.tsx: `allowedFallback` now passes
+MODEL_ROUTING_ALLOWLIST[functionKey] instead of a hardcoded
+triage-only ternary) reusing an already-generic, already-tested
+component (ModelRoutingForm.tsx needed no changes at all).
+
+Governance: this is a real behavioral capability change to two
+production agent functions, not a docs/label fix -- consistent with
+every other shared-capability change this session, it is NOT
+self-merged. Recorded in ADR-0006 (superseded-in-place note on the
+original "Fallback scope" line) and here, and stays open awaiting the
+user's own direct, in-the-moment merge authorization.
+
+-> ADR-0006 (superseded-in-place note added under "Fallback scope") ;
+   src/inngest/modelRouting.ts, ticket-respond.ts, kb-learn.ts ;
+   src/metrics/settingsWrite.ts ; src/config/model-allowlist.ts (doc
+   comment only, allowlists unchanged) ; web/components/settings/
+   ModelRoutingSection.tsx ; test updates across modelRouting.test.ts,
+   settingsWrite.test.ts, ticket-respond.test.ts, kb-learn.test.ts
+```

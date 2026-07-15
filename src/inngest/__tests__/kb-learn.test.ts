@@ -8,9 +8,10 @@ import { makeClient, makePool, mockFetchOk } from "./helpers";
  * kb-learn had no dedicated unit suite before T-73 wired resolveModelRouting
  * into it. These establish baseline coverage AND prove the resolved model is
  * the one actually sent to LiteLLM (replacing the former hardcoded
- * `LITELLM_TRIAGE_MODEL ?? "triage-model"`). KB Learn is primary-only this
- * sprint, so its list allows exactly `triage-model`; the resolver test suite
+ * `LITELLM_TRIAGE_MODEL ?? "triage-model"`). The resolver test suite
  * (modelRouting.test.ts) covers precedence/fail-closed independently.
+ * As of T-121, kb_learn carries a fallback slot too — covered below by the
+ * fallback-retry tests, mirroring ticket-triage's/-respond's pattern.
  *
  * pg Pool + fetch are mocked; no real DB or LLM.
  */
@@ -222,6 +223,82 @@ describe("learnFromResolvedTicket", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect((JSON.parse(init.body as string) as { model: string }).model).toBe("triage-model");
+  });
+
+  it("falls back to the fallback model when the primary generation fails (T-121)", async () => {
+    const client = makeClient(fetchTxn(resolvedRow(), []));
+    const pool = makePool(client);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            model: "meta/llama-3.3-70b-instruct",
+            choices: [{ message: { content: KB_JSON } }],
+          }),
+        })
+    );
+
+    const result = await learnFromResolvedTicket(pool, "t1", "proj-1", "tenant-1");
+
+    expect(result).toEqual({ created: true, title: "Auth: password reset email not received" });
+    const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string, unknown[]?][];
+    expect(calls.some(([q]) => q.includes("INSERT INTO kb_articles"))).toBe(true);
+  });
+
+  it("throws the PRIMARY error when both primary and fallback generation fail (T-121)", async () => {
+    const client = makeClient(fetchTxn(resolvedRow(), []));
+    const pool = makePool(client);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          text: async () => "Fallback rate limited",
+        })
+    );
+
+    await expect(learnFromResolvedTicket(pool, "t1", "proj-1", "tenant-1")).rejects.toThrow(
+      "LiteLLM 503"
+    );
+
+    const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string, unknown[]?][];
+    expect(calls.some(([q]) => q.includes("INSERT INTO kb_articles"))).toBe(false);
+  });
+
+  it("a PII-leak rejection from the primary is NOT masked when the fallback also leaks (T-121)", async () => {
+    const client = makeClient(fetchTxn(resolvedRow(), []));
+    const pool = makePool(client);
+    const leaky = JSON.stringify({
+      title: "Billing: duplicate charge",
+      body: "Confirmed with maria.gonzalez@example.com.",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ choices: [{ message: { content: leaky } }] }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ choices: [{ message: { content: leaky } }] }),
+        })
+    );
+
+    await expect(learnFromResolvedTicket(pool, "t1", "proj-1", "tenant-1")).rejects.toThrow(
+      /rejected: embedded email/
+    );
+
+    const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string, unknown[]?][];
+    expect(calls.some(([q]) => q.includes("INSERT INTO kb_articles"))).toBe(false);
   });
 
   it("skips a ticket that does not exist (no LLM call, no INSERT)", async () => {

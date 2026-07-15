@@ -23,7 +23,7 @@ export function ModelRoutingForm({
 }: {
   functionKey: RoutingFunctionKey;
   allowedPrimary: readonly string[];
-  /** null for respond/kb_learn — only triage carries fallback logic this sprint (ADR-0006). */
+  /** null when a function has no fallback slot to offer (none currently — all three carry one as of T-121). */
   allowedFallback: readonly string[] | null;
   initialPrimary: string | null;
   initialFallback: string | null;

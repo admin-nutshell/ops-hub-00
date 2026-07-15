@@ -8,9 +8,8 @@ const ORDER: readonly RoutingFunctionKey[] = ["triage", "respond", "kb_learn"];
 // Per-function model-routing editor (ADR-0006 Decision A, T-75). Dropdown
 // options come ONLY from src/config/model-allowlist.ts (T-79's curated
 // allowlist) — never a separately-hardcoded list that could drift from the
-// backend's own isAllowedModel() validation. Only "triage" carries a
-// fallback slot this sprint (Respond/KB Learn are primary-only, ADR-0006
-// §Fallback scope).
+// backend's own isAllowedModel() validation. All three functions carry a
+// fallback slot as of T-121 (DECISIONS.md 2026-07-15).
 export async function ModelRoutingSection() {
   let overrides: Awaited<ReturnType<typeof loadModelRoutingOverrides>>;
   try {
@@ -34,7 +33,7 @@ export async function ModelRoutingSection() {
           key={functionKey}
           functionKey={functionKey}
           allowedPrimary={MODEL_ROUTING_ALLOWLIST[functionKey]}
-          allowedFallback={functionKey === "triage" ? MODEL_ROUTING_ALLOWLIST.triage : null}
+          allowedFallback={MODEL_ROUTING_ALLOWLIST[functionKey]}
           initialPrimary={overrides[functionKey]?.primaryModel ?? null}
           initialFallback={overrides[functionKey]?.fallbackModel ?? null}
         />

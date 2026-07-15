@@ -126,9 +126,12 @@ export type RoutingFunctionKey = "triage" | "respond" | "kb_learn";
 /**
  * Per-function curated allowlist of selectable LiteLLM alias strings.
  *
- * The list differs by function because the functions' production posture
- * differs (per ADR-0006): only Triage carries a fallback this sprint, so only
- * Triage may select `fallback-model`; Respond and KB Learn are primary-only.
+ * As of T-121 (DECISIONS.md 2026-07-15), all three functions carry a fallback
+ * slot — the list below is what each function's PRIMARY *or* FALLBACK picker
+ * may select from; which alias actually resolves into which slot is a
+ * per-function `agent_model_routing` row (T-73/T-121), not a separate list.
+ * `fallback-model` (Anthropic) remains Triage-only: it was vetted for triage
+ * only (T-100), never for respond/kb_learn, so it stays off their lists.
  */
 export const MODEL_ROUTING_ALLOWLIST: Readonly<Record<RoutingFunctionKey, readonly string[]>> = {
   // Triage runs `triage-model` (primary) + `fallback-model` (fallback) today
