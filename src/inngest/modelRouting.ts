@@ -47,15 +47,15 @@ import { isAllowedModel, type RoutingFunctionKey } from "../config/model-allowli
 export type ResolvedRouting = {
   /** The alias to try first. Always a value in this function's allowlist. */
   primary: string;
-  /** Triage-only this sprint; `null` for respond / kb_learn (primary-only). */
+  /** The alias to retry once if the primary call fails, or `null` if this
+   * function has no fallback configured (T-121; all three functions carry a
+   * fallback slot now — see DECISIONS.md 2026-07-15). */
   fallback: string | null;
 };
 
 type FunctionRoutingConfig = {
   primaryEnv: string;
   primaryLiteral: string;
-  // Fallback is Triage-only this sprint (ADR-0006 §Fallback scope). respond /
-  // kb_learn omit these → fallback resolves to null (no fallback retry logic).
   fallbackEnv?: string;
   fallbackLiteral?: string;
 };
@@ -71,15 +71,26 @@ const FUNCTION_ROUTING: Record<RoutingFunctionKey, FunctionRoutingConfig> = {
   },
   respond: {
     // NEW per-function default (T-73). Unset until T-81 provisions it → respond
-    // falls to the literal "triage-model", which is respond's ONLY allowlisted
-    // model, so the transition is correct-by-design.
+    // falls to the literal "triage-model".
     primaryEnv: "LITELLM_RESPOND_MODEL",
     primaryLiteral: "triage-model",
+    // T-121: fallback added (ADR-0006 §Fallback scope superseded). The literal
+    // is `meta/llama-3.3-70b-instruct` — a DIFFERENT provider (NVIDIA-hosted
+    // Llama vs. triage-model's OpenAI) already live-vetted for respond
+    // (T-100, DECISIONS.md 2026-07-12, 9/9), so redundancy is real (a single
+    // provider's outage cannot take drafting down) and no new eval admission
+    // was needed to turn this on.
+    fallbackEnv: "LITELLM_RESPOND_FALLBACK_MODEL",
+    fallbackLiteral: "meta/llama-3.3-70b-instruct",
   },
   kb_learn: {
     // NEW per-function default (T-73). Same story as respond.
     primaryEnv: "LITELLM_KBLEARN_MODEL",
     primaryLiteral: "triage-model",
+    // T-121: same rationale as respond's fallback, above — already live-vetted
+    // for kb_learn (T-96 C7, DECISIONS.md 2026-07-12, 4/4).
+    fallbackEnv: "LITELLM_KBLEARN_FALLBACK_MODEL",
+    fallbackLiteral: "meta/llama-3.3-70b-instruct",
   },
 };
 

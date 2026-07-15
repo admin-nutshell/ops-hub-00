@@ -8,7 +8,7 @@ import { makeClient } from "./helpers";
  *
  * Covers the full precedence ladder (table row → env default → alias literal),
  * the allowlist fail-closed backstop, the pre-migration (42P01) graceful
- * degradation, and the Triage-only fallback rule. All DB access is mocked via
+ * degradation, and fallback resolution for all three functions (T-121). All DB access is mocked via
  * the shared makeClient (positional query responses); no real DB.
  *
  * The resolver takes an already-open PoolClient (not a Pool) BY DESIGN — it
@@ -131,7 +131,7 @@ describe("resolveModelRouting", () => {
     expect(warn.mock.calls[0]?.[0]).toContain("out-of-allowlist");
   });
 
-  it("FAIL-CLOSED — a table value not in a primary-only function's list is refused too", async () => {
+  it("FAIL-CLOSED — a table value not in respond's own list is refused too", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const client = makeClient([
       { rows: [] }, // SAVEPOINT
@@ -142,7 +142,9 @@ describe("resolveModelRouting", () => {
 
     const routing = await resolveModelRouting(client, "proj-1", "respond");
 
-    expect(routing).toEqual({ primary: "triage-model", fallback: null });
+    // Primary falls to its literal; fallback (no row value) falls to ITS OWN
+    // literal default (T-121) — the two slots resolve independently.
+    expect(routing).toEqual({ primary: "triage-model", fallback: "meta/llama-3.3-70b-instruct" });
     expect(warn).toHaveBeenCalledOnce();
   });
 
@@ -169,7 +171,7 @@ describe("resolveModelRouting", () => {
 
     const routing = await resolveModelRouting(client, "proj-1", "kb_learn");
 
-    expect(routing).toEqual({ primary: "triage-model", fallback: null });
+    expect(routing).toEqual({ primary: "triage-model", fallback: "meta/llama-3.3-70b-instruct" });
   });
 
   it("PROPAGATES — a non-42P01 DB error is not swallowed", async () => {
@@ -178,30 +180,47 @@ describe("resolveModelRouting", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Fallback scope: Triage-only this sprint
+  // Fallback resolution — all three functions carry a fallback (T-121,
+  // DECISIONS.md 2026-07-15; supersedes the old Triage-only scope these two
+  // tests used to pin).
   // -------------------------------------------------------------------------
-  it("FALLBACK SCOPE — respond is primary-only (fallback is null even if the row names one)", async () => {
+  it("FALLBACK — respond honours an allowlisted row fallback (meta/llama, T-121)", async () => {
     const client = makeClient([
       { rows: [] }, // SAVEPOINT
+      { rows: [{ primary_model: "triage-model", fallback_model: "meta/llama-3.3-70b-instruct" }] },
+      { rows: [] }, // RELEASE
+    ]);
+
+    const routing = await resolveModelRouting(client, "proj-1", "respond");
+
+    expect(routing).toEqual({ primary: "triage-model", fallback: "meta/llama-3.3-70b-instruct" });
+  });
+
+  it("FALLBACK — respond falls through to the literal when the row's fallback is out-of-allowlist (fallback-model is triage-only)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const client = makeClient([
+      { rows: [] }, // SAVEPOINT
+      // 'fallback-model' (Anthropic) is allowlisted for triage but NOT respond.
       { rows: [{ primary_model: "triage-model", fallback_model: "fallback-model" }] },
       { rows: [] }, // RELEASE
     ]);
 
     const routing = await resolveModelRouting(client, "proj-1", "respond");
 
-    // fallback_model in the row is ignored — respond has no fallback logic.
-    expect(routing).toEqual({ primary: "triage-model", fallback: null });
+    expect(routing).toEqual({ primary: "triage-model", fallback: "meta/llama-3.3-70b-instruct" });
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toContain("out-of-allowlist");
   });
 
-  it("FALLBACK SCOPE — kb_learn is primary-only as well", async () => {
+  it("FALLBACK — kb_learn resolves to its own literal default when no row/env fallback is set (T-121)", async () => {
     const client = makeClient([
       { rows: [] }, // SAVEPOINT
-      { rows: [{ primary_model: "triage-model", fallback_model: "fallback-model" }] },
+      { rows: [] }, // SELECT → no row
       { rows: [] }, // RELEASE
     ]);
 
     const routing = await resolveModelRouting(client, "proj-1", "kb_learn");
 
-    expect(routing).toEqual({ primary: "triage-model", fallback: null });
+    expect(routing).toEqual({ primary: "triage-model", fallback: "meta/llama-3.3-70b-instruct" });
   });
 });

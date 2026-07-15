@@ -301,8 +301,12 @@ export async function respondOneTicket(
     ? (ticket.urgency as Urgency)
     : "normal";
 
-  // Respond is primary-only this sprint (no fallback logic — ADR-0006).
+  // T-121: retries once against a fallback model on failure, mirroring
+  // ticket-triage's pattern (ADR-0006 §Fallback scope superseded — see
+  // DECISIONS.md 2026-07-15). fallback is a different provider than primary,
+  // so a single provider outage cannot take drafting down.
   const responseModel = routing?.primary ?? "triage-model";
+  const fallbackModel = routing?.fallback ?? null;
 
   const trace = langfuse?.trace({
     name: "ticket-respond",
@@ -314,22 +318,36 @@ export async function respondOneTicket(
     input: [{ role: "user", content: ticket.title }],
   });
 
+  const draftInput: DraftInput = {
+    title: ticket.title,
+    body: ticket.body,
+    urgency,
+    category: ticket.category ?? "support",
+    routing: ticket.routing ?? "support",
+  };
+
   let result: DraftResult;
   try {
-    result = await draftResponse(
-      {
-        title: ticket.title,
-        body: ticket.body,
-        urgency,
-        category: ticket.category ?? "support",
-        routing: ticket.routing ?? "support",
-      },
-      responseModel
+    result = await draftResponse(draftInput, responseModel);
+  } catch (primaryErr) {
+    if (!fallbackModel) {
+      generation?.end({ output: String(primaryErr) });
+      await langfuse?.flushAsync();
+      throw primaryErr;
+    }
+    console.warn(
+      `[ticket-respond] primary model "${responseModel}" failed for ticket ${ticketId}; ` +
+        `retrying with fallback "${fallbackModel}": ${String(primaryErr)}`
     );
-  } catch (err) {
-    generation?.end({ output: String(err) });
-    await langfuse?.flushAsync();
-    throw err;
+    try {
+      result = await draftResponse(draftInput, fallbackModel);
+    } catch {
+      // Both attempts failed — surface the PRIMARY error (mirrors
+      // ticket-triage's established pattern; most representative failure).
+      generation?.end({ output: String(primaryErr) });
+      await langfuse?.flushAsync();
+      throw primaryErr;
+    }
   }
   generation?.end({
     output: result.text,

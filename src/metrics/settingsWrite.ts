@@ -239,10 +239,12 @@ const FUNCTION_KEYS: readonly RoutingFunctionKey[] = ["triage", "respond", "kb_l
 
 /**
  * Validate a raw JSON request body for a model-routing write. Rejects an
- * unknown function_key, an unlisted primary model (T-79's curated allowlist,
- * fail-closed — the same guarantee resolveModelRouting's read side enforces,
- * T-73), and a fallback value on any function other than `triage` (only
- * Triage carries fallback logic this sprint, ADR-0006 §Fallback scope).
+ * unknown function_key, an unlisted primary model, and an unlisted fallback
+ * model (T-79's curated allowlist, fail-closed — the same guarantee
+ * resolveModelRouting's read side enforces, T-73). All three functions may
+ * carry a fallback as of T-121 (DECISIONS.md 2026-07-15); the allowlist
+ * itself (not this function) is what still keeps `fallback-model` Anthropic
+ * Triage-only, since it was never vetted for respond/kb_learn.
  */
 export function validateModelRoutingInput(payload: unknown): ModelRoutingWriteInput {
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
@@ -271,9 +273,6 @@ export function validateModelRoutingInput(payload: unknown): ModelRoutingWriteIn
   if (obj.fallbackModel !== undefined && obj.fallbackModel !== null) {
     if (typeof obj.fallbackModel !== "string" || obj.fallbackModel.trim() === "") {
       throw new ValidationError("fallbackModel must be a non-empty string if provided");
-    }
-    if (fk !== "triage") {
-      throw new ValidationError(`fallbackModel may only be set for "triage" (got "${fk}")`);
     }
     if (!isAllowedModel(fk, obj.fallbackModel)) {
       throw new ValidationError(`"${obj.fallbackModel}" is not an allowlisted model for "${fk}"`);

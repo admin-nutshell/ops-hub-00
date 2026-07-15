@@ -215,8 +215,11 @@ export async function learnFromResolvedTicket(
   }
 
   // 2. Generate article via LiteLLM; record LangFuse generation for cost
-  // tracking. KB Learn is primary-only this sprint (no fallback — ADR-0006).
+  // tracking. T-121: retries once against a fallback model on failure,
+  // mirroring ticket-triage/-respond (ADR-0006 §Fallback scope superseded —
+  // DECISIONS.md 2026-07-15).
   const kbModel = routing?.primary ?? "triage-model";
+  const kbFallbackModel = routing?.fallback ?? null;
   const trace = langfuse?.trace({
     name: "kb-learn",
     metadata: { ticket_id: ticketId, project_id: projectId, tenant_id: tenantId },
@@ -234,10 +237,29 @@ export async function learnFromResolvedTicket(
   };
   try {
     article = (await generateKbArticle(ticket, kbModel)) as typeof article;
-  } catch (err) {
-    generation?.end({ output: String(err) });
-    await langfuse?.flushAsync();
-    throw err;
+  } catch (primaryErr) {
+    if (!kbFallbackModel) {
+      generation?.end({ output: String(primaryErr) });
+      await langfuse?.flushAsync();
+      throw primaryErr;
+    }
+    // A PII-leak rejection (findPiiKind, T-88) throws from inside
+    // generateKbArticle same as any other failure, so retrying here reruns
+    // the SAME redaction check against the fallback model's own output — the
+    // safety gate is never bypassed, only re-applied to a second draw. If the
+    // fallback also leaks (or fails for any other reason), the PRIMARY error
+    // is what surfaces below, so a rejection is never silently swallowed.
+    console.warn(
+      `[kb-learn] primary model "${kbModel}" failed for ticket ${ticketId}; ` +
+        `retrying with fallback "${kbFallbackModel}": ${String(primaryErr)}`
+    );
+    try {
+      article = (await generateKbArticle(ticket, kbFallbackModel)) as typeof article;
+    } catch {
+      generation?.end({ output: String(primaryErr) });
+      await langfuse?.flushAsync();
+      throw primaryErr;
+    }
   }
 
   generation?.end({

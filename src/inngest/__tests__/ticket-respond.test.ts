@@ -9,8 +9,9 @@ import { makeClient, makePool, mockFetchOk } from "./helpers";
  * into real assertions. Covers draft generation (prompt shape, injection-safe
  * channel split, HTTP error, empty/malformed, missing config) and the
  * respondOneTicket orchestration (happy path → state='responded' + owner_agent,
- * LangFuse trace, idempotency skips, no-conversation skip, and the required
- * error path — LiteLLM failure leaves the ticket 'triaged' with no UPDATE).
+ * LangFuse trace, idempotency skips, no-conversation skip, the required
+ * error path — LiteLLM failure leaves the ticket 'triaged' with no UPDATE —
+ * and, as of T-121, the fallback-model retry path).
  *
  * pg Pool is mocked; fetch is stubbed; FreeScout delivery is injected as a mock.
  * No real DB, LLM, or FreeScout calls.
@@ -275,6 +276,68 @@ describe("respondOneTicket", () => {
     const deliver = vi.fn<FreeScoutDelivery>().mockResolvedValue(undefined);
 
     await expect(respondOneTicket(pool, deliver, "t1", "proj-1", "tenant-1")).rejects.toThrow();
+
+    const queryCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string][];
+    expect(queryCalls.some(([q]) => q.includes("UPDATE tickets"))).toBe(false);
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the fallback model when the primary draft fails (T-121)", async () => {
+    const client = makeClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // set_config tenant
+      { rows: [] }, // set_config project
+      { rows: [triagedRow()] }, // SELECT
+      { rows: [] }, // COMMIT
+      { rows: [] }, // BEGIN
+      { rows: [] }, // set_config tenant
+      { rows: [] }, // set_config project
+      { rows: [] }, // UPDATE
+      { rows: [] }, // COMMIT
+    ]);
+    const pool = makePool(client);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            model: "meta/llama-3.3-70b-instruct",
+            choices: [{ message: { content: "Sorry about that — we are looking into it." } }],
+          }),
+        })
+    );
+    const deliver = vi.fn<FreeScoutDelivery>().mockResolvedValue(undefined);
+
+    const result = await respondOneTicket(pool, deliver, "t1", "proj-1", "tenant-1");
+
+    expect(result).toEqual({ state: "responded", conversation_id: "42" });
+    expect(deliver).toHaveBeenCalledWith("42", "Sorry about that — we are looking into it.");
+  });
+
+  it("throws the PRIMARY error when both primary and fallback drafts fail (T-121)", async () => {
+    const client = makeClient([
+      { rows: [] },
+      { rows: [] },
+      { rows: [] },
+      { rows: [triagedRow()] },
+      { rows: [] },
+    ]);
+    const pool = makePool(client);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 503, text: async () => "Primary down" })
+        .mockResolvedValueOnce({ ok: false, status: 429, text: async () => "Fallback rate limited" })
+    );
+    const deliver = vi.fn<FreeScoutDelivery>().mockResolvedValue(undefined);
+
+    await expect(respondOneTicket(pool, deliver, "t1", "proj-1", "tenant-1")).rejects.toThrow(
+      "LiteLLM 503"
+    );
 
     const queryCalls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string][];
     expect(queryCalls.some(([q]) => q.includes("UPDATE tickets"))).toBe(false);

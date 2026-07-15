@@ -274,22 +274,35 @@ describe("validateModelRoutingInput", () => {
     ).not.toThrow();
   });
 
-  it("FALLBACK SCOPE — rejects a fallbackModel for respond (primary-only this sprint)", () => {
+  // T-121 (DECISIONS.md 2026-07-15): respond/kb_learn now carry a fallback
+  // slot, same as triage. These two used to assert rejection under the old
+  // Triage-only scope; inverted here to pin the new, intended behaviour.
+  it("FALLBACK — accepts an allowlisted fallbackModel for respond (T-121)", () => {
     expect(() =>
       validateModelRoutingInput({
         functionKey: "respond",
         primaryModel: "triage-model",
-        fallbackModel: "triage-model",
+        fallbackModel: "meta/llama-3.3-70b-instruct",
       })
-    ).toThrow(ValidationError);
+    ).not.toThrow();
   });
 
-  it("FALLBACK SCOPE — rejects a fallbackModel for kb_learn", () => {
+  it("FALLBACK — accepts an allowlisted fallbackModel for kb_learn (T-121)", () => {
     expect(() =>
       validateModelRoutingInput({
         functionKey: "kb_learn",
         primaryModel: "triage-model",
-        fallbackModel: "triage-model",
+        fallbackModel: "meta/llama-3.3-70b-instruct",
+      })
+    ).not.toThrow();
+  });
+
+  it("FALLBACK — still rejects fallback-model (Anthropic) for respond, never vetted for it (T-121)", () => {
+    expect(() =>
+      validateModelRoutingInput({
+        functionKey: "respond",
+        primaryModel: "triage-model",
+        fallbackModel: "fallback-model",
       })
     ).toThrow(ValidationError);
   });

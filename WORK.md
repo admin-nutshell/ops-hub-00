@@ -50,6 +50,16 @@ All three tasks resolved to their recommended dispositions in sequence, each ind
 
 ---
 
+## Ad-hoc, post-Sprint-21 (Sprint 22 not yet scoped) — dashboard model-routing follow-ups
+
+Same session as Sprint 21's close-out; the founder continued directly with the model-routing dashboard rather than waiting for Sprint 22 to be scoped. Two small items (a stale-deployment fix on both environments, and a cosmetic display-name change to the Model Routing dropdowns, PRs self-merged as routine per this repo's docs/cosmetic-only precedent) preceded the item below, which is a real capability change and is tracked properly here.
+
+| Task | Owner | Result |
+|---|---|---|
+| T-121: Add real fallback-model support to Respond and KB Learn (mirroring Triage's existing retry pattern) — the founder asked directly whether the current model config was robust enough, was told Respond/KB Learn have no backup model, and said "go ahead" | build agent | 🟡 **Built, tests added, NOT YET MERGED — awaiting the user's own direct authorization** (same governance class as every other shared-capability change this session; ADR-0006 explicitly scoped this out as "a separate capability change (own eval)" — that "own eval" bar is satisfied without new eval-gate work by reusing `meta/llama-3.3-70b-instruct`, already live-vetted for both functions, T-100/T-96). Changes: `modelRouting.ts` (fallback config for respond/kb_learn), `ticket-respond.ts`/`kb-learn.ts` (fallback retry, mirroring `ticket-triage.ts`'s established try/primary→catch/try-fallback→rethrow-primary-on-total-failure shape), `settingsWrite.ts` (dropped the `fk !== "triage"` fallback-write guard), `ModelRoutingSection.tsx` (dashboard now offers a fallback picker for all three functions). kb-learn's PII-leak rejection (T-88, `findPiiKind`) was deliberately reasoned through, not glossed over: retrying re-runs the same redaction check against the fallback's own output (gate never bypassed), and on total failure the PRIMARY error always surfaces (a rejection is never silently swallowed into a false success) — a new unit test pins exactly this scenario. Full trail, including the model-choice and error-type reasoning: `DECISIONS.md` 2026-07-15 (T-121). Verified: full backend suite green (7369 passed, 1191 skipped — staging-credential-gated integration tests, expected), `tsc --noEmit` clean; `web/`'s own typecheck could not run in this environment (node_modules never installed for that workspace here — confirmed pre-existing and unrelated by reproducing on untouched files). | Jan 19 |
+
+---
+
 ## Sprint 20 — ✅ COMPLETE (closed 2026-07-15) — Land T-114's Multi-Sample Escalation (PR #462)
 
 **Sprint:** Sprint 20 — Merge the Dormant, Already-Approved Multi-Sample Grading Escalation (capability/hardening)
