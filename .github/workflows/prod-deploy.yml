@@ -42,14 +42,20 @@ jobs:
   # "verified, not assumed clean" norm — so this stays report-only until
   # someone dispatches check-coolify-env-duplicates.yml against ops-hub-prod
   # post-merge and confirms it's clean, at which point flip this to blocking
-  # (remove `continue-on-error`, add `needs: guard` on `deploy` below).
+  # (`mode: block`, add `needs: guard` on `deploy` below).
+  #
+  # `continue-on-error` is NOT used here — a caller job invoking a reusable
+  # workflow via `uses:` does not support that key (GitHub rejects the whole
+  # workflow file as invalid at parse time if it's present; caught by
+  # independent Tech Lead review before this shipped, see DECISIONS.md
+  # 2026-07-16). `mode: report` is the mechanism instead.
   guard:
     name: Pre-deploy — Coolify duplicate env-var guard (report-only for now, see comment above)
     uses: ./.github/workflows/check-coolify-env-duplicates.yml
-    continue-on-error: true
     with:
       app_uuid: "sbke5gqru1n54rj7gssgca2y"
       app_label: "ops-hub-prod"
+      mode: report
     secrets:
       COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
 

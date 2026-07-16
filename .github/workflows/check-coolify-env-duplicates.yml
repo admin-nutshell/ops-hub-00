@@ -61,6 +61,20 @@ on:
         required: false
         type: string
         default: ""
+      mode:
+        description: >-
+          'report' (default): always exits 0, prints ::error:: annotations on
+          duplicates so they're visible in the Actions UI, but never fails the
+          calling workflow. 'block': exits 1 on duplicates, failing this job
+          (callers should add `needs: guard` to actually gate on it). Default
+          is 'report' because a caller job's `uses:` step cannot set
+          `continue-on-error` (GitHub Actions does not support that key on a
+          reusable-workflow call) — 'report' mode is the only way to run this
+          non-blocking today. Flip a caller to `mode: block` + `needs: guard`
+          once the target app's existing duplicates are cleaned up.
+        required: false
+        type: string
+        default: "report"
     secrets:
       COOLIFY_API_TOKEN:
         required: true
@@ -124,7 +138,13 @@ jobs:
           fi
           echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
           echo "app_label=$APP_LABEL" >> "$GITHUB_OUTPUT"
-          echo "Checking '$APP_LABEL' ($APP_UUID) for duplicate env-var keys..."
+          if [ "${{ github.event_name }}" = "workflow_call" ]; then
+            MODE="${{ inputs.mode }}"
+          else
+            MODE="block"
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Checking '$APP_LABEL' ($APP_UUID) for duplicate env-var keys... (mode=$MODE)"
 
       # ── Fetch env vars (read-only GET) ──────────────────────────────────────
       - name: Fetch env vars from Coolify
@@ -150,6 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           APP_LABEL="${{ steps.resolve.outputs.app_label }}"
+          MODE="${{ steps.resolve.outputs.mode }}"
 
           # Group rows by key, keep only keys with count > 1.
           jq -r '
@@ -180,7 +201,14 @@ jobs:
           echo "resolve this in the Coolify UI (or via a scoped dedupe workflow, e.g."
           echo "t104-dedupe-and-restart-opshub-prod.yml, as prior precedent) before this"
           echo "app is safely redeployed."
-          exit 1
+
+          if [ "$MODE" = "block" ]; then
+            exit 1
+          fi
+          echo ""
+          echo "mode=report — not failing this job (duplicates are visible above via"
+          echo "the ::error:: annotation, but the calling workflow is not gated on it)."
+          exit 0
 
       - name: Summary
         if: always()
