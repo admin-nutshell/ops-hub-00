@@ -145,10 +145,7 @@ describe("triageOneTicket", () => {
     expect(auditCall).toBeTruthy();
     expect(auditCall![1]?.[0]).toBe("proj-1");
     expect(auditCall![1]?.[1]).toBe("tenant-1");
-    const payload = JSON.parse(auditCall![1]?.[3] as unknown as string) as Record<
-      string,
-      unknown
-    >;
+    const payload = JSON.parse(auditCall![1]?.[3] as unknown as string) as Record<string, unknown>;
     expect(payload).toMatchObject({ urgency: "high", category: "auth", routing: "engineering" });
   });
 
