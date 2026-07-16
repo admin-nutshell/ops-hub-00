@@ -179,3 +179,25 @@ jobs:
             --verbose \
             --exit-code=1 \
             /path
+
+      # Dependency/CVE scan (Phase 0 gap: zero scanning existed before this).
+      # ADVISORY ONLY for now (continue-on-error) -- this is the FIRST run
+      # against this dependency tree, so its baseline noise level is unknown.
+      # Per the gap analysis: promote to merge-blocking on high/critical once
+      # a clean baseline run has been observed (self-mergeable per AUTONOMY.md
+      # "bug-fix-verified"/"docs-only"-adjacent infra work; promoting this to
+      # blocking is itself a routine, evidence-based follow-up, not a new ask).
+      - name: Set up pnpm
+        if: hashFiles('package.json') != ''
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Set up Node.js 20
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Dependency vulnerability scan (pnpm audit, advisory)
+        if: hashFiles('package.json') != ''
+        continue-on-error: true
+        run: pnpm audit --audit-level=high
