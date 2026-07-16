@@ -20,7 +20,7 @@
     "prepare": "node -e \"process.env.CI || require('child_process').execSync('git config core.hooksPath .githooks', {stdio:'inherit'})\""
   },
   "devDependencies": {
-    "@types/node": "^20.19.9",
+    "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^9.1.0",
