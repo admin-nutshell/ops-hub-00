@@ -25,8 +25,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # T-122 (Sprint 22): pre-flight guard — refuses to promote to prod if
+  # ops-hub-prod already has a duplicate env-var key (Coolify's UI/API
+  # append-not-upsert footgun — the exact class of incident T-104 hit on this
+  # same app). Read-only; fixing a detected duplicate is a manual Coolify UI
+  # step (or a scoped dedupe workflow, e.g. t104-dedupe-and-restart-opshub-
+  # prod.yml), not automated here.
+  guard:
+    name: Pre-deploy — Coolify duplicate env-var guard
+    uses: ./.github/workflows/check-coolify-env-duplicates.yml
+    with:
+      app_uuid: "sbke5gqru1n54rj7gssgca2y"
+      app_label: "ops-hub-prod"
+    secrets:
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
   deploy:
     name: Promote to ops-hub-prod
+    needs: guard
     runs-on: ubuntu-latest
 
     env:

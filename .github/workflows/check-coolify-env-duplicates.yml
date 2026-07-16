@@ -13,13 +13,25 @@ name: Coolify — duplicate env-var guard (read-only)
 # stays a human/manual action (or a separate, higher-risk future task), per
 # T-122's explicit scope boundary.
 #
-# Two ways to run this:
+# Three ways to run this:
 #   1. workflow_dispatch — manual, pick a known app or supply a custom UUID.
 #   2. workflow_call — other workflows (main-deploy.yml, prod-deploy.yml) call
 #      this as a pre-flight job; if it fails, the calling workflow's deploy
 #      job (gated with `needs:`) does not run.
+#   3. pull_request (scoped to this file only) — self-test: any PR that edits
+#      this workflow automatically runs it for real against live ops-hub-
+#      staging Coolify (safe, read-only target) as a check on that same PR.
+#      This is also how T-122 was verified against live Coolify pre-merge —
+#      GitHub cannot workflow_dispatch a brand-new workflow file until it
+#      exists on the default branch, so this is the only pre-merge path to a
+#      real run; see the PR body / DECISIONS.md for the run link.
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/check-coolify-env-duplicates.yml"
+
   workflow_dispatch:
     inputs:
       app:
@@ -86,6 +98,12 @@ jobs:
             APP_UUID="${{ inputs.app_uuid }}"
             APP_LABEL="${{ inputs.app_label }}"
             [ -n "$APP_LABEL" ] || APP_LABEL="$APP_UUID"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            # Self-test target: ops-hub-staging is a safe, low-blast-radius
+            # real app to verify this guard's logic against on every PR that
+            # touches this workflow file.
+            APP_UUID="ajqplom2mghf5a8h6vf1q6xg"
+            APP_LABEL="ops-hub-staging (PR self-test)"
           else
             APP="${{ inputs.app }}"
             case "$APP" in

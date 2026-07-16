@@ -67,8 +67,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # T-122 (Sprint 22): pre-flight guard — refuses to proceed if ops-hub-staging
+  # already has a duplicate env-var key (Coolify's UI/API append-not-upsert
+  # footgun, see check-coolify-env-duplicates.yml header). Read-only; fixing a
+  # detected duplicate is a manual Coolify UI step, not automated here.
+  guard:
+    name: Pre-deploy — Coolify duplicate env-var guard
+    uses: ./.github/workflows/check-coolify-env-duplicates.yml
+    with:
+      app_uuid: "ajqplom2mghf5a8h6vf1q6xg"
+      app_label: "ops-hub-staging"
+    secrets:
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
   deploy:
     name: Build & Deploy to Coolify Staging
+    needs: guard
     runs-on: ubuntu-latest
 
     env:
