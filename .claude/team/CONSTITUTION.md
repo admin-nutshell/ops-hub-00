@@ -108,6 +108,10 @@ No step is skipped. No deploy happens without QA sign-off. No merge without CR r
 No merge on a Security-Lead-required change without Security Lead sign-off. No merge on
 an Evals-Lead-required change without Evals Lead sign-off.
 
+**The sign-off record is not asserted, it's written down.** Every PR uses
+`.github/pull_request_template.md`'s sign-off table — fill it in before merge, not after.
+This is what makes "reviewed" checkable instead of a claim.
+
 ---
 
 ## Decision authority matrix
