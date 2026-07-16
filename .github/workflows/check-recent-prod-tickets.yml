@@ -78,3 +78,11 @@ jobs:
           printf '%s\n' \
             "select id, subject, status, state, created_at from conversations order by id desc limit :'lim';" \
             | psql "$LOGIN" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
+
+      - name: SELECT recent tickets under the code's FALLBACK default scope (00...0001/00...0010 -- same as freescout-poller.ts's hardcoded default when POLLING_PROJECT_ID/POLLING_TENANT_ID are unset)
+        run: |
+          printf '%s\n' \
+            "select set_config('app.current_tenant', '00000000-0000-0000-0000-000000000010', true);" \
+            "select set_config('app.current_project', '00000000-0000-0000-0000-000000000001', true);" \
+            "select id, left(title, 100) as title, state, urgency, category, routing, freescout_conversation_id, created_at from tickets order by created_at desc limit :'lim';" \
+            | psql "$LOGIN" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
