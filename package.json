@@ -24,15 +24,15 @@
     "@types/pg": "^8.20.0",
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^9.1.0",
-    "prettier": "^3.8.5",
+    "prettier": "^3.9.5",
     "typescript": "^5.7.3",
-    "typescript-eslint": "^8.62.0",
+    "typescript-eslint": "^8.64.0",
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@sentry/node": "^10.62.0",
-    "@supabase/supabase-js": "^2.108.2",
-    "inngest": "^4.11.0",
+    "@sentry/node": "^10.66.0",
+    "@supabase/supabase-js": "^2.110.7",
+    "inngest": "^4.13.0",
     "langfuse-node": "^3.38.0",
     "pg": "^8.22.0"
   }
