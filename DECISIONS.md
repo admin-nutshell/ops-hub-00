@@ -9176,3 +9176,88 @@ business/pricing/security/customer-incident-class decision).
    pre-flight step 0 + `actions: read` permission added) ; WORK.md
    Sprint 22 T-124 row (updated)
 ```
+
+### 2026-07-16 — T-124 corrected: real independent Tech Lead review found a no-bypass hard block that could freeze the sole prod-promotion path (rollback included), plus a latent false-pass bug — both fixed same session
+
+```
+2026-07-16 [Tech Lead, independent review] PR #521 (T-124) was reviewed
+by a fresh agent dispatch with no continuity to the build. Verdict:
+REQUEST CHANGES. Two findings, both fixed same session.
+
+FINDING 1 (the consequential one): the gate as shipped was a zero-bypass
+hard block on prod-deploy.yml's ONLY path -- and the workflow's own
+documented rollback procedure (re-run with the previous known-good SHA
+as image_tag) re-runs this same workflow, hitting the same step 0. A
+stale T-98 signal is caused by an ORTHOGONAL condition (staging left
+running, so no fresh reading was possible) -- it says nothing about
+whether THIS promotion or a rollback is actually unsafe. Given the PR's
+own live evidence that ops-hub-staging had been left running ~74 hours,
+merging as-shipped would have frozen BOTH the forward promotion path
+AND the rollback path the moment a human needed either. The build's
+"PRODUCTION.md zero-exceptions" defense was found to conflate two gate
+classes: that bar applies to gates measuring the thing being deployed
+(T-123's sibling gate, prod's own health -- hard-block is correct there),
+not to a gate measuring an out-of-band, orthogonally-coupled signal.
+
+FIX: added workflow_dispatch inputs skip_t98_gate (boolean, default
+false) and t98_gate_bypass_justification (required non-empty whenever
+skip is true, or the run fails immediately) to prod-deploy.yml. The
+bypass step emits a loud ::warning:: annotation with the justification,
+permanent in that run's own log -- not a silent disable. Per this
+project's standing norm against indirect self-authorization via
+self-supplied workflow_dispatch inputs (memory
+feedback_merge_and_prod_authorization), the input's own description
+states explicitly: an agent must never set skip_t98_gate=true on its
+own initiative, including to promote its own change or execute a
+rollback it initiated -- that would silently gut the exact autonomy
+boundary AUTONOMY.md's production-promotion-new-change /
+prompt-or-capability-change categories exist to enforce. This is a
+convention-enforced boundary (documented in the input description and
+here), not a technically-enforced one -- consistent with how this
+project already handles similar governance-by-convention boundaries
+(e.g. AUTONOMY.md itself).
+
+FINDING 2 (latent, not live-exploitable today): scripts/t98-gate.sh
+originally keyed "was a real check taken this cycle" on the credentials-
+guard step's own conclusion (substring match on "Guard" + "required
+credentials" + "sentinel ticket id all present"). That step is the
+WRONG discriminator -- it ALSO exits 0 (success) in T-98's dormant path
+(missing E2E_MONITOR_DB_URL/E2E_MONITOR_INNGEST_KEY/sentinel ticket id;
+monitor-e2e-pipeline.yml's guard step, dormant branch), which reads
+identically to a real pass at the run-conclusion level. Not exploitable
+right now because those credentials are provisioned (FQ-75), but a real
+defect -- the exact "green signal while nothing was actually verified"
+class T-124 exists to prevent, one level up the stack.
+
+FIX: rekeyed on the `reset` step (id: reset in monitor-e2e-pipeline.yml,
+"Reset sentinel ticket to state='new'..."), which is gated on
+`steps.guard.outputs.ready == 'true'` -- it only runs when the guard
+step found BOTH real credentials AND a real sentinel ticket id, i.e.
+only when a genuine check was actually attempted. Deliberately NOT
+keyed on the later `langfuse` step (or any step gated on a downstream
+outcome like `poll.outcome == 'success'`) -- the review flagged that a
+genuinely FAILED real check would itself skip those later steps, which
+would make a broken cycle look like "no real check taken" and walk the
+gate past a genuine failure to an older, stale pass -- strictly worse
+than the bug being fixed.
+
+CONFIRMED SOUND BY THE SAME REVIEW, unchanged: the every-promotion scope
+choice (prod-deploy.yml genuinely has no change-type signal to gate on
+more narrowly); actions: read permission is sufficient for the
+`gh run list`/`gh run view` calls under the workflow's own GITHUB_TOKEN
+(same-repo Actions API reads); step ordering (T-98 gate runs first,
+before any prod mutation and before T-123's own post-deploy health
+gate); and the 24h staleness threshold -- validated as correct ONLY
+once paired with the break-glass above (without one, the review found
+24h too tight against the observed operational reality of staging being
+left up for a day-plus during active dev work).
+
+NOT SELF-MERGED. PR #521 stays open, still stacked on T-123/PR #517 (not
+main) by design, awaiting the human/Coordinator's own sign-off pass in
+addition to this now-completed independent Tech Lead review.
+
+-> scripts/t98-gate.sh (rekeyed to the `reset` step) ; .github/workflows/
+   prod-deploy.yml (skip_t98_gate + t98_gate_bypass_justification inputs
+   added, break-glass step logic added) ; WORK.md Sprint 22 T-124 row
+   (corrected) ; PR #521 (updated)
+```

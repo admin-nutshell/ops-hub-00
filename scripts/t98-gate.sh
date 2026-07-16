@@ -150,16 +150,35 @@ for i in $(seq 0 $((COUNT - 1))); do
   CREATED_AT=$(echo "$SCHEDULE_RUNS" | jq -r ".[$i].createdAt")
   CONCLUSION=$(echo "$SCHEDULE_RUNS" | jq -r ".[$i].conclusion")
 
-  # Substring match on the guard step's name, deliberately not exact
-  # equality — resilient to minor wording edits in monitor-e2e-pipeline.yml
-  # over time, and to em-dash-vs-hyphen copy/paste drift (bit an early draft
-  # of this exact check during local verification; see DECISIONS.md).
-  GUARD_CONCLUSION=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
-    --jq '[.jobs[0].steps[] | select((.name | contains("Guard")) and (.name | contains("required credentials")) and (.name | contains("sentinel ticket id all present")))][0].conclusion // empty' \
+  # Substring match on the RESET step's name (id: reset in
+  # monitor-e2e-pipeline.yml), NOT the credentials-guard step — deliberately
+  # not exact equality, resilient to minor wording edits over time.
+  #
+  # Fixed 2026-07-16 per independent Tech Lead review: an earlier version of
+  # this script keyed on the "Guard — required credentials + sentinel ticket
+  # id all present" step instead. That step is the WRONG discriminator — it
+  # also runs and exits 0 (success) in the DORMANT path (missing creds/
+  # sentinel; monitor-e2e-pipeline.yml lines ~440-447), which is exactly the
+  # same "no real check taken" case a clean staging_guard skip is. Keying on
+  # it would have made a dormant monitor look identical to a real pass — the
+  # exact false-pass class this gate exists to prevent, one level up.
+  #
+  # `reset` (monitor-e2e-pipeline.yml, gated on `steps.guard.outputs.ready ==
+  # 'true'`) is the correct discriminator: it only runs when the guard step
+  # found real credentials AND a real sentinel ticket id present, i.e. only
+  # when a genuine downstream check was actually attempted this cycle. It is
+  # NOT keyed on `langfuse` or any later step — those are gated on upstream
+  # step outcomes too (e.g. `poll.outcome == 'success'`), so a genuinely
+  # FAILED real check would itself skip them, which would make a broken
+  # cycle look like "no real check taken" and walk the gate past a real
+  # failure to an older, stale pass — strictly worse than the bug being
+  # fixed here.
+  REAL_CHECK_CONCLUSION=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
+    --jq '[.jobs[0].steps[] | select(.name | contains("Reset sentinel ticket"))][0].conclusion // empty' \
     2>/dev/null || echo "")
 
-  if [ "$GUARD_CONCLUSION" = "skipped" ] || [ -z "$GUARD_CONCLUSION" ]; then
-    echo "run $RUN_ID ($CREATED_AT): no real check taken this cycle (credentials guard skipped — staging running, or absent/unreadable) — not a valid signal, checking further back."
+  if [ "$REAL_CHECK_CONCLUSION" = "skipped" ] || [ -z "$REAL_CHECK_CONCLUSION" ]; then
+    echo "run $RUN_ID ($CREATED_AT): no real check taken this cycle (reset step skipped — staging running, monitor dormant, or run unreadable) — not a valid signal, checking further back."
     continue
   fi
 
