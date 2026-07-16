@@ -86,3 +86,27 @@ jobs:
             "select set_config('app.current_project', '00000000-0000-0000-0000-000000000001', true);" \
             "select id, left(title, 100) as title, state, urgency, category, routing, freescout_conversation_id, created_at from tickets order by created_at desc limit :'lim';" \
             | psql "$LOGIN" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
+
+      - name: SELECT recent tickets under the freescout-poller.ts comment's "seeded values" scope (tts=00...0002 / dnc=00...0020)
+        run: |
+          printf '%s\n' \
+            "select set_config('app.current_tenant', '00000000-0000-0000-0000-000000000020', true);" \
+            "select set_config('app.current_project', '00000000-0000-0000-0000-000000000002', true);" \
+            "select id, left(title, 100) as title, state, urgency, category, routing, freescout_conversation_id, created_at from tickets order by created_at desc limit :'lim';" \
+            | psql "$LOGIN" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
+
+      - name: SELECT the row count of ALL tickets whose freescout_conversation_id = 39, across every scope (brute-force by known unique key, still RLS-gated per scope but tries several)
+        run: |
+          for TID_PID in \
+            "00000000-0000-0000-0000-000000000010:00000000-0000-0000-0000-000000000001" \
+            "00000000-0000-0000-0000-000000000020:00000000-0000-0000-0000-000000000002" \
+            "00000000-0000-0000-0000-000000000030:00000000-0000-0000-0000-000000000003" \
+            "$TID:$PID"; do
+            T="${TID_PID%%:*}"; P="${TID_PID##*:}"
+            echo "--- trying tenant=$T project=$P ---"
+            printf '%s\n' \
+              "select set_config('app.current_tenant', '$T', true);" \
+              "select set_config('app.current_project', '$P', true);" \
+              "select id, title, state, freescout_conversation_id from tickets where freescout_conversation_id = 39;" \
+              | psql "$LOGIN" -v ON_ERROR_STOP=1
+          done
