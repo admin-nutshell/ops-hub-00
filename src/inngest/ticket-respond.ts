@@ -379,6 +379,25 @@ export async function respondOneTicket(
       "UPDATE tickets SET state = 'responded', owner_agent = 'ticket-respond' WHERE id = $1",
       [ticketId]
     );
+    // Gap G6: durable audit record, same-transaction as the state write.
+    // Payload is metadata only (model, token counts, delivery target) — the
+    // drafted text itself already lives in FreeScout's own thread record via
+    // `deliver()`; this log is not a second copy of customer-facing content.
+    await updateClient.query(
+      `INSERT INTO audit_log (project_id, tenant_id, actor, action, resource_type, resource_id, payload)
+       VALUES ($1, $2, 'ticket-respond', 'ticket.respond', 'ticket', $3, $4)`,
+      [
+        projectId,
+        tenantId,
+        ticketId,
+        JSON.stringify({
+          model: result.resolvedModel ?? responseModel,
+          promptTokens: result.promptTokens ?? null,
+          completionTokens: result.completionTokens ?? null,
+          freescout_conversation_id: conversationId,
+        }),
+      ]
+    );
     await updateClient.query("COMMIT");
   } catch (err) {
     await updateClient.query("ROLLBACK");
