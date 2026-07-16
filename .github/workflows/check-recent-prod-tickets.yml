@@ -38,6 +38,16 @@ jobs:
         run: |
           [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
 
+      - name: DEBUG -- show ALL POLLING_* / raw env rows (checking for the documented Coolify duplicate-row footgun)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/dbg.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-prod envs (HTTP $HTTP)"; exit 1; }
+          echo "Total env rows returned: $(jq 'length' /tmp/dbg.json)"
+          echo "--- ALL rows whose key matches POLLING_ (these are internal UUIDs, not secrets -- safe to print) ---"
+          jq -r '.[] | select(.key | test("^POLLING_")) | "id=\(.id // "?")  key=\(.key)  value=\(.value)"' /tmp/dbg.json
+
       - name: Install psql
         run: sudo apt-get install -y postgresql-client
 
