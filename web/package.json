@@ -21,11 +21,11 @@
     "server-only": "^0.0.1"
   },
   "devDependencies": {
-    "@types/node": "^20.19.9",
+    "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "eslint": "^9.18.0",
+    "eslint": "^10.7.0",
     "typescript-eslint": "^8.64.0",
     "tailwindcss": "^4.3.3",
     "@tailwindcss/postcss": "^4.3.3",
