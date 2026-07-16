@@ -77,9 +77,11 @@ jobs:
         run: |
           echo "::add-mask::$LOGIN"
           printf '%s\n' \
+            "begin;" \
             "select set_config('app.current_tenant', :'tid', true);" \
             "select set_config('app.current_project', :'pid', true);" \
             "select id, left(title, 100) as title, state, urgency, category, routing, freescout_conversation_id, created_at from tickets order by created_at desc limit :'lim';" \
+            "commit;" \
             | psql "$LOGIN" -v tid="$TID" -v pid="$PID" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
 
       - name: SELECT recent FreeScout conversations directly (ops_hub_app has read-only SELECT grant, CLAUDE.md)
@@ -92,17 +94,21 @@ jobs:
       - name: SELECT recent tickets under the code's FALLBACK default scope (00...0001/00...0010 -- same as freescout-poller.ts's hardcoded default when POLLING_PROJECT_ID/POLLING_TENANT_ID are unset)
         run: |
           printf '%s\n' \
+            "begin;" \
             "select set_config('app.current_tenant', '00000000-0000-0000-0000-000000000010', true);" \
             "select set_config('app.current_project', '00000000-0000-0000-0000-000000000001', true);" \
             "select id, left(title, 100) as title, state, urgency, category, routing, freescout_conversation_id, created_at from tickets order by created_at desc limit :'lim';" \
+            "commit;" \
             | psql "$LOGIN" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
 
       - name: SELECT recent tickets under the freescout-poller.ts comment's "seeded values" scope (tts=00...0002 / dnc=00...0020)
         run: |
           printf '%s\n' \
+            "begin;" \
             "select set_config('app.current_tenant', '00000000-0000-0000-0000-000000000020', true);" \
             "select set_config('app.current_project', '00000000-0000-0000-0000-000000000002', true);" \
             "select id, left(title, 100) as title, state, urgency, category, routing, freescout_conversation_id, created_at from tickets order by created_at desc limit :'lim';" \
+            "commit;" \
             | psql "$LOGIN" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
 
       - name: SELECT the row count of ALL tickets whose freescout_conversation_id = 39, across every scope (brute-force by known unique key, still RLS-gated per scope but tries several)
@@ -115,8 +121,10 @@ jobs:
             T="${TID_PID%%:*}"; P="${TID_PID##*:}"
             echo "--- trying tenant=$T project=$P ---"
             printf '%s\n' \
+              "begin;" \
               "select set_config('app.current_tenant', '$T', true);" \
               "select set_config('app.current_project', '$P', true);" \
               "select id, title, state, freescout_conversation_id from tickets where freescout_conversation_id = 39;" \
+              "commit;" \
               | psql "$LOGIN" -v ON_ERROR_STOP=1
           done
