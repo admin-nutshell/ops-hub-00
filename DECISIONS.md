@@ -8935,3 +8935,26 @@ T-98 into deploy gating) remain separate, unbuilt Sprint 22 tasks.
    .github/workflows/prod-deploy.yml (guard job, continue-on-error) ;
    PR #515 ; live runs 29529074189, 29529216778
 ```
+
+**Same day, independent Tech Lead review of PR #515 (separate hat from the Production
+Manager build above, per the task's explicit requirement):** **APPROVE WITH
+FOLLOW-UPS, nothing merge-blocking.** Independently confirmed (not rubber-stamped):
+the `jq group_by(.key) | map(select(length > 1))` detection logic is correct against
+Coolify's real `/envs` response shape (cross-checked against two other merged
+workflows' parsing of the same endpoint, and against the live 41-row/19-dupe result
+itself); the guard is genuinely read-only (grepped the full diff for `-X
+POST/PATCH/DELETE` against `/envs` — none found, unlike the precedent dedupe
+workflow which does DELETE); the `pull_request`-self-test-for-pre-merge-verification
+pattern is sound and carries no fork-secret-exposure risk (private single-owner
+repo, and `pull_request` != `pull_request_target` withholds secrets from forks
+regardless); confirmed neither deploy workflow's `deploy` job has a `needs:` on
+`guard`, so the non-blocking wiring introduces zero new failure mode to deploys as
+shipped. **One real defect caught:** the PR body's Summary section was stale --
+written before the mid-task pivot to `continue-on-error`, it still described a hard
+`needs:` block. Fixed in the PR body same session (this record predates that fix
+chronologically but the fix is done). **Follow-ups tracked, not merge-blocking:** (1)
+the 19-key staging finding needs a tracked owner/task, not just a banked comment; (2)
+`guard` runs in parallel with `deploy` (no `needs:`), naming/comments should keep
+calling this "pre-flight" honest about that; (3) awareness-only note on a
+theoretical future false-positive if Coolify's `/envs` ever mixes in preview/shared-
+scope rows -- not observed in current live data. -> PR #515 (updated body)
