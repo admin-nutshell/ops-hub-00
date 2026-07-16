@@ -91,7 +91,9 @@ chat approval, unless a track turns out to touch a `meta-governance-edit` or
 `CODEOWNERS` (governs who can approve founder-only paths) and adds
 `.coderabbit.yaml` (CodeRabbit's own config) — both fall under `AUTONOMY.md`'s
 `meta-governance-edit` category, always founder-only regardless of how routine the
-change looks. Filed as **FQ-78** in `FOUNDER_QUEUE.md`.
+change looks. Filed as **FQ-78** in `FOUNDER_QUEUE.md`. Per `AUTONOMY.md`'s own
+text, Security Lead + Tech Lead review of the diff is **additive to** the founder's
+sign-off, never replaced by it — both are required before merge, not either/or.
 
 ---
 
