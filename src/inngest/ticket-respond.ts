@@ -58,8 +58,7 @@ export type DraftResult = {
 };
 
 export type RespondResult =
-  | { state: "responded"; conversation_id: string }
-  | { skipped: true; reason: string };
+  { state: "responded"; conversation_id: string } | { skipped: true; reason: string };
 
 // Injected so unit tests can replace the real FreeScout write with a mock.
 export type FreeScoutDelivery = (conversationId: string, note: string) => Promise<void>;
