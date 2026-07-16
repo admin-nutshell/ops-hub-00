@@ -281,9 +281,27 @@ export async function learnFromResolvedTicket(
     await insertClient.query("BEGIN");
     await insertClient.query("SELECT set_config('app.current_tenant', $1, true)", [tenantId]);
     await insertClient.query("SELECT set_config('app.current_project', $1, true)", [projectId]);
-    await insertClient.query(
-      "INSERT INTO kb_articles (project_id, title, body) VALUES ($1, $2, $3)",
+    const { rows: insertedRows } = await insertClient.query<{ id: string }>(
+      "INSERT INTO kb_articles (project_id, title, body) VALUES ($1, $2, $3) RETURNING id",
       [projectId, article.title, article.body]
+    );
+    // Gap G6: durable audit record, same-transaction as the insert. Title
+    // only in the payload, not body — the article body is already the
+    // durable record (kb_articles itself), and it's already PII-scrubbed by
+    // findPiiKind before it ever reaches this INSERT; no need for a second copy.
+    await insertClient.query(
+      `INSERT INTO audit_log (project_id, tenant_id, actor, action, resource_type, resource_id, payload)
+       VALUES ($1, $2, 'kb-learn', 'kb_article.create', 'kb_article', $3, $4)`,
+      [
+        projectId,
+        tenantId,
+        insertedRows[0].id,
+        JSON.stringify({
+          title: article.title,
+          model: article._model ?? null,
+          source_ticket_id: ticketId,
+        }),
+      ]
     );
     await insertClient.query("COMMIT");
   } catch (err) {
