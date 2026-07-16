@@ -9,11 +9,19 @@
 |---|---|---|
 | `CONSTITUTION.md` | **Every agent, every session** | Master rules: founder boundary, workspace files, decision authority, security non-negotiables |
 | `PM.md` | PM agent | Sprint management, task lifecycle, escalation format |
+| `TECH_LEAD.md` | Tech Lead agent | ADRs, cross-agent arbitration, design review |
 | `QA.md` | QA agent | Test planning, entry/exit criteria, bug format |
 | `PRODUCTION.md` | Production Manager agent | Deploy protocol, env var rules, rollback decision tree |
+| `SECURITY.md` | Security Lead agent | Vault/secrets discipline, RLS review, per-PR security checklist |
+| `EVALS.md` | Evals Lead agent | Prompt eval design, live-gate ownership, regression discipline |
+| `KNOWLEDGE.md` | Knowledge Lead agent | KB curation, runbook consistency, RAG quality |
+| `FRONTEND.md` | Frontend Engineer agent | Dashboard/admin-panel build, write-surface UX |
+| `DATA.md` | Data Engineer agent | Observability pipelines, metrics infra, cost accounting |
+| `SOLUTIONS.md` | Solutions Architect agent | Integrations, BYOK, tenant onboarding |
 | `CR.md` | CR / code-reviewer agent | Review dimensions, merge criteria, security checklist |
 | `COMMS.md` | **Every agent** | Message formats: TASK, RECEIPT, STATUS, BLOCKED, DONE, HANDOFF + communication principles |
 | `FOUNDER.md` | All agents (before escalating) | What reaches the Founder, what doesn't, required escalation format |
+| `AUTONOMY.md` | **Every agent, every session** | Which work categories are pre-approved vs. need the Founder's sign-off |
 
 ---
 
