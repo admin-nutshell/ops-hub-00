@@ -1,0 +1,174 @@
+name: Coolify — duplicate env-var guard (read-only)
+
+# T-122 (Sprint 22, Phase 2 Track A): automated version of the manual
+# "audit coolify-db for duplicate keys before touching any critical env var"
+# discipline this repo has been doing by hand since T-104 (see DECISIONS.md
+# "coolify-db"/"duplicate" entries, e.g. the LITELLM_URL dup-row incidents on
+# ops-hub-prod and ops-hub-staging). Coolify's UI "Save" — and, per T-104, even
+# a single API POST — appends a new env-var row instead of upserting an
+# existing key; the runtime then silently uses whichever row happens to win
+# (empirically the last one), with no error anywhere. This workflow detects
+# that condition before a redeploy proceeds. It is READ-ONLY: it never
+# deletes, edits, or creates an env-var row — fixing a detected duplicate
+# stays a human/manual action (or a separate, higher-risk future task), per
+# T-122's explicit scope boundary.
+#
+# Two ways to run this:
+#   1. workflow_dispatch — manual, pick a known app or supply a custom UUID.
+#   2. workflow_call — other workflows (main-deploy.yml, prod-deploy.yml) call
+#      this as a pre-flight job; if it fails, the calling workflow's deploy
+#      job (gated with `needs:`) does not run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "Known Coolify app to check (pick 'custom' to use app_uuid below)"
+        type: choice
+        default: ops-hub-staging
+        options:
+          - ops-hub-staging
+          - ops-hub-prod
+          - litellm-staging
+          - litellm-prod
+          - freescout-staging
+          - ops-dashboard-staging
+          - custom
+      app_uuid:
+        description: "Coolify application UUID (required only when app=custom)"
+        required: false
+
+  workflow_call:
+    inputs:
+      app_uuid:
+        description: "Coolify application UUID to check"
+        required: true
+        type: string
+      app_label:
+        description: "Human-readable label for logging only"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      COOLIFY_API_TOKEN:
+        required: true
+    outputs:
+      has_duplicates:
+        description: "true/false — whether any duplicate env-var key was found"
+        value: ${{ jobs.guard.outputs.has_duplicates }}
+      duplicate_keys:
+        description: "Comma-separated list of duplicated keys (empty if none)"
+        value: ${{ jobs.guard.outputs.duplicate_keys }}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+
+jobs:
+  guard:
+    name: Detect duplicate env-var keys
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    outputs:
+      has_duplicates: ${{ steps.check.outputs.has_duplicates }}
+      duplicate_keys: ${{ steps.check.outputs.duplicate_keys }}
+
+    steps:
+      # ── Resolve which app UUID to check ─────────────────────────────────────
+      - name: Resolve target app UUID
+        id: resolve
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_call" ]; then
+            APP_UUID="${{ inputs.app_uuid }}"
+            APP_LABEL="${{ inputs.app_label }}"
+            [ -n "$APP_LABEL" ] || APP_LABEL="$APP_UUID"
+          else
+            APP="${{ inputs.app }}"
+            case "$APP" in
+              ops-hub-staging)      APP_UUID="ajqplom2mghf5a8h6vf1q6xg" ;;
+              ops-hub-prod)         APP_UUID="sbke5gqru1n54rj7gssgca2y" ;;
+              litellm-staging)      APP_UUID="h12xz8887fxvbvjts2hac8if" ;;
+              litellm-prod)         APP_UUID="hlik1d96uvkkjzpbxa3azhcv" ;;
+              freescout-staging)    APP_UUID="sgnpza1r8jlq19f0dboqpzq6" ;;
+              ops-dashboard-staging) APP_UUID="r14c3p7jzwo4wxyprd4yxyev" ;;
+              custom)                APP_UUID="${{ inputs.app_uuid }}" ;;
+              *) echo "::error::Unknown app '$APP'"; exit 1 ;;
+            esac
+            APP_LABEL="$APP"
+          fi
+          if [ -z "$APP_UUID" ] || [ "$APP_UUID" = "null" ]; then
+            echo "::error::No app_uuid resolved — if app=custom, app_uuid is required."
+            exit 1
+          fi
+          echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
+          echo "app_label=$APP_LABEL" >> "$GITHUB_OUTPUT"
+          echo "Checking '$APP_LABEL' ($APP_UUID) for duplicate env-var keys..."
+
+      # ── Fetch env vars (read-only GET) ──────────────────────────────────────
+      - name: Fetch env vars from Coolify
+        id: fetch
+        run: |
+          set -euo pipefail
+          APP_UUID="${{ steps.resolve.outputs.app_uuid }}"
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$APP_UUID/envs")
+          echo "GET /applications/$APP_UUID/envs -> HTTP $HTTP"
+          if [ "$HTTP" != "200" ]; then
+            echo "::error::Failed to fetch env vars (HTTP $HTTP). Check the app UUID and COOLIFY_API_TOKEN."
+            cat /tmp/envs.json 2>/dev/null || true
+            exit 1
+          fi
+          TOTAL=$(jq 'length' /tmp/envs.json)
+          echo "Fetched $TOTAL env-var row(s)."
+
+      # ── Detect duplicate keys ────────────────────────────────────────────────
+      - name: Check for duplicate keys
+        id: check
+        run: |
+          set -euo pipefail
+          APP_LABEL="${{ steps.resolve.outputs.app_label }}"
+
+          # Group rows by key, keep only keys with count > 1.
+          jq -r '
+            group_by(.key)
+            | map(select(length > 1))
+            | map({key: .[0].key, count: length, uuids: [.[].uuid]})
+          ' /tmp/envs.json > /tmp/dupes.json
+
+          DUPE_COUNT=$(jq 'length' /tmp/dupes.json)
+
+          if [ "$DUPE_COUNT" -eq 0 ]; then
+            echo "has_duplicates=false" >> "$GITHUB_OUTPUT"
+            echo "duplicate_keys=" >> "$GITHUB_OUTPUT"
+            echo "✅ CLEAN — no duplicate env-var keys found on '$APP_LABEL'."
+            exit 0
+          fi
+
+          KEYS=$(jq -r '[.[].key] | join(",")' /tmp/dupes.json)
+          echo "has_duplicates=true" >> "$GITHUB_OUTPUT"
+          echo "duplicate_keys=$KEYS" >> "$GITHUB_OUTPUT"
+
+          echo "::error::Found $DUPE_COUNT duplicate env-var key(s) on '$APP_LABEL' — Coolify's runtime will silently pick one row (empirically the last), with no warning. Fix by hand in the Coolify UI: delete the stale row(s), keep exactly one per key."
+          echo ""
+          echo "=== Duplicate key(s) on '$APP_LABEL' ==="
+          jq -r '.[] | "  key=\(.key)  rows=\(.count)  env_uuids=\(.uuids | join(", "))"' /tmp/dupes.json
+          echo ""
+          echo "This guard is READ-ONLY — it does not delete or fix rows. A human must"
+          echo "resolve this in the Coolify UI (or via a scoped dedupe workflow, e.g."
+          echo "t104-dedupe-and-restart-opshub-prod.yml, as prior precedent) before this"
+          echo "app is safely redeployed."
+          exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================="
+          echo " Coolify duplicate env-var guard — ${{ steps.resolve.outputs.app_label }}"
+          echo " app_uuid: ${{ steps.resolve.outputs.app_uuid }}"
+          echo " has_duplicates: ${{ steps.check.outputs.has_duplicates }}"
+          echo "======================================================="
