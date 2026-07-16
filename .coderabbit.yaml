@@ -1,0 +1,20 @@
+# CodeRabbit configuration — source of truth: .claude/agents/coderabbit.md
+#
+# This file was documented (as a "recommended starter config") but never
+# actually committed, so CodeRabbit has been running on stock defaults
+# rather than this profile since it was installed. Per AUTONOMY.md,
+# CodeRabbit's rules are a meta-governance-edit category — this file
+# requires the founder's direct sign-off before merge (see .github/CODEOWNERS),
+# even though the content itself is not new.
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+chat:
+  auto_reply: true
