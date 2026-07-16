@@ -91,6 +91,13 @@ jobs:
             "select id, subject, status, state, created_at from conversations order by id desc limit :'lim';" \
             | psql "$LOGIN" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
 
+      - name: SELECT the drafted internal note posted to conversation 39 (the AI's actual reply)
+        run: |
+          echo "::add-mask::$LOGIN"
+          printf '%s\n' \
+            "select id, conversation_id, type, state, body, created_at from threads where conversation_id = 39 order by id;" \
+            | psql "$LOGIN" -v ON_ERROR_STOP=1
+
       - name: SELECT recent tickets under the code's FALLBACK default scope (00...0001/00...0010 -- same as freescout-poller.ts's hardcoded default when POLLING_PROJECT_ID/POLLING_TENANT_ID are unset)
         run: |
           printf '%s\n' \
