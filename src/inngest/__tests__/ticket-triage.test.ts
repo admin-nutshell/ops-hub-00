@@ -138,6 +138,18 @@ describe("triageOneTicket", () => {
     const updateCall = queryCalls.find(([q]) => q.includes("UPDATE tickets"));
     expect(updateCall).toBeTruthy();
     expect(updateCall![1]).toEqual(["high", "auth", "engineering", "t1"]);
+
+    // T-121 follow-up (gap G6): a durable audit record is written in the
+    // same transaction as the state update.
+    const auditCall = queryCalls.find(([q]) => q.includes("INSERT INTO audit_log"));
+    expect(auditCall).toBeTruthy();
+    expect(auditCall![1]?.[0]).toBe("proj-1");
+    expect(auditCall![1]?.[1]).toBe("tenant-1");
+    const payload = JSON.parse(auditCall![1]?.[3] as unknown as string) as Record<
+      string,
+      unknown
+    >;
+    expect(payload).toMatchObject({ urgency: "high", category: "auth", routing: "engineering" });
   });
 
   it("skips a ticket that is already triaged (idempotency guard)", async () => {
