@@ -1,0 +1,71 @@
+name: Check recent prod tickets (read-only, ad-hoc diagnostic)
+
+# ONE-OFF READ-ONLY DIAGNOSTIC — not a monitor, not scheduled. Lets a human
+# quickly see the most recent real tickets (id/title/state/urgency/category/
+# created_at) in ops-hub-prod's real tenant scope, to answer "did a ticket
+# actually land and what happened to it" without needing direct DB access.
+#
+# Credential pattern mirrors the already-established, already-safe approach
+# used by verify-t98-triage-dispatch.yml: fetch ops-hub-prod's real
+# OPS_HUB_APP_LOGIN_URL / POLLING_PROJECT_ID / POLLING_TENANT_ID LIVE via the
+# Coolify API (COOLIFY_API_TOKEN, an existing secret), masked, never persisted
+# as a new GitHub secret. Pure SELECT only -- no INSERT/UPDATE/DELETE. tickets
+# has no DELETE policy in this schema anyway, and this workflow never writes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many recent tickets to show"
+        required: false
+        default: "10"
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_PROD_UUID: "sbke5gqru1n54rj7gssgca2y"
+
+jobs:
+  check:
+    name: SELECT recent tickets (real prod tenant scope)
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Guard -- token present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+
+      - name: Install psql
+        run: sudo apt-get install -y postgresql-client
+
+      - name: Fetch ops-hub-prod's OPS_HUB_APP_LOGIN_URL / POLLING_PROJECT_ID / POLLING_TENANT_ID (live, masked, not persisted)
+        run: |
+          HTTP=$(curl -s --max-time 30 -o /tmp/ops.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_PROD_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-prod envs (HTTP $HTTP)"; exit 1; }
+
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/ops.json | head -1)
+          PID=$(jq -r '.[] | select(.key=="POLLING_PROJECT_ID") | .value' /tmp/ops.json | head -1)
+          TID=$(jq -r '.[] | select(.key=="POLLING_TENANT_ID") | .value' /tmp/ops.json | head -1)
+
+          [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL not found"; exit 1; }
+          [ -n "$PID" ] && [ "$PID" != "null" ] || { echo "::error::POLLING_PROJECT_ID not found"; exit 1; }
+          [ -n "$TID" ] && [ "$TID" != "null" ] || { echo "::error::POLLING_TENANT_ID not found"; exit 1; }
+
+          echo "::add-mask::$LOGIN"
+          echo "LOGIN=$LOGIN" >> "$GITHUB_ENV"
+          echo "PID=$PID" >> "$GITHUB_ENV"
+          echo "TID=$TID" >> "$GITHUB_ENV"
+
+      - name: SELECT recent tickets (real prod tenant/project GUC, read-only)
+        run: |
+          echo "::add-mask::$LOGIN"
+          printf '%s\n' \
+            "select set_config('app.current_tenant', :'tid', true);" \
+            "select set_config('app.current_project', :'pid', true);" \
+            "select id, left(title, 100) as title, state, urgency, category, routing, freescout_conversation_id, created_at from tickets order by created_at desc limit :'lim';" \
+            | psql "$LOGIN" -v tid="$TID" -v pid="$PID" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
