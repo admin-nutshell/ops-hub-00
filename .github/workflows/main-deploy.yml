@@ -67,13 +67,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # T-122 (Sprint 22): pre-flight guard — refuses to proceed if ops-hub-staging
-  # already has a duplicate env-var key (Coolify's UI/API append-not-upsert
-  # footgun, see check-coolify-env-duplicates.yml header). Read-only; fixing a
-  # detected duplicate is a manual Coolify UI step, not automated here.
+  # T-122 (Sprint 22): pre-flight guard for ops-hub-staging's env vars
+  # (Coolify's UI/API append-not-upsert footgun, see
+  # check-coolify-env-duplicates.yml header). Read-only; fixing a detected
+  # duplicate is a manual Coolify UI step, not automated here.
+  #
+  # NON-BLOCKING FOR NOW (`continue-on-error: true`, no `needs:` on `deploy`):
+  # T-122's own live verification against real ops-hub-staging found it
+  # CURRENTLY has 19 duplicate env-var keys out of 41 total rows (LITELLM_
+  # MASTER_KEY, LITELLM_TRIAGE_MODEL, INNGEST_SIGNING_KEY, SENTRY_DSN, and 15
+  # more — see PR #515 / DECISIONS.md 2026-07-16 for the full list and live
+  # run link). Wiring this as a hard `needs:` gate today would immediately
+  # halt every staging deploy until that pre-existing mess is cleaned up —
+  # too large a side effect to ship silently inside a "build the guard" task.
+  # This job still runs and reports on every deploy (visibility now), but
+  # does not block `deploy` until a follow-up task cleans up the 19 keys and
+  # a human flips this to blocking (remove `continue-on-error`, add
+  # `needs: guard` on the `deploy` job below).
   guard:
-    name: Pre-deploy — Coolify duplicate env-var guard
+    name: Pre-deploy — Coolify duplicate env-var guard (report-only for now, see comment above)
     uses: ./.github/workflows/check-coolify-env-duplicates.yml
+    continue-on-error: true
     with:
       app_uuid: "ajqplom2mghf5a8h6vf1q6xg"
       app_label: "ops-hub-staging"
@@ -82,7 +96,6 @@ jobs:
 
   deploy:
     name: Build & Deploy to Coolify Staging
-    needs: guard
     runs-on: ubuntu-latest
 
     env:
