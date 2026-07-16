@@ -8963,9 +8963,15 @@ committed to at task assignment time; #517 gained one new commit
 (220a241, a QA-driven docs correction, no code touched) partway through
 this task's build -- fast-forwarded onto it before finishing rather
 than working from a stale base. PR opened with --base
-t123-deploy-health-gate; cannot merge before #517 does, by
-construction (GitHub will not let a PR merge while its base branch is
-itself an open, unmerged PR's head).
+t123-deploy-health-gate. By DISCIPLINE, not GitHub structure, this
+should not merge before #517 does -- checked, not assumed: `gh pr view
+521` reports `"mergeable":"MERGEABLE"` right now, so GitHub would in
+fact allow merging #521 into the t123-deploy-health-gate branch before
+#517 reaches main. The reason to hold it is that #521's own diff only
+makes sense once T-123's mechanism is actually on main (and per this
+task's standing no-self-merge instruction) -- not a technical
+impossibility. When #517 merges and its branch is deleted, GitHub will
+auto-retarget #521 to main.
 
 REUSE, NOT REBUILD: this task never touches monitor-e2e-pipeline.yml
 itself -- no new dispatch, no new credential, no new schedule. It only
@@ -8983,9 +8989,10 @@ tenant and would double-process the sentinel ticket), and a clean skip
 reports the Actions run's own conclusion as `success`, identical to a
 genuine pass. Checked the real history via `gh run view <id> --json
 jobs` on each of the last 16 completed event=schedule runs (not
-guessed): 13 CONSECUTIVE clean skips, all `conclusion=success`, going
-back to 2026-07-16T02:05 -- the most recent run that actually exercised
-reset/dispatch/poll/LangFuse (run 29277913046) was at
+guessed): the 12 MOST RECENT were CONSECUTIVE clean skips, all
+`conclusion=success`, spanning 2026-07-16T19:02Z back to
+2026-07-14T01:58Z -- the 13th run checked was the most recent one that
+actually exercised reset/dispatch/poll/LangFuse (run 29277913046), at
 2026-07-13T19:17:50Z, ~74 HOURS before this check. A gate trusting
 `conclusion=success` alone would have waved through any prod promotion
 today on top of THREE DAYS of unverified downstream-pipeline coverage
@@ -9114,12 +9121,42 @@ Also confirmed prod-deploy.yml still parses as valid YAML after the
 edit (python yaml.safe_load) and that the new pre-flight step is first
 in the job's step list, before "Patch prod image tag."
 
+VERIFICATION CAVEAT, DISCLOSED NOT GLOSSED OVER: all of the above ran
+under a personal `gh` token (broad scopes), not the workflow's own
+`GITHUB_TOKEN` restricted to `actions: read` by this PR's own
+permissions block. `actions: read` should cover `gh run list`/`gh run
+view --json jobs` -- it is a repo-wide read scope, not per-workflow,
+per GitHub's own permission model -- but this is an assumption, not an
+observation: unlike T-123's own in-CI proof (run 29529506168), this
+exact script has not yet executed inside a real GitHub Actions run
+under its actual restricted token. Flagged for reviewers rather than
+closed out here; a brand-new workflow_dispatch on a non-default branch
+has its own registration quirks in this repo's history
+(backup-verification.yml's "nudge GitHub to re-index workflow_dispatch"
+fix, PR #244) that could make a pre-merge smoke dispatch awkward, so
+this is being surfaced rather than force-closed.
+
+REVIEWER FLAG, NOT RESOLVED HERE: a stale T-98 signal (the common
+real-world case right now, per the finding above) is caused by an
+ORTHOGONAL condition -- ops-hub-staging left running -- not by
+production actually being unhealthy. This gate hard-blocks with no
+bypass input, so an urgent prod hotfix would also be blocked if T-98
+happens to be stale at that moment, even with nothing wrong downstream.
+This is a deliberate, documented choice (script header, design fork
+#2 above), not an oversight -- but T-123's own QA review already logged
+wanting an emergency-bypass runbook for the sibling deploy-health gate,
+and reviewers here should consciously decide whether "no bypass on the
+only prod-promotion path" is acceptable as shipped, or whether a
+documented override (e.g. a workflow_dispatch input) belongs in this
+PR before merge rather than as a follow-up.
+
 PROD-AFFECTING CHANGE, FLAGGED PER THIS TASK'S OWN SCOPE RULE:
 prod-deploy.yml's new step 0 runs on every future prod promotion.
 Requested Tech Lead + QA Manager + Security Lead review before merge
 (same reviewers T-123's own prod-deploy.yml diff already required),
-same as T-123 -- in addition to being unable to merge before #517
-regardless, by branch stacking. NOT self-merged.
+same as T-123. Held unmerged by discipline pending #517, not by a
+GitHub structural block (see the branch-stacking note above). NOT
+self-merged.
 
 LIVE CARRY NAMED, NOT FIXED HERE (out of T-124's scope): ops-hub-
 staging currently appears to have been left running continuously for
