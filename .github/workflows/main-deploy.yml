@@ -55,6 +55,11 @@ on:
       - "pnpm-workspace.yaml"
       - "tsconfig.json"
       - "tsconfig.build.json"
+  # T-123: manual re-run capability (matches prod-deploy.yml / deploy-staging-
+  # services.yml, both already dispatchable) — no inputs, always deploys
+  # HEAD of whatever ref it's run against. Does not change the push trigger
+  # above or its path filter in any way.
+  workflow_dispatch: {}
 
 # Least-privilege: needs packages:write for GHCR image push.
 permissions:
@@ -249,6 +254,35 @@ jobs:
           done
           echo "ERROR: health check timed out after 3 minutes"
           exit 1
+
+      # ── T-123: real deploy-health gate (Sprint 22, Phase 2 Track B) ──────────
+      # The step above only proves the container is UP (a shallow /health 200,
+      # which the app returns unconditionally the moment the process boots — it
+      # cannot detect a deploy that starts fine but is actually broken). This
+      # step proves the deploy is actually GOOD, reusing two already-built,
+      # already-proven deep health endpoints rather than inventing new checks:
+      #   /health/env              (T-63) — every required env var is present
+      #                             on THIS process. Catches the T-47 class of
+      #                             incident (env vars silently vanished from
+      #                             Coolify; nothing caught it for 2 days).
+      #   /health/litellm-internal (T-97) — a REAL authenticated completion
+      #                             call over the app's own internal LiteLLM
+      #                             URL/key. Catches the FQ-69 class of
+      #                             incident (LiteLLM master key silently
+      #                             rejected; /health/litellm stayed green
+      #                             throughout because it never sends an
+      #                             Authorization header).
+      # On failure this step fails the job LOUDLY (see scripts/deploy-health-
+      # gate.sh for the v1 no-auto-rollback scope decision and why). Because
+      # this step has no `if:`, a failure here skips the Inngest sync step
+      # below (default GitHub Actions behavior) but the SC7 "stop staging"
+      # step further down still runs — it is `if: always()`.
+      - name: Post-deploy health gate — deep checks (T-123)
+        env:
+          STAGING_URL: ${{ secrets.COOLIFY_STAGING_APP_URL }}
+        run: |
+          BASE="${STAGING_URL:-https://ops-hub-staging.inatechshell.ca}"
+          bash scripts/deploy-health-gate.sh "$BASE" /health/env /health/litellm-internal
 
       # ── Inngest function sync (T-65: re-enabled 2026-07-07) ───────────────────
       # Removed 2026-07-04 because ops-hub-staging and ops-hub-prod shared the

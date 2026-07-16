@@ -276,6 +276,12 @@ jobs:
           echo "Start HTTP $HTTP_CODE"
           jq . /tmp/start_resp.json 2>/dev/null || cat /tmp/start_resp.json
 
+      # T-123 (Sprint 22, Track B): this used to print a "⚠️ Not yet 200" warning
+      # and then exit 0 regardless — a deploy with a genuinely broken LiteLLM
+      # container reported SUCCESS. Now retries for real (up to 6 attempts,
+      # 15s apart, on top of the initial 90s boot wait) and fails the job
+      # loudly (exit 1) if health is never reached, matching the "real
+      # deploy-health gate" standard the rest of this task applies elsewhere.
       - name: Wait and verify LiteLLM health
         run: |
           echo "Waiting 90s for LiteLLM to initialize (Prisma migrations run on first boot)..."
@@ -289,20 +295,23 @@ jobs:
           jq '{name, status, fqdn}' /tmp/app_state.json 2>/dev/null || cat /tmp/app_state.json
 
           FQDN=$(jq -r '.fqdn // empty' /tmp/app_state.json 2>/dev/null)
-          if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
-            HOST="${FQDN#https://}"
-            HOST="${HOST#http://}"
-            HOST="${HOST%/}"
-            echo "Checking readiness at https://$HOST/health/readiness"
+          if [ -z "$FQDN" ] || [ "$FQDN" = "null" ]; then
+            echo "::error::No FQDN assigned to LiteLLM ($UUID) — Coolify never routed it. Treat as a failed deploy, not a warning."
+            exit 1
+          fi
+          HOST="${FQDN#https://}"
+          HOST="${HOST#http://}"
+          HOST="${HOST%/}"
+          echo "Checking readiness at https://$HOST/health/readiness"
+          for attempt in 1 2 3 4 5 6; do
             HTTP=$(curl -o /dev/null -s -w "%{http_code}" \
               --max-time 30 "https://$HOST/health/readiness" || echo "000")
-            echo "HTTP status: $HTTP"
-            [ "$HTTP" = "200" ] && echo "✅ LiteLLM healthy" \
-              || echo "⚠️  Not yet 200 — service may still be starting (check Coolify logs)"
-          else
-            echo "⚠️  No FQDN assigned yet — Coolify may still be routing. Check the dashboard."
-            echo "LiteLLM UUID for dashboard lookup: $UUID"
-          fi
+            [ "$HTTP" = "200" ] && { echo "Attempt $attempt/6: HTTP 200 — LiteLLM healthy"; exit 0; }
+            echo "Attempt $attempt/6: HTTP $HTTP — not yet healthy"
+            [ "$attempt" -lt 6 ] && sleep 15
+          done
+          echo "::error::LiteLLM ($UUID, https://$HOST) never returned HTTP 200 on /health/readiness after 90s boot wait + 6 retries. This deploy did not verify healthy — check Coolify logs before assuming it's fine."
+          exit 1
 
   # ─── T-10: FreeScout (Supabase PostgreSQL — firewall confirmed open 2026-06-21) ──────────────
   # Prior failures (PRs #25–#34) root cause: Coolify-managed PostgreSQL containers crash because
@@ -555,6 +564,8 @@ jobs:
           echo "Start HTTP $HTTP_CODE"
           jq . /tmp/fs_start_resp.json 2>/dev/null || cat /tmp/fs_start_resp.json
 
+      # T-123 (Sprint 22, Track B): same fail-loud fix as the LiteLLM check
+      # above — this previously warned and exited 0 on an unhealthy deploy.
       - name: Verify FreeScout health
         run: |
           echo "Waiting 180s for FreeScout to initialize (SETUP_TYPE=AUTO first-run + DB migrations)..."
@@ -568,19 +579,19 @@ jobs:
           jq '{uuid, name, status, fqdn}' /tmp/fs_state.json 2>/dev/null || cat /tmp/fs_state.json
 
           FQDN=$(jq -r '.fqdn // empty' /tmp/fs_state.json 2>/dev/null | sed 's|/$||')
-          if [ -n "$FQDN" ] && [ "$FQDN" != "null" ]; then
-            echo "Checking $FQDN/"
-            set +e
-            HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 "$FQDN/")
-            CURL_RC=$?
-            set -e
-            [ "$CURL_RC" != "0" ] && HTTP="000"
-            echo "HTTP status: $HTTP"
-            [ "$HTTP" = "200" ] && echo "✅ FreeScout healthy" \
-              || echo "⚠️  Not yet 200 (may still be starting — check Coolify logs)"
-          else
-            echo "⚠️  No FQDN assigned yet. FreeScout UUID: $UUID"
+          if [ -z "$FQDN" ] || [ "$FQDN" = "null" ]; then
+            echo "::error::No FQDN assigned to FreeScout ($UUID) — Coolify never routed it. Treat as a failed deploy, not a warning."
+            exit 1
           fi
+          echo "Checking $FQDN/"
+          for attempt in 1 2 3 4 5 6; do
+            HTTP=$(curl -o /dev/null -s -w "%{http_code}" --max-time 30 "$FQDN/" || echo "000")
+            [ "$HTTP" = "200" ] && { echo "Attempt $attempt/6: HTTP 200 — FreeScout healthy"; exit 0; }
+            echo "Attempt $attempt/6: HTTP $HTTP — not yet healthy"
+            [ "$attempt" -lt 6 ] && sleep 15
+          done
+          echo "::error::FreeScout ($UUID, $FQDN) never returned HTTP 200 after 180s boot wait + 6 retries. This deploy did not verify healthy — check Coolify logs before assuming it's fine."
+          exit 1
 
       - name: Fetch FreeScout container logs (diagnostic)
         if: always()
