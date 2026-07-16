@@ -27,7 +27,7 @@
     "prettier": "^3.8.5",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.62.0",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@sentry/node": "^10.62.0",
