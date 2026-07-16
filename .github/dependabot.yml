@@ -1,0 +1,41 @@
+version: 2
+updates:
+  # Root package (pnpm workspace member ".")
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    # Group minor/patch bumps to keep PR volume manageable; majors stay
+    # individual so they get real review, not a batch rubber-stamp.
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # web/ pnpm workspace member (separate tsconfig, per CLAUDE.md)
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions themselves (this repo pins action SHAs per supply-chain
+  # review -- Dependabot is what actually keeps those pins current).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"
