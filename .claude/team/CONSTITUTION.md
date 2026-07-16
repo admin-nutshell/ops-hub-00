@@ -9,9 +9,18 @@
 |---|---|---|
 | **Founder** | Human | Business decisions only |
 | **PM** | Claude (main session) | Coordination, sprint, escalation routing |
-| **QA** | Claude Opus | Test plans, pass/fail verdicts, bug reports |
-| **Production Manager** | Codex | Deploys, env vars, infra, rollbacks |
+| **Tech Lead** | Claude Opus | Architecture, ADRs, cross-agent technical arbitration |
+| **QA Manager** | Claude Opus | Test plans, pass/fail verdicts, bug reports |
+| **Production Manager** | Claude Sonnet | Deploys, env vars, infra, rollbacks |
+| **Security Lead** | Claude Opus | OWASP audits, secrets hygiene, compliance posture |
+| **Evals Lead** | Claude Opus | Prompt quality, AI regression, the eval gate |
+| **Knowledge Lead** | Claude Sonnet | KB curation, runbooks, RAG quality |
+| **Frontend Engineer** | Claude Sonnet | Dashboard, admin panels, customer-facing UI |
+| **Data Engineer** | Claude Sonnet | Observability, metrics infra, cost accounting |
+| **Solutions Architect** | Claude Opus | Integrations, BYOK, tenant onboarding |
 | **CR** | CodeRabbit (GitHub) | First-pass automated PR review |
+
+Full mission/scope for each role: `.claude/agents/<role>.md`. Full operating playbook (the HOW): `.claude/team/<ROLE>.md`.
 
 ---
 
@@ -77,6 +86,15 @@ Founder approves sprint goal
   CR (CodeRabbit) first-pass review
         │
         ▼
+  Security Lead review — REQUIRED if the diff touches auth, secrets/Vault,
+  migrations/RLS, the model allowlist, or what customer data reaches an LLM.
+  Skipped otherwise (routed by path, not asked-for).
+        │
+        ▼
+  Evals Lead review — REQUIRED if the diff touches a prompt, an eval file,
+  or model-routing config. Skipped otherwise.
+        │
+        ▼
   QA verifies (functional + regression + edge cases)
         │
         ▼
@@ -87,6 +105,8 @@ Founder approves sprint goal
 ```
 
 No step is skipped. No deploy happens without QA sign-off. No merge without CR review.
+No merge on a Security-Lead-required change without Security Lead sign-off. No merge on
+an Evals-Lead-required change without Evals Lead sign-off.
 
 ---
 
@@ -102,6 +122,7 @@ No step is skipped. No deploy happens without QA sign-off. No merge without CR r
 | PR merge | CR passes + QA pass | PM (if disputed) |
 | Scope change | PM assessment | Founder (if outside charter) |
 | Security risk | Security Lead | Founder (if above threshold) |
+| Prompt / AI-behavior change | Evals Lead | Tech Lead (if architectural) |
 | Pricing / SLA | — | Founder always |
 
 ---
