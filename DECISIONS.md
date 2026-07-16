@@ -8940,3 +8940,202 @@ md decision #1). NOT self-merged.
    2026-07-16-t123-deploy-health-gate.md (new) ; WORK.md Sprint 22
    T-123 row (new Sprint 22 section)
 ```
+
+### 2026-07-16 — T-124: T-98 synthetic-ticket monitor wired into deploy gating (Sprint 22, Phase 2 Track C) — built, stacked on T-123/PR #517; live staleness gap found and closed, not hypothetical; verified against real GitHub Actions history, not assumed (Production Manager)
+
+```
+2026-07-16 [Production Manager] T-124 -- AUTONOMY.md names "the T-98
+synthetic-ticket monitor wired into deploy gating (Phase 2)" (with
+Phase 1's durable audit trail, G6/PR #512, already merged) as the two
+conditions that unlock the `production-promotion-new-change` and
+`prompt-or-capability-change` autonomy categories. T-98
+(monitor-e2e-pipeline.yml, live since FQ-75) has always ALERTED --
+opens a status-page incident on 2 consecutive real failures (T-113) --
+but nothing in the production promotion path ever CHECKED its signal
+before this task. A human had to remember to go look at a separate
+Actions run/status page before promoting a prompt or capability
+change.
+
+STACKED ON T-123 (PR #517), NOT ON main -- per this task's own
+instructions, since it extends the same prod-deploy.yml T-123 already
+touched. Branched from origin/t123-deploy-health-gate. Base branch as
+committed to at task assignment time; #517 gained one new commit
+(220a241, a QA-driven docs correction, no code touched) partway through
+this task's build -- fast-forwarded onto it before finishing rather
+than working from a stale base. PR opened with --base
+t123-deploy-health-gate; cannot merge before #517 does, by
+construction (GitHub will not let a PR merge while its base branch is
+itself an open, unmerged PR's head).
+
+REUSE, NOT REBUILD: this task never touches monitor-e2e-pipeline.yml
+itself -- no new dispatch, no new credential, no new schedule. It only
+READS T-98's own already-recorded Actions run history via `gh run
+list`/`gh run view`, the exact same read-only technique T-98's own
+T-113 consecutive-fail-streak step already uses against itself.
+
+THE REAL FINDING THAT SHAPED THE DESIGN (verified against live data
+before writing a line of the gate script, not assumed): the naive
+design -- trust `gh run list`'s `conclusion` field for T-98's most
+recent event=schedule run -- is WRONG. T-98's own `staging_guard` step
+(T-111/SC7) cleanly skips the real downstream check whenever
+ops-hub-staging is caught running (its crons share T-98's synthetic
+tenant and would double-process the sentinel ticket), and a clean skip
+reports the Actions run's own conclusion as `success`, identical to a
+genuine pass. Checked the real history via `gh run view <id> --json
+jobs` on each of the last 16 completed event=schedule runs (not
+guessed): 13 CONSECUTIVE clean skips, all `conclusion=success`, going
+back to 2026-07-16T02:05 -- the most recent run that actually exercised
+reset/dispatch/poll/LangFuse (run 29277913046) was at
+2026-07-13T19:17:50Z, ~74 HOURS before this check. A gate trusting
+`conclusion=success` alone would have waved through any prod promotion
+today on top of THREE DAYS of unverified downstream-pipeline coverage
+-- exactly the "green health signal while the real path is broken"
+failure class T-98 exists to catch (T-71/FQ-69/FQ-70), one level up the
+stack, inside the monitor's own reporting. Root cause of the skip
+streak: ops-hub-staging has apparently been left running through this
+same day's heavy deploy/verification activity (T-116 through T-125) --
+a known, already-named operational class (T-111's own header: "a
+staging left running across MANY consecutive cycles is a real
+operational problem... deliberately not rebuilt here"), not a new
+defect introduced by this task and not investigated further here --
+out of T-124's scope, flagged below as a live carry.
+
+WHAT WAS BUILT: scripts/t98-gate.sh, same fail-loud/no-auto-rollback
+shape as T-123's deploy-health-gate.sh. Walks backwards through
+completed event=schedule runs of monitor-e2e-pipeline.yml (workflow_
+dispatch runs excluded -- that file's own header reserves them for
+mode=simulate-failure/simulate-staging-running verification-only
+dispatches, which must never be mistaken for a real signal; schedule
+events always resolve MODE=live per the same header, so no extra mode
+lookup is needed) until it finds the most recent run whose "Guard --
+required credentials..." step actually ran (substring-matched, not
+exact-string-matched -- see below). Gates on BOTH that real check's own
+pass/fail AND its age against T98_MAX_STALENESS_HOURS (default 24).
+Wired into prod-deploy.yml as a NEW STEP 0 -- a pre-flight check running
+BEFORE any prod mutation (image patch/start), not a post-deploy
+rollback trigger.
+
+TWO DESIGN FORKS, DECIDED AND DOCUMENTED (per this task's own
+instruction not to silently assume either):
+
+1. PRE-FLIGHT, NOT POST-DEPLOY-WITH-ROLLBACK. The task text offered
+   both options. T-123 already deliberately deferred auto-rollback to a
+   "defensible v2" (its own script header). Gating BEFORE any prod
+   mutation happens sidesteps needing that mechanism entirely for this
+   check specifically -- there is nothing to roll back if the promotion
+   never started. Chose this over building a fresh auto-rollback path
+   that T-123 explicitly chose not to build for its own, closely
+   related check.
+
+2. HARD-BLOCK, NOT FLAG-ONLY, on both an unhealthy real result and a
+   STALE one. Same posture as T-123's deploy-health-gate.sh (fail loud,
+   no auto-rollback, a human decides next) and PRODUCTION.md's own
+   standing bar ("zero deploys without X... no exceptions, no matter
+   how small the change"). A flag-only mode would be a one-line
+   downgrade (::warning:: + exit 0) but would recreate exactly the gap
+   this task exists to close: T-98's signal was already technically
+   visible before this task (any human could go check the Actions
+   tab) -- what was missing was an ENFORCED check, not another
+   dashboard. The remediation the script's own error message points to
+   (stop ops-hub-staging, then wait for the next 6h cycle or manually
+   dispatch monitor-e2e-pipeline.yml with mode=live) is a normal,
+   already-understood operational action, not a dead end.
+
+3. GATES EVERY PROD PROMOTION, NOT ONLY PROMPT/CAPABILITY ONES.
+   prod-deploy.yml is a single manual workflow_dispatch with no
+   existing "what kind of change is this" input, and there is no
+   reliable way to infer "is this promotion a prompt/capability change"
+   from its current inputs (image_tag is just a SHA/tag) without adding
+   new plumbing whose only real effect would be letting a human self-
+   tag around the gate. Gating unconditionally is simpler and cannot be
+   routed around by mislabeling -- the same reasoning T-123 already
+   applied gating ALL prod promotions on /health/env +
+   /health/litellm-internal rather than scoping itself to "risky"
+   deploys only.
+
+WHY 24h (own calibration, not a copy of T-98's internal
+FAIL_THRESHOLD=2/STREAK_LOOKBACK_HOURS=10 -- those gate a CUSTOMER-
+FACING page and are tuned to avoid crying wolf on one transient HTTP/DB
+blip inside T-98 itself): T-98 runs every 6h, 4 cycles/day. A single
+benign skip (staging transiently up mid a legitimate main-deploy.yml
+start-then-stop window) is expected and self-heals within one cycle --
+this gate must not block every prod promotion over one ordinary blip.
+24h absorbs up to four consecutive benign skips (a full day of staging
+left up for active dev work -- precisely what the live evidence above
+shows happened today) while still catching a genuine multi-day blind
+spot before a prompt/capability change ships on top of it. Deliberately
+STRICTER than T-98's own internal thresholds: this gate protects a
+PRODUCTION PROMOTION, a much higher-stakes, much lower-frequency
+action, where erring toward "block and make a human look" costs far
+less than erring toward "promote blind."
+
+SUBSTRING MATCH ON THE GUARD STEP NAME (a small implementation
+decision worth recording because it caught a real bug during local
+verification): the script matches the credentials-guard step by
+`contains("Guard")`, `contains("required credentials")`, and
+`contains("sentinel ticket id all present")`, not exact string
+equality. An early local Python dry-run of this exact algorithm, using
+exact equality against the step name's literal em dash, silently
+misclassified EVERY run as "no real check" -- a Windows subprocess
+text-decoding mismatch (cp1252 vs UTF-8) mangled the em dash on
+read, so the comparison always failed even though the real conclusion
+was `success`. Switching to a substring match (which also makes the
+script more resilient to future minor wording edits in
+monitor-e2e-pipeline.yml) fixed it; re-verified against the same real
+data afterward and got the correct answer. Recorded per this project's
+"verify raw evidence, don't assume a mismatch means what it looks
+like" norm (memory: feedback_prompt_review_and_grader_variance) --
+this was a tooling bug in the verification harness, not a T-98 or
+gate-script defect, and it was caught, not shipped.
+
+VERIFIED, NOT ASSUMED CLEAN: ran the actual, unmodified
+scripts/t98-gate.sh (not an approximation) against real, live
+monitor-e2e-pipeline.yml run history in admin-nutshell/ops-hub-00
+three times, exercising every branch reachable from real data:
+  - FAIL (stale): default T98_MAX_STALENESS_HOURS=24 against the real
+    current state -- correctly found run 29277913046 as the most recent
+    real check, computed age=74h, failed loudly. This is the actual,
+    current, correct answer for this repo's real state right now, not
+    a synthetic test.
+  - PASS: same real data, T98_MAX_STALENESS_HOURS widened to 100 --
+    same run, same 74h age, correctly passed once under threshold.
+  - FAIL (no real check found): T98_LOOKBACK_RUNS narrowed to 8
+    (excludes run 29277913046 entirely) -- correctly failed with the
+    "found ZERO real checks in window" message, not a false pass.
+  - FAIL (unhealthy real result): NOT exercised against live data --
+    no real event=schedule run of monitor-e2e-pipeline.yml with
+    conclusion=failure exists in current history (the only 3
+    conclusion=failure runs on record are workflow_dispatch
+    mode=simulate-failure dispatches, correctly excluded by design).
+    Validated by code inspection only, reusing the same jq extraction
+    path already proven correct in the three branches above. Disclosed
+    as such, not claimed as live-verified.
+Also confirmed prod-deploy.yml still parses as valid YAML after the
+edit (python yaml.safe_load) and that the new pre-flight step is first
+in the job's step list, before "Patch prod image tag."
+
+PROD-AFFECTING CHANGE, FLAGGED PER THIS TASK'S OWN SCOPE RULE:
+prod-deploy.yml's new step 0 runs on every future prod promotion.
+Requested Tech Lead + QA Manager + Security Lead review before merge
+(same reviewers T-123's own prod-deploy.yml diff already required),
+same as T-123 -- in addition to being unable to merge before #517
+regardless, by branch stacking. NOT self-merged.
+
+LIVE CARRY NAMED, NOT FIXED HERE (out of T-124's scope): ops-hub-
+staging currently appears to have been left running continuously for
+at least ~19h (last confirmed real T-98 check 2026-07-13T19:17Z; the
+staging_guard has tripped on every 6-hourly cycle checked, most
+recently 2026-07-16T19:02Z). If this is not a currently-active,
+intentional dev/deploy window, stopping ops-hub-staging would both
+restore T-98's real downstream-pipeline coverage and let this new gate
+pass again. Not independently confirmed live via SSH/Coolify in this
+task (would be a mutating action outside a read-only verification
+task's authority) -- named as an operational follow-up, not escalated
+to FOUNDER_QUEUE.md (this is a routine, already-flagged, self-
+describing operational condition with a well-understood fix, not a
+business/pricing/security/customer-incident-class decision).
+
+-> scripts/t98-gate.sh (new) ; .github/workflows/prod-deploy.yml (new
+   pre-flight step 0 + `actions: read` permission added) ; WORK.md
+   Sprint 22 T-124 row (updated)
+```

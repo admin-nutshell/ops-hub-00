@@ -19,6 +19,10 @@ on:
 
 permissions:
   contents: read
+  # T-124: needed for scripts/t98-gate.sh's `gh run list`/`gh run view` calls
+  # against monitor-e2e-pipeline.yml's own run history (read-only; this
+  # workflow issues no `gh` writes).
+  actions: read
 
 concurrency:
   group: prod-deploy
@@ -37,6 +41,40 @@ jobs:
       PROD_URL: "https://ops-hub-prod.inatechshell.ca"
 
     steps:
+      # ── 0. T-124: pre-flight T-98 synthetic-ticket monitor gate ──────────────
+      # PROD-AFFECTING CHANGE — new capability-gating logic, flagged explicitly
+      # per this task's own scope rule (same posture as T-123's 4b step below).
+      # AUTONOMY.md names "the T-98 synthetic-ticket monitor wired into deploy
+      # gating (Phase 2)" as one of the two conditions (with Phase 1's durable
+      # audit trail, G6, already merged) that unlock the
+      # `production-promotion-new-change` / `prompt-or-capability-change`
+      # autonomy categories. Before this step existed, T-98 (live since
+      # FQ-75) only alerted via its own status-page paging path — nothing in
+      # the promotion path itself ever checked its signal, so a human had to
+      # remember to go look at a separate dashboard before promoting.
+      #
+      # Runs FIRST, before any prod mutation (image patch/start) — a pre-flight
+      # block, not a post-deploy rollback. T-123's own deploy-health-gate.sh
+      # deliberately deferred auto-rollback to a "defensible v2" (see that
+      # script's header); gating BEFORE any prod change happens sidesteps
+      # needing that mechanism entirely for this check specifically — nothing
+      # to roll back if the promotion never started.
+      #
+      # scripts/t98-gate.sh reads monitor-e2e-pipeline.yml's own already-
+      # recorded run history (same read-only `gh run list`/`gh run view`
+      # technique that monitor's own T-113 consecutive-fail-streak step
+      # already uses against itself) — it does not dispatch or mutate T-98 in
+      # any way. Full design rationale, the staleness problem this script
+      # exists to close (found live, not hypothetical — see script header +
+      # DECISIONS.md 2026-07-16 "T-124"), and the hard-block-vs-flag and
+      # applies-to-every-promotion design forks are documented in the script
+      # itself.
+      - name: Pre-flight — T-98 synthetic-ticket monitor gate (T-124)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/t98-gate.sh
+
       # ── 1. Patch image tag on prod app ────────────────────────────────────────
       - name: Patch prod image tag
         env:
