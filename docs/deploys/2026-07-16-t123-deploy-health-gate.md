@@ -121,16 +121,21 @@ this session:**
   which live-runs the real handler against real `litellm-staging` with both
   a bad and a good key). This task's own new surface — the curl-and-retry-
   and-exit-1 script wrapper — is what was verified fresh above.
-- Did **not** trigger a full, real `main-deploy.yml` run end-to-end (which
-  would require merging to `main`, since that workflow's push trigger is
-  the only way it fired before this PR, or starting `ops-hub-staging`
-  through an unreviewed side channel, which past incidents in this repo
-  — T-107 — specifically warn against doing outside the workflow's own
-  reviewed start-then-stop mechanism). The `workflow_dispatch` trigger
-  added in this PR makes that possible for a maintainer to do post-merge if
-  they want one more end-to-end confirmation; it wasn't done pre-merge here
-  because doing so safely requires the merge this task cannot perform
-  itself.
+- **Correction (independent QA review, 2026-07-16): this WAS done, and this
+  section originally said otherwise — fixed rather than left standing.** A
+  real, full `main-deploy.yml` run was dispatched against this exact branch
+  via the `workflow_dispatch` trigger this PR added — run
+  [29529506168](https://github.com/admin-nutshell/ops-hub-00/actions/runs/29529506168),
+  event `workflow_dispatch`, conclusion **success**, on SHA `a6e8eca`. The
+  "Post-deploy health gate — deep checks (T-123)" step executed (not
+  skipped) and passed — meaning `/health/env` and `/health/litellm-internal`
+  both genuinely returned 200 against live `ops-hub-staging` while the gate
+  ran. Independently re-confirmed via `gh run view` against the real GitHub
+  Actions record before writing this correction, not taken on faith. The
+  three commits between `a6e8eca` (the tested SHA) and the current PR head
+  touch only `DECISIONS.md`/`WORK.md` — the script and all three workflow
+  files are byte-identical to what this run exercised, so the CI evidence
+  covers exactly what will execute on merge.
 
 **What was NOT verified (named honestly, not glossed over):**
 
