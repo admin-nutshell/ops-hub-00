@@ -8836,3 +8836,102 @@ user's own direct, in-the-moment merge authorization.
    ModelRoutingSection.tsx ; test updates across modelRouting.test.ts,
    settingsWrite.test.ts, ticket-respond.test.ts, kb-learn.test.ts
 ```
+
+---
+
+### 2026-07-16 — T-122: Coolify duplicate env-var guard built and verified against LIVE Coolify — found ops-hub-staging currently has 19 duplicate env-var keys, real and reproduced (Production Manager)
+
+```
+2026-07-16 [Production Manager] T-122 (Sprint 22, Phase 2 Track A;
+docs/planning/target-operating-model-implementation-plan.md; first half of
+AUTONOMY.md's `redeploy-already-authorized` unlock gate). Built an
+automated, READ-ONLY guard for Coolify's known append-not-upsert env-var
+footgun (memory feedback_coolify_env_vars; prior precedent: T-104's
+LITELLM_URL dup-row incidents on ops-hub-prod AND ops-hub-staging, both in
+this log) -- today's only mitigation was a manual coolify-db audit before
+touching a critical var; this automates the detection step only (fixing a
+duplicate stays a human/manual action, explicitly out of scope).
+
+BUILT: .github/workflows/check-coolify-env-duplicates.yml -- three
+triggers: workflow_dispatch (pick a known app or a custom UUID),
+workflow_call (other workflows can call it as a pre-flight job), and a
+pull_request self-test scoped to this file only. Fetches
+GET /applications/{uuid}/envs, groups by key via jq, fails loudly
+(::error::, non-zero exit, lists every duplicated key + row count + env
+UUIDs) on any key appearing more than once; exits 0 clean otherwise. Reuses
+the existing COOLIFY_API_TOKEN secret (no new secret introduced) and the
+same COOLIFY_BASE/curl/jq idioms as the 20+ existing Coolify-calling
+workflows (diagnose-litellm.yml, t104-dedupe-and-restart-opshub-prod.yml,
+main-deploy.yml, prod-deploy.yml).
+
+WHY THE pull_request SELF-TEST EXISTS: GitHub will not let a brand-new
+workflow_dispatch-triggered workflow be dispatched via API/gh CLI until it
+exists on the default branch (confirmed empirically -- `gh workflow run`
+returned HTTP 404 "workflow not found on the default branch" before this
+was on main). A pull_request trigger, by contrast, DOES run using the
+workflow file version from the PR's own branch/merge ref. Adding a
+pull_request trigger (paths-scoped to this file only, so it fires ONLY on
+edits to the guard itself) was the only way to get a genuine live-Coolify
+run pre-merge, consistent with this project's "verified, not assumed
+clean" norm (T-118/T-119/T-120, same standard cited here) rather than
+shipping the guard with only synthetic/local testing.
+
+VERIFIED, LIVE, REPRODUCED TWICE: PR #515's self-test ran automatically
+against real ops-hub-staging (uuid ajqplom2mghf5a8h6vf1q6xg) on open (run
+29529074189) and again on the next push (run 29529216778) -- BOTH runs
+returned identical output: 41 total env-var rows, 19 duplicate keys:
+FREESCOUT_BOT_USER_ID, FREESCOUT_DB_URL, GITHUB_STATUS_DISPATCH_TOKEN,
+INNGEST_APP_ID, INNGEST_EVENT_KEY, INNGEST_SIGNING_KEY,
+LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, LITELLM_EXTERNAL_URL,
+LITELLM_FALLBACK_MODEL, LITELLM_KBLEARN_MODEL, LITELLM_MASTER_KEY,
+LITELLM_RESPOND_MODEL, LITELLM_TRIAGE_MODEL, NVIDIA_API_KEY,
+POLLING_PROJECT_ID, POLLING_TENANT_ID, SENTRY_DSN, STATUS_WEBHOOK_SECRET
+-- each with exactly 2 rows. This is a genuinely new, real finding: nearly
+half of ops-hub-staging's env surface is duplicated, including several
+credential/routing-critical keys (LITELLM_MASTER_KEY, LITELLM_TRIAGE_MODEL,
+INNGEST_SIGNING_KEY) whose stale/current split has NOT been diagnosed here
+-- flagged, not investigated further, per this task's own scope boundary
+(detection only). Worth naming as a plausible, unconfirmed lead on the
+still-unfired "provider-credential divergence" standing carry (FQ-69's 401
+class) -- explicitly NOT claimed as the cause, just flagged as a candidate
+worth a future look given LITELLM_MASTER_KEY is on the list.
+ops-hub-PROD was NOT checked live the same way (the pull_request self-test
+is hardcoded to the staging UUID for safety/blast-radius reasons); a real
+prod check needs someone to workflow_dispatch this against ops-hub-prod
+after it merges.
+
+WIRING DECISION, REVISED MID-TASK: originally wired as a hard `needs:`
+pre-flight gate on both main-deploy.yml (ops-hub-staging) and
+prod-deploy.yml (ops-hub-prod) deploy jobs. Reverted to
+`continue-on-error: true` (runs and reports every deploy, does not block)
+after the live self-test above showed staging is NOT currently clean --
+merging a hard block today would have silently halted every future staging
+deploy until the 19-key mess is manually cleaned up, an outsized and
+undisclosed side effect for a task framed as "build the guard." Judgment
+call, not the user's instruction: the task explicitly allowed a
+standalone-only v1 "if wiring into the deploy workflows needs a larger
+change" -- this counts. Both guard jobs are wired in and visible in
+Actions on every deploy from here on; flipping to blocking is a
+one-line follow-up (drop `continue-on-error`, add `needs: guard`) once
+(a) the existing duplicates are cleaned up and (b) ops-hub-prod is
+confirmed clean the same way.
+
+NOT SELF-MERGED. PR #515 stays open per this project's standing "full
+formal review for every change" decision and this task's own explicit
+instruction (real capability-changing production-infrastructure work) --
+needs an independent Tech Lead pass (architecture/wiring/blast-radius) and
+a separate Production Manager pass (not the same hat as the build), both
+noted as outstanding in the PR body.
+
+FOLLOW-UP NEEDED, NOT DONE HERE (flagging, not fixing): (1) clean up the 19
+duplicate keys on ops-hub-staging by hand in the Coolify UI, then flip
+main-deploy.yml's guard to blocking; (2) run this guard live against
+ops-hub-prod and litellm-staging/-prod once merged, and flip prod-deploy.yml
+to blocking if clean; (3) T-123 (real deploy-health gate) and T-124 (wire
+T-98 into deploy gating) remain separate, unbuilt Sprint 22 tasks.
+
+-> .github/workflows/check-coolify-env-duplicates.yml (new) ;
+   .github/workflows/main-deploy.yml (guard job, continue-on-error) ;
+   .github/workflows/prod-deploy.yml (guard job, continue-on-error) ;
+   PR #515 ; live runs 29529074189, 29529216778
+```
