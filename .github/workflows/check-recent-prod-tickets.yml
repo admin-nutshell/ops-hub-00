@@ -51,6 +51,7 @@ jobs:
           LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL") | .value' /tmp/ops.json | head -1)
           PID=$(jq -r '.[] | select(.key=="POLLING_PROJECT_ID") | .value' /tmp/ops.json | head -1)
           TID=$(jq -r '.[] | select(.key=="POLLING_TENANT_ID") | .value' /tmp/ops.json | head -1)
+          PENABLED=$(jq -r '.[] | select(.key=="POLLING_ENABLED") | .value' /tmp/ops.json | head -1)
 
           [ -n "$LOGIN" ] && [ "$LOGIN" != "null" ] || { echo "::error::OPS_HUB_APP_LOGIN_URL not found"; exit 1; }
           [ -n "$PID" ] && [ "$PID" != "null" ] || { echo "::error::POLLING_PROJECT_ID not found"; exit 1; }
@@ -60,6 +61,7 @@ jobs:
           echo "LOGIN=$LOGIN" >> "$GITHUB_ENV"
           echo "PID=$PID" >> "$GITHUB_ENV"
           echo "TID=$TID" >> "$GITHUB_ENV"
+          echo "POLLING_ENABLED on ops-hub-prod is currently: '${PENABLED:-<unset>}'"
 
       - name: SELECT recent tickets (real prod tenant/project GUC, read-only)
         run: |
@@ -69,3 +71,10 @@ jobs:
             "select set_config('app.current_project', :'pid', true);" \
             "select id, left(title, 100) as title, state, urgency, category, routing, freescout_conversation_id, created_at from tickets order by created_at desc limit :'lim';" \
             | psql "$LOGIN" -v tid="$TID" -v pid="$PID" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
+
+      - name: SELECT recent FreeScout conversations directly (ops_hub_app has read-only SELECT grant, CLAUDE.md)
+        run: |
+          echo "::add-mask::$LOGIN"
+          printf '%s\n' \
+            "select id, subject, status, state, created_at from conversations order by id desc limit :'lim';" \
+            | psql "$LOGIN" -v lim="${{ inputs.limit }}" -v ON_ERROR_STOP=1
