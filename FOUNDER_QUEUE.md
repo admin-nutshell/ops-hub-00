@@ -4,6 +4,24 @@
 
 ---
 
+## FQ-78 — PR #501 (CODEOWNERS + CodeRabbit config) needs your sign-off before it can merge
+
+**Filed:** 2026-07-16
+**Filed by:** Coordinator (continuing today's gap-analysis implementation plan, `docs/planning/target-operating-model-implementation-plan.md`)
+**Needs:** Authorization
+**Context:** Today's org-chart review found gap G5 — CodeRabbit was documented as running but never actually configured, and there was no GitHub-enforced routing of the founder-only paths `AUTONOMY.md` itself defines. PR #501 fixes both: adds a `CODEOWNERS` file that routes those founder-only paths to you specifically, and commits the `.coderabbit.yaml` starter profile that was already written up in docs but never turned on. All 5 of 5 required CI checks are green. Five other gaps found the same review (G1–G4, G6) were routine enough to self-merge; this one isn't, because it edits the rules that govern self-merging itself — CodeRabbit's own config and the founder-only routing are both `meta-governance-edit` under `AUTONOMY.md`, which is explicitly never agent-approved, no matter how routine the change looks.
+**Review status:** Security Lead + Tech Lead review of PR #501's actual diff is still needed — per `AUTONOMY.md`'s own text, that specialist review is **additive to your sign-off, never a substitute for it or replaced by it**. Your decision below authorizes the change in principle; it does not skip the specialist review pass, which will run before/alongside merge.
+**Options:**
+- **(A)** Approve PR #501 in principle. **Recommended** — it only adds enforcement for rules you already approved (AUTONOMY.md v2, merged earlier today) and turns on a review tool that was supposed to already be running. Security Lead + Tech Lead review still runs before it merges.
+- **(B)** Ask for changes first (e.g., a different reviewer than `@admin-nutshell` on CODEOWNERS, or different CodeRabbit settings).
+- **(C)** Defer — leave it open. No functional impact either way; CodeRabbit simply continues not running and founder-only paths continue to rely on process discipline rather than a GitHub-enforced gate.
+**Recommendation:** (A).
+**Deadline:** Non-blocking — nothing is exposed today; this only closes a governance gap.
+
+**Notify:** Coordinator, once decided — will merge (or action B/C) and update `docs/planning/target-operating-model-implementation-plan.md` §4.
+
+---
+
 ## ✅ FQ-77 — RESOLVED: eval-safety-net calibration authorized directly by the user; T-105 triage security fix shipped
 
 **Filed:** 2026-07-12 | **Resolved:** 2026-07-13

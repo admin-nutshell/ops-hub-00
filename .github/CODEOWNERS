@@ -1,0 +1,38 @@
+# CODEOWNERS — GitHub-enforced review requirement
+#
+# GitHub's CODEOWNERS mechanism only understands real GitHub accounts, not
+# the 11 Claude Code agent personas (they have no GitHub identity of their
+# own -- see .claude/agents/README.md). So this file is scoped narrowly and
+# deliberately: it only routes the paths that AUTONOMY.md marks
+# `founder-only` (money, legal, security-toggle, and any edit to the
+# governance rules themselves) to the founder's own account, giving those
+# specific categories a REAL, GitHub-enforced human-review gate that cannot
+# be bypassed by a self-merge.
+#
+# Everything else in this repo is deliberately NOT listed here. Specialist
+# review (Security Lead on a migration, Evals Lead on a prompt change, etc.)
+# is a separate, agent-driven discipline recorded in the per-PR sign-off
+# record (see docs/workflows/ and CONSTITUTION.md's review flow) -- it is
+# not, and cannot be, enforced through this GitHub-native mechanism without
+# a dedicated bot identity per role, which does not exist yet.
+
+# Governance rules themselves -- always founder-only per AUTONOMY.md
+.claude/team/AUTONOMY.md            @admin-nutshell
+.claude/team/CONSTITUTION.md        @admin-nutshell
+.coderabbit.yaml                    @admin-nutshell
+/CLAUDE.md                          @admin-nutshell
+/.github/CODEOWNERS                 @admin-nutshell
+
+# Database migrations and RLS -- irreversible-by-nature, security-sensitive,
+# and already founder-executed in practice (service_role migrations-only,
+# CLAUDE.md non-negotiable #3) -- this just makes that existing practice a
+# real, enforced GitHub gate instead of a documented convention.
+/supabase/migrations/**             @admin-nutshell
+
+# NOTE: branch-protection/enforce_admins toggling (AUTONOMY.md's
+# branch-protection-toggle category) is an API-level action against GitHub's
+# repo settings, not a file in this repo -- there is no path to route here.
+# That category is enforced by the standing rule in AUTONOMY.md and by never
+# using `gh pr merge --admin` or the enforce_admins toggle without the
+# founder's direct, in-the-moment words (see project memory on this exact
+# point).

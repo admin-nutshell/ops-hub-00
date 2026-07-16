@@ -279,6 +279,27 @@ export async function triageOneTicket(
       "UPDATE tickets SET state = 'triaged', urgency = $1, category = $2, routing = $3, owner_agent = 'ticket-triage' WHERE id = $4",
       [classification.urgency, classification.category, classification.routing, ticketId]
     );
+    // T-121 follow-up (gap G6): durable audit record for the autonomous
+    // decision, same-transaction as the state write. Payload carries the
+    // classification + rationale only — never raw ticket title/body, which
+    // stays in `tickets` itself; this log is a decision record, not a PII
+    // mirror.
+    await updateClient.query(
+      `INSERT INTO audit_log (project_id, tenant_id, actor, action, resource_type, resource_id, payload)
+       VALUES ($1, $2, 'ticket-triage', 'ticket.triage', 'ticket', $3, $4)`,
+      [
+        projectId,
+        tenantId,
+        ticketId,
+        JSON.stringify({
+          urgency: classification.urgency,
+          category: classification.category,
+          routing: classification.routing,
+          reasoning: classification.reasoning,
+          model: classification.resolvedModel ?? null,
+        }),
+      ]
+    );
     await updateClient.query("COMMIT");
   } catch (err) {
     await updateClient.query("ROLLBACK");
