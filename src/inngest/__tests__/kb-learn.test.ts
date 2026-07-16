@@ -36,7 +36,8 @@ function resolvedRow(overrides: Record<string, unknown> = {}) {
 // kb-learn fetch txn query order after T-73:
 //   [0] BEGIN [1] set tenant [2] set project [3] SELECT ticket
 //   [4] SAVEPOINT [5] SELECT routing [6] RELEASE [7] COMMIT
-// then insert txn: [8] BEGIN [9] set tenant [10] set project [11] INSERT [12] COMMIT
+// then insert txn: [8] BEGIN [9] set tenant [10] set project [11] INSERT
+// (RETURNING id) [12] audit_log INSERT [13] COMMIT
 function fetchTxn(
   ticketRow: Record<string, unknown> | null,
   routingRows: Record<string, unknown>[]
@@ -53,7 +54,8 @@ function fetchTxn(
     { rows: [] }, // BEGIN (insert)
     { rows: [] }, // set tenant
     { rows: [] }, // set project
-    { rows: [] }, // INSERT
+    { rows: [{ id: "kb-article-test-id" }] }, // INSERT ... RETURNING id
+    { rows: [] }, // audit_log INSERT
     { rows: [] }, // COMMIT
   ];
 }
@@ -210,6 +212,12 @@ describe("learnFromResolvedTicket", () => {
     // Article was inserted.
     const calls = (client.query as ReturnType<typeof vi.fn>).mock.calls as [string, unknown[]?][];
     expect(calls.some(([q]) => q.includes("INSERT INTO kb_articles"))).toBe(true);
+
+    // Gap G6: durable audit record, same transaction, resource_id from the
+    // article's RETURNING id.
+    const auditCall = calls.find(([q]) => q.includes("INSERT INTO audit_log"));
+    expect(auditCall).toBeTruthy();
+    expect(auditCall![1]?.[2]).toBe("kb-article-test-id");
   });
 
   it("uses the agent_model_routing override when present and allowlisted", async () => {

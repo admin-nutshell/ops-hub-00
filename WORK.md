@@ -4,6 +4,29 @@
 
 ---
 
+## Sprint 22 — 🟢 ACTIVE (opened 2026-07-16) — Target Operating Model Phase 2: Deploy-Safety Gates
+
+**Sprint goal:** Sprint 21's close-out flagged Sprint 22 as not-yet-scoped, per this project's standing pattern of putting sprint selection to the user rather than self-selecting. The user did so directly today: "develop an implementation plan and follow it non-stop," continuing the target-operating-model gap-analysis work opened earlier the same session (see `docs/planning/target-operating-model-implementation-plan.md`, memory `project_ops_hub_target_operating_model`). That plan's Phase 0 (governance scaffolding, gaps G1–G5) and the start of Phase 1 (G6, durable audit trail) were already built and mostly merged before this sprint was opened; this sprint is **Phase 2** — the three build tracks that unlock `AUTONOMY.md`'s two remaining `pending-gate` categories (`redeploy-already-authorized`, and the Phase-2 half of `production-promotion-new-change`/`prompt-or-capability-change`).
+
+**Full plan + gap analysis:** `docs/planning/target-operating-model-implementation-plan.md`.
+
+**Also carried into this sprint (found while opening it, not new scope creep — routine cleanup under the now-`approved` `dependency-bump-ci-green` category):** the 8 open Dependabot PRs from today's first-ever dependency-scan run (G3/PR #502). 3 fully green root-level bumps (#509 vitest, #510 @types/node, #511 eslint) merge as routine; #509 merged same-day. The other 5 (major-version bumps in `web/` plus two grouped PRs) fail Lint/Unit Tests on real incompatibilities — NOT routine, left open, tracked below as their own item rather than force-merged.
+
+### Sprint 22 tasks
+
+| Task | Owner | Depends on | Exit criteria | Status |
+|---|---|---|---|---|
+| T-122: Coolify duplicate-env-row guard (Phase 2 Track A) | Production Manager + Tech Lead review | Standing footgun, memory `feedback_coolify_env_vars` | Automated pre-deploy check fails loudly on a duplicate env-var key instead of relying on manual `coolify-db` audits | 🔴 Not started |
+| T-123: Real deploy-health gate (Phase 2 Track B) | Production Manager + QA Manager | — | Automated post-deploy check that can actually block/flag a bad redeploy, not manual verification after the fact | 🔴 Not started |
+| T-124: Wire T-98 synthetic-ticket monitor into deploy gating (Phase 2 Track C) | Production Manager + Evals Lead | T-98 (live since FQ-75); ideally sequenced after T-123 since both touch deploy-gating machinery | New prompt/capability promotions to production check T-98's recent signal before/immediately after going live | 🔴 Not started |
+| T-125: Dependabot cleanup — 5 red PRs (#503–#506, #508) | build agent | G3/PR #502 (the scan that surfaced them) | Each either fixed (real compat work for the major-version bumps) or explicitly closed with a documented reason — not left silently red indefinitely | 🔴 Not started |
+
+**Founder-gated, tracked but not a sprint task:** FQ-78 (PR #501 sign-off) — outside this sprint's critical path; Phase 2 does not depend on it.
+
+**Standing norms carried in:** full formal review per change (decision #1, target operating model); self-merge only for categories `AUTONOMY.md` marks `approved` or `pending-gate`-with-gate-satisfied, everything else opens a PR and waits — including, per this sprint's own opening, an explicit correction after CodeRabbit caught the first attempt at FQ-78 stating founder sign-off as sufficient on its own for a `meta-governance-edit`, when `AUTONOMY.md` requires it additive to Security Lead + Tech Lead review, not in place of it.
+
+---
+
 ## Sprint 21 — ✅ COMPLETE (closed 2026-07-15) — Eval Coverage Growth Toward ADR-0007 §5.4's ≥20/eval Target (Round 2)
 
 **Sprint:** Sprint 21 — Eval Coverage Depth (capability/hardening)

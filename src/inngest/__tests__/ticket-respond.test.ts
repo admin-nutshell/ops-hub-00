@@ -203,6 +203,11 @@ describe("respondOneTicket", () => {
     expect(updateCall![0]).toContain("state = 'responded'");
     expect(updateCall![0]).toContain("owner_agent = 'ticket-respond'");
     expect(updateCall![1]).toEqual(["t1"]);
+
+    // Gap G6: durable audit record, same transaction as the state update.
+    const auditCall = queryCalls.find(([q]) => q.includes("INSERT INTO audit_log"));
+    expect(auditCall).toBeTruthy();
+    expect(auditCall![1]?.[2]).toBe("t1");
   });
 
   it("skips a ticket that is not triaged (idempotency guard)", async () => {
