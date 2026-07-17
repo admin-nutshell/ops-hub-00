@@ -4,7 +4,7 @@
 
 ---
 
-## FQ-78 — PR #501 (CODEOWNERS + CodeRabbit config) needs your sign-off before it can merge
+## ✅ FQ-78 — RESOLVED: you said yes; the content is live (via a corrective PR, not #501 itself — see why below)
 
 **Filed:** 2026-07-16
 **Filed by:** Coordinator (continuing today's gap-analysis implementation plan, `docs/planning/target-operating-model-implementation-plan.md`)
@@ -18,7 +18,9 @@
 **Recommendation:** (A).
 **Deadline:** Non-blocking — nothing is exposed today; this only closes a governance gap.
 
-**Notify:** Coordinator, once decided — will merge (or action B/C) and update `docs/planning/target-operating-model-implementation-plan.md` §4.
+**Resolved 2026-07-17 — you said "yes" directly.** One real complication surfaced while acting on it, disclosed in full rather than quietly worked around: PR #501's actual content (the CODEOWNERS file + CodeRabbit config) turned out to already be live on `main` — it had shipped six hours *before* this request was even filed, bundled by accident into an unrelated, legitimately-self-merged change (PR #512). That means your approval here was, unknowingly, being asked for something that had already gone out the door without it — a real process miss on this session's part, not something you did wrong. PR #501 itself couldn't be merged as a result (its starting point no longer matched `main`); it's closed, and the corrected content is applied via a small follow-up (PR #531, itself still open awaiting the same kind of review, since it touches the same founder-only file). Full incident record: `DECISIONS.md` 2026-07-17.
+
+**Notify:** Coordinator — done. `docs/planning/target-operating-model-implementation-plan.md` §4 update still pending as a small follow-up.
 
 ---
 
