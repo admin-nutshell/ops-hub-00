@@ -50,6 +50,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # T-122 (Sprint 22): pre-flight guard for ops-hub-prod's env vars
+  # (Coolify's UI/API append-not-upsert footgun — the exact class of incident
+  # T-104 hit on this same app). Read-only; fixing a detected duplicate is a
+  # manual Coolify UI step (or a scoped dedupe workflow, e.g. t104-dedupe-
+  # and-restart-opshub-prod.yml), not automated here.
+  #
+  # NON-BLOCKING FOR NOW (`continue-on-error: true`, no `needs:` on `deploy`):
+  # T-122's live verification found ops-hub-STAGING currently has 19
+  # duplicate env-var keys (see main-deploy.yml's guard job comment / PR #515
+  # / DECISIONS.md 2026-07-16) — ops-hub-PROD has NOT yet been verified live
+  # the same way (this repo's new-workflow-file limitation means only a
+  # staging self-test could run pre-merge; a real prod check needs a
+  # workflow_dispatch run after this merges). Given staging's real count,
+  # assuming prod is clean without checking would violate this project's own
+  # "verified, not assumed clean" norm — so this stays report-only until
+  # someone dispatches check-coolify-env-duplicates.yml against ops-hub-prod
+  # post-merge and confirms it's clean, at which point flip this to blocking
+  # (`mode: block`, add `needs: guard` on `deploy` below).
+  #
+  # `continue-on-error` is NOT used here — a caller job invoking a reusable
+  # workflow via `uses:` does not support that key (GitHub rejects the whole
+  # workflow file as invalid at parse time if it's present; caught by
+  # independent Tech Lead review before this shipped, see DECISIONS.md
+  # 2026-07-16). `mode: report` is the mechanism instead.
+  guard:
+    name: Pre-deploy — Coolify duplicate env-var guard (report-only for now, see comment above)
+    uses: ./.github/workflows/check-coolify-env-duplicates.yml
+    with:
+      app_uuid: "sbke5gqru1n54rj7gssgca2y"
+      app_label: "ops-hub-prod"
+      mode: report
+    secrets:
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
   deploy:
     name: Promote to ops-hub-prod
     runs-on: ubuntu-latest

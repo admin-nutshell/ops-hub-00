@@ -42,7 +42,7 @@ each is independently identifiable from its landing PR's own description.
 | G2 | 7 of 11 agent roles had identity (`.claude/agents/`) but no operating playbook (`.claude/team/`); no per-category SOP for how tickets/bugs actually get handled; no single canonical autonomy policy (four scattered documents instead) | PR #500 — adds `TECH_LEAD/SECURITY/EVALS/KNOWLEDGE/FRONTEND/DATA/SOLUTIONS.md`, `docs/workflows/*.md` (7 SOPs), `.claude/team/AUTONOMY.md` | ✅ Merged 2026-07-16 |
 | G3 | No dependency/CVE scanning existed at all | PR #502 — Dependabot (root + `web/` + Actions pins) + `pnpm audit` CI step (advisory on first run) | ✅ Merged 2026-07-16 |
 | G4 | No durable, checkable per-PR sign-off record — `CONSTITUTION.md`'s review flow existed in prose only | PR #507 — `.github/pull_request_template.md` | ✅ Merged 2026-07-16 |
-| G5 | CodeRabbit was documented as running but never actually configured; no GitHub-enforced routing of founder-only paths | PR #501 — CODEOWNERS (routes `AUTONOMY.md` founder-only paths to `@admin-nutshell`) + `.coderabbit.yaml` | 🟡 **Open, blocked on founder sign-off** — see §4 |
+| G5 | CodeRabbit was documented as running but never actually configured; no visible routing of founder-only paths to anyone | PR #501 — CODEOWNERS (advisory routing of `AUTONOMY.md` founder-only paths to `@admin-nutshell`; not GitHub-blocking today, see §4) + `.coderabbit.yaml` | 🟡 **Both specialist reviews done, open, blocked on founder sign-off** — see §4 |
 | G6 | No durable audit trail for the three autonomous functions (`ticket-triage`, `ticket-respond`, `kb-learn`) — decisions were not recorded anywhere queryable | PR #512 — same-transaction `audit_log` row per run (actor + decision metadata only, never raw ticket/reply content); tests assert the row is written | ✅ Merged 2026-07-16 |
 
 G1–G5 = **Phase 0** (governance/process scaffolding, mostly docs+CI, low risk).
@@ -56,12 +56,24 @@ below).
 `AUTONOMY.md` names its own unlock conditions. This section is the authoritative
 cross-reference — do not let the two documents drift.
 
+**A second drift risk, named by Tech Lead review (PR #501, 2026-07-16):**
+`.github/CODEOWNERS` routes `AUTONOMY.md`'s `founder-only` file-shaped paths
+(`AUTONOMY.md`, `CONSTITUTION.md`, `.coderabbit.yaml`, `/CLAUDE.md`,
+`CODEOWNERS` itself) to the founder's account — but nothing keeps the two
+files in sync automatically. If a future `AUTONOMY.md` edit adds a new
+`founder-only` file-shaped category, `CODEOWNERS` needs a matching entry, or
+the routing quietly falls behind what the policy actually says. Low severity
+in practice (any `AUTONOMY.md` edit is itself `meta-governance-edit` —
+founder + Security Lead + Tech Lead gated — which is a natural place to also
+check CODEOWNERS), but worth checking explicitly whenever `AUTONOMY.md`'s
+`founder-only` list changes.
+
 | AUTONOMY.md category | Gate (verbatim from AUTONOMY.md) | Phase | Status |
 |---|---|---|---|
 | `dependency-bump-ci-green` | Dependabot + pnpm audit CI step exists and is green (Phase 0) | 0 | ✅ **Gate exists → category auto-transitioned to `approved`** (G3/PR #502 merged). No AUTONOMY.md edit needed — the transition is automatic per the file's own §"Machine-readable policy block" rule. |
-| `redeploy-already-authorized` | Coolify duplicate-env-row guard + real deploy-health gate (Phase 2) | 2 | 🔴 Not started — Tracks A/B below |
-| `production-promotion-new-change` | Durable audit trail (Phase 1) + T-98 synthetic-ticket monitor wired into deploy gating (Phase 2) | 1 + 2 | 🟡 Half done — audit trail (G6) merged; T-98 wiring (Track C) not started |
-| `prompt-or-capability-change` | Same as above | 1 + 2 | 🟡 Half done — same as above |
+| `redeploy-already-authorized` | Coolify duplicate-env-row guard + real deploy-health gate (Phase 2) | 2 | 🟡 **Built + independently reviewed, awaiting merge** — Track A (PR #515, T-122) and Track B (PR #517, T-123), Sprint 22. Real bugs caught and fixed by review before merge: T-122 shipped an invalid `continue-on-error` on a reusable-workflow caller (would have broken both deploy pipelines); T-123's docs undersold real end-to-end verification that had actually happened. Category transitions to `approved` once both merge. |
+| `production-promotion-new-change` | Durable audit trail (Phase 1) + T-98 synthetic-ticket monitor wired into deploy gating (Phase 2) | 1 + 2 | 🟡 **Audit trail (G6) merged; Track C (PR #521, T-124) built + independently reviewed, stacked on #517, awaiting #517 merge + rebase.** Review caught and fixed a no-bypass hard block that would have frozen the sole prod-promotion path (rollback included) plus a latent false-pass bug — a human-operator-only break-glass was added. Category transitions to `approved` once #521 merges. |
+| `prompt-or-capability-change` | Same as above | 1 + 2 | Same as above |
 
 ### Phase 2 — three build tracks
 
@@ -94,6 +106,13 @@ chat approval, unless a track turns out to touch a `meta-governance-edit` or
 change looks. Filed as **FQ-78** in `FOUNDER_QUEUE.md`. Per `AUTONOMY.md`'s own
 text, Security Lead + Tech Lead review of the diff is **additive to** the founder's
 sign-off, never replaced by it — both are required before merge, not either/or.
+**Both now complete** (2026-07-16): Security Lead — APPROVE WITH FOLLOW-UPS (found
+and fixed a real overclaim: the PR originally described CODEOWNERS as a "real
+GitHub-enforced gate," which is false while `require_code_owner_reviews` is off in
+branch protection — corrected in the file and PR description); Tech Lead — APPROVE
+WITH FOLLOW-UPS (confirmed `.coderabbit.yaml` schema-valid; flagged the
+CODEOWNERS/AUTONOMY.md drift risk noted above). Still awaiting the founder's own
+sign-off — the reviews above do not substitute for it.
 
 ---
 
