@@ -1,0 +1,167 @@
+name: Start ops-hub-staging (deliberate SC7 departure — leaves it RUNNING)
+
+# One-shot, founder-dispatched: starts ops-hub-staging (UUID
+# ajqplom2mghf5a8h6vf1q6xg) via the Coolify API and polls until it is
+# genuinely up, so the founder can exercise the ops-dashboard-staging
+# "restart backend" button end-to-end.
+#
+# WHY THIS FILE EXISTS: no generic "start any app" mechanism exists —
+# COOLIFY_API_TOKEN only lives inside GitHub Actions secrets, never on any
+# agent's own credentials — so a one-off workflow_dispatch file, following
+# this repo's established one-off-ops-file convention (restart-dashboard-
+# staging.yml, t104-dedupe-and-restart-opshub-prod.yml,
+# t107-check-staging-status.yml), is the only way to trigger this action at
+# all.
+#
+# *** THIS IS A DELIBERATE, NAMED DEPARTURE FROM T-98's SC7 DEFAULT — READ
+# BEFORE DISPATCHING ***
+#
+# T-98's SC7 (DECISIONS.md 2026-07-12 T-98 design review; restated in
+# monitor-e2e-pipeline.yml's own header, ADR-0010, and the T-107 incident
+# record at docs/deploys/2026-07-13-t107-staging-litellm-url-repin.md) is
+# explicit: "ops-hub-staging stays STOPPED... restarting it requires a T-98
+# re-review FIRST, distinct from a normal already-running restart which
+# needs no such review." A prior incident (T-107) involved an agent
+# self-supplying the workflow_dispatch confirmation string to start/stop
+# this exact app instead of getting a genuine confirmation from the founder
+# — the harness's own auto-mode classifier caught and blocked that as
+# unauthorized self-confirmation. This file is built to NOT repeat that:
+#
+#   - `confirm` below is a REQUIRED, exact-match literal string. It must be
+#     typed by the founder into the workflow_dispatch form by hand. No
+#     agent may supply it on the founder's behalf, on its own authorization,
+#     or by inferring consent from another agent's message — that is
+#     exactly the shape of the T-107 incident this file's design avoids.
+#   - This workflow deliberately has NO stop step. Unlike main-deploy.yml's
+#     start-then-stop (T-108/ADR-0010 option (i), which restores the SC7
+#     steady state after every qualifying deploy), this workflow starts
+#     ops-hub-staging and leaves it running indefinitely, by design, so the
+#     founder can interact with it (test the dashboard "restart backend"
+#     button) for as long as needed. Restoring the SC7 stopped default
+#     afterward is a separate, later action — NOT automated here, and NOT
+#     something this workflow or any agent should do unprompted once
+#     dispatched. Use restart-dashboard-staging.yml's stop step, or a
+#     one-off follow-up, when the founder decides testing is done.
+#   - KNOWN CONSEQUENCE while this leaves staging running: T-111's SC7
+#     option (ii) guard in monitor-e2e-pipeline.yml checks staging's live
+#     container state and, if RUNNING, skips that run CLEANLY (exit 0,
+#     stays green) rather than taking a real E2E measurement. Concretely:
+#     for as long as ops-hub-staging is left running after this workflow,
+#     the T-98 downstream-pipeline E2E monitor (scheduled every 6 hours)
+#     will silently no-op instead of actually checking the real
+#     classify -> triage -> respond -> FreeScout pipeline. This is a real
+#     monitoring-coverage gap for the duration, not a hidden one — flagged
+#     here so it's a founder decision, not a surprise.
+#   - Verified before this file was written (not assumed from the ADR):
+#     main-deploy.yml's push trigger uses a `paths` ALLOWLIST that excludes
+#     `.github/workflows/**` (T-108/ADR-0010), so merging THIS file to main
+#     does not itself trip a staging deploy/start — confirmed by reading the
+#     live file, not just its own header comment.
+#
+# permissions: contents: read only — Coolify API token is the only secret
+# this workflow touches; no SSH/VPS access needed (status + health polling
+# only, both over HTTPS).
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: >-
+          Type 'start-ops-hub-staging-and-leave-running' to confirm. This
+          starts ops-hub-staging and leaves it RUNNING with no stop step —
+          a deliberate, named departure from T-98's SC7 "stays stopped"
+          default. Must be typed by the founder; never self-supplied by an
+          agent. See the file header for the T-111 monitor-suppression
+          consequence before confirming.
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+  HEALTH_URL: "https://ops-hub-staging.inatechshell.ca/health"
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Confirm input
+        run: |
+          if [ "${{ inputs.confirm }}" != "start-ops-hub-staging-and-leave-running" ]; then
+            echo "::error::Confirmation mismatch — this must be typed exactly by the founder, not inferred or self-supplied."
+            exit 1
+          fi
+
+      - name: Current status (pre-start, for the record)
+        run: |
+          curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID" | jq '{status, fqdn, restart_count, last_online_at}' \
+            || echo "Could not parse pre-start status (non-fatal, continuing)."
+
+      - name: Start ops-hub-staging
+        run: |
+          HTTP=$(curl -s --max-time 60 -o /tmp/start.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/start")
+          echo "Start -> HTTP $HTTP"
+          cat /tmp/start.json 2>/dev/null || true
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "::error::Start call failed (HTTP $HTTP) — ops-hub-staging may not be starting."
+            exit 1
+          fi
+
+      - name: Poll Coolify status until running
+        run: |
+          for i in $(seq 1 18); do
+            STATUS=$(curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID" | jq -r '.status // empty')
+            echo "Attempt $i: status=$STATUS"
+            echo "$STATUS" | grep -q '^running' && break
+            sleep 10
+          done
+          if ! echo "$STATUS" | grep -q '^running'; then
+            echo "::warning::Coolify status field never showed 'running' after ~3 minutes — continuing to the health poll anyway, since the status field is known to lag the real container state (see t107-check-staging-status.yml)."
+          fi
+
+      - name: Poll /health until 200
+        run: |
+          set +e
+          for i in $(seq 1 18); do
+            HTTP=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" "$HEALTH_URL")
+            echo "Attempt $i: HTTP $HTTP"
+            if [ "$HTTP" = "200" ]; then
+              echo "ops-hub-staging is up and healthy."
+              set -e
+              exit 0
+            fi
+            sleep 10
+          done
+          set -e
+          echo "::error::/health did not return 200 after ~3 minutes. ops-hub-staging may still be starting, or may have failed to boot — check Coolify deployment logs before assuming it's ready."
+          exit 1
+
+      - name: Final status
+        if: always()
+        run: |
+          curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID" | jq '{status, fqdn, restart_count, last_online_at}' \
+            || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "======================================================="
+          echo " ops-hub-staging start dispatched and polled."
+          echo " LEFT RUNNING ON PURPOSE — no stop step in this workflow."
+          echo " This is a deliberate departure from T-98 SC7's 'stays"
+          echo " stopped' default, for as long as it remains up:"
+          echo "   - the T-98 E2E monitor (monitor-e2e-pipeline.yml, every"
+          echo "     6h) will skip cleanly (T-111 guard) instead of taking"
+          echo "     a real measurement."
+          echo " Restoring the stopped default is a separate, later action"
+          echo " — not automated here, and not to be done unprompted."
+          echo "======================================================="
