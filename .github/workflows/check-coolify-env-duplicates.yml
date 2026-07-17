@@ -122,6 +122,9 @@ jobs:
       # ── Resolve which app UUID to check ─────────────────────────────────────
       - name: Resolve target app UUID
         id: resolve
+        env:
+          INPUT_APP_UUID: ${{ inputs.app_uuid }}
+          INPUT_APP_LABEL: ${{ inputs.app_label }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -160,8 +163,8 @@ jobs:
             # workflow_call invocation, regardless of what string
             # github.event_name reports for it — falls here and reads the
             # workflow_call inputs directly.
-            APP_UUID="${{ inputs.app_uuid }}"
-            APP_LABEL="${{ inputs.app_label }}"
+            APP_UUID="$INPUT_APP_UUID"
+            APP_LABEL="$INPUT_APP_LABEL"
             [ -n "$APP_LABEL" ] || APP_LABEL="$APP_UUID"
           fi
           if [ -z "$APP_UUID" ] || [ "$APP_UUID" = "null" ]; then
@@ -170,10 +173,20 @@ jobs:
           fi
           echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
           echo "app_label=$APP_LABEL" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "workflow_call" ]; then
-            MODE="${{ inputs.mode }}"
-          else
+          # Same event-name-detection bug class as the APP_UUID/APP_LABEL fix
+          # above: github.event_name is never literally "workflow_call" (see
+          # the comment on the else-branch above), so a check for it here
+          # never matches either -- MODE was silently hardcoding to "block"
+          # for every real workflow_call caller, ignoring whatever `mode:`
+          # value it actually passed. Only the two REAL, reliably-reported
+          # event names (`pull_request` self-test, `workflow_dispatch` manual
+          # runs) should force the strict "block" mode; everything else
+          # (every real workflow_call invocation) must read the caller's
+          # own `mode` input, honoring its "report" default.
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             MODE="block"
+          else
+            MODE="${{ inputs.mode }}"
           fi
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "Checking '$APP_LABEL' ($APP_UUID) for duplicate env-var keys... (mode=$MODE)"
