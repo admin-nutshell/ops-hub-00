@@ -67,6 +67,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # T-122 (Sprint 22): pre-flight guard for ops-hub-staging's env vars
+  # (Coolify's UI/API append-not-upsert footgun, see
+  # check-coolify-env-duplicates.yml header). Read-only; fixing a detected
+  # duplicate is a manual Coolify UI step, not automated here.
+  #
+  # NON-BLOCKING FOR NOW (`mode: report`, no `needs:` on `deploy`): T-122's
+  # own live verification against real ops-hub-staging found it CURRENTLY
+  # has 19 duplicate env-var keys out of 41 total rows (LITELLM_MASTER_KEY,
+  # LITELLM_TRIAGE_MODEL, INNGEST_SIGNING_KEY, SENTRY_DSN, and 15 more — see
+  # PR #515 / DECISIONS.md 2026-07-16 for the full list and live run link).
+  # Wiring this as a hard `needs:` gate today would immediately halt every
+  # staging deploy until that pre-existing mess is cleaned up — too large a
+  # side effect to ship silently inside a "build the guard" task.
+  #
+  # `continue-on-error` is NOT used here — a caller job invoking a reusable
+  # workflow via `uses:` does not support that key (GitHub rejects the whole
+  # workflow file as invalid at parse time if it's present; caught by
+  # independent Tech Lead review before this shipped, see DECISIONS.md
+  # 2026-07-16). `mode: report` is the mechanism instead — the guard's own
+  # job always exits 0 in that mode, printing an ::error:: annotation on any
+  # duplicate without failing this job or blocking `deploy`.
+  # This job still runs and reports on every deploy (visibility now), but
+  # does not block `deploy` until a follow-up task cleans up the 19 keys and
+  # a human flips this to blocking (remove `continue-on-error`, add
+  # `needs: guard` on the `deploy` job below).
+  guard:
+    name: Pre-deploy — Coolify duplicate env-var guard (report-only for now, see comment above)
+    uses: ./.github/workflows/check-coolify-env-duplicates.yml
+    with:
+      app_uuid: "ajqplom2mghf5a8h6vf1q6xg"
+      app_label: "ops-hub-staging"
+      mode: report
+    secrets:
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
   deploy:
     name: Build & Deploy to Coolify Staging
     runs-on: ubuntu-latest
