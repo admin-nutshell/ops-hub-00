@@ -1,0 +1,31 @@
+name: DIAG — inspect Coolify env-var scope fields (read-only, no values)
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_uuid:
+        description: "Coolify application UUID"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Fetch and inspect schema (never prints .value)
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "https://coolify.inatechshell.ca/api/v1/applications/${{ inputs.app_uuid }}/envs")
+          echo "HTTP $HTTP"
+          echo "=== field names present on first row ==="
+          jq -r '.[0] | keys' /tmp/envs.json
+          echo "=== all rows for key=LITELLM_MASTER_KEY, values redacted ==="
+          jq '[.[] | select(.key == "LITELLM_MASTER_KEY") | del(.value)]' /tmp/envs.json
+          echo "=== all rows for key=SENTRY_DSN, values redacted ==="
+          jq '[.[] | select(.key == "SENTRY_DSN") | del(.value)]' /tmp/envs.json
