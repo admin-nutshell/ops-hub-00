@@ -3,15 +3,16 @@
 -- Written by: Production Manager — Sprint S1 of the ops-hub reboot
 -- Date: 2026-07-17
 --
--- WHY YOU HAVE TO RUN THIS (not an agent): both `products` and
--- `repo_connections` were deliberately built with NO insert policy for the
--- `ops_hub_app` runtime role (see
--- supabase/migrations/20260717120100_s1_product_domain_rls_policies.sql).
--- Only the Supabase `service_role` key can write to these tables, and per
--- this project's standing rule (CLAUDE.md non-negotiable #3 — "service_role
--- key: migrations ONLY, no agent ever holds it at runtime"), no agent is
--- ever handed that key. So this is a one-time, human-run seed — same pattern
--- as every prior migration/seed step in this project.
+-- WHY YOU HAVE TO RUN THIS (not an agent): `products` was deliberately built
+-- with NO insert policy for the `ops_hub_app` runtime role at all (see
+-- supabase/migrations/20260717120100_s1_product_domain_rls_policies.sql) —
+-- only `service_role` can insert a product row. (`repo_connections` does
+-- have an ops_hub_app insert policy, scoped by product_id, but that's moot
+-- here since it can't be used until the product row from Step 1 exists.)
+-- Per this project's standing rule (CLAUDE.md non-negotiable #3 —
+-- "service_role key: migrations ONLY, no agent ever holds it at runtime"),
+-- no agent is ever handed that key. So this is a one-time, human-run seed —
+-- same pattern as every prior migration/seed step in this project.
 --
 -- WHAT YOU'LL NEED: the Supabase SQL Editor for project `yocoljutbiizdbfraapx`
 -- (Canada Central), logged in as yourself. That editor runs as service_role
