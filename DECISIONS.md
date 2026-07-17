@@ -9774,3 +9774,89 @@ either, so no urgency identified).
    29554711534 (freeze-schema) / 29554852851 (duplicate-env sanity
    check, clean) / 29554873474 (O2/O3 fix, full success)
 ```
+
+### 2026-07-17 — S1 (product-domain reboot): repo-inspection trigger + display UI built against the already-merged repo-inspect Inngest function (PR #536/#537) — untriggerable/unviewable until this session (Frontend/UX Engineer)
+
+```
+S1's read-only repo-inspection pipeline (products/repo_connections/
+repo_snapshots schema, PR #536; src/inngest/repo-inspect.ts's inspectRepo
+function, PR #537) had never actually run: nothing sent the
+ops-hub/repo.inspect.requested event, and no dashboard surface read
+repo_snapshots. This session builds both halves.
+
+WHAT SHIPPED:
+- src/http/dashboardWriteGuards.ts: resolveProductWriteScope(), a second
+  fail-closed write-scope guard (DASHBOARD_PRODUCT_ID env var, no
+  fallback) alongside the existing project/tenant resolveWriteScope() --
+  deliberately NOT merged into one scope type; the product axis and the
+  project/tenant axis are unrelated during the reboot's strangler period.
+- src/metrics/repoInspect.ts (new file, its own module -- doesn't fit
+  dashboard.ts's tenant/project-scoped read convention or
+  settingsWrite.ts's ticket-domain write convention): getRepoSnapshotView
+  (product-scoped read, LEFT JOINs repo_connections + repo_snapshots so
+  "connected, never inspected" is distinguishable from "no connection at
+  all"; degrades to a schema_not_ready state on 42P01 rather than
+  throwing, matching getModelRoutingOverrides' existing pre-migration
+  convention) and triggerRepoInspect (sends the event via the shared
+  inngest client -- no DB access on this path at all).
+- web/app/api/repo-inspect/trigger/route.ts: thin POST adapter, same
+  origin/CSRF guard as the three existing settings-write routes.
+- web/components/RepoInspectPanel.tsx + RepoInspectTrigger.tsx: a new
+  dashboard panel (file tree + last-10-commits, honest no_connection /
+  no_snapshot / schema_not_ready states) with a client-side trigger button
+  that polls via router.refresh() (re-runs the Server Component read,
+  same idiom FeatureFlagsList already uses post-submit, just on a timer)
+  until repo_snapshots.fetched_at moves past its pre-click value, or
+  times out after ~90s to an honest amber "still nothing confirmed" state
+  -- not a red error, since a timeout here does not mean anything broke.
+- web/app/page.tsx: added `export const dynamic = "force-dynamic"` --
+  without it this page's dynamic-rendering was only an INCIDENTAL side
+  effect of TopBar's `no-store` fetch (documented in settings/page.tsx's
+  own comment as a past incident: a static build-time DB snapshot got
+  baked in and served forever). Confirmed load-bearing, not precautionary:
+  before this line, `next build`'s route table marked `/` static (`○`);
+  after it, `/` is correctly dynamic (`ƒ`) -- the exact regression this
+  line prevents was reproduced and fixed in the same build.
+
+THREE PRECONDITIONS GATE THE LIVE S1 PROOF -- NONE OF THEM THIS TASK'S TO
+FIX, all flagged explicitly rather than assumed:
+1. The S1 migrations (20260717120000/120100, 20260717140000/140100) are
+   marked "NOT YET APPLIED" in their own header comments as of authoring
+   -- unconfirmed whether they've been applied to live Supabase since.
+   getRepoSnapshotView degrades to schema_not_ready if not; does not
+   crash the dashboard either way.
+2. INNGEST_EVENT_KEY is NOT among the 3 env vars documented as set on the
+   dashboard's OWN Coolify app (ops-hub-dashboard-staging carries only
+   OPS_HUB_APP_LOGIN_URL / POLLING_PROJECT_ID / POLLING_TENANT_ID per
+   docs/deploys/2026-07-06-t68-dashboard-staging-provision.md) -- this is
+   a SEPARATE container from the backend `ops-hub` app that already has
+   that key. Without it, inngest.send() throws synchronously (cloud mode,
+   no event key -- confirmed by reading node_modules/inngest's own
+   Inngest.send() source, not assumed) and the trigger route returns a
+   clean 503 (RepoInspectDispatchError), not a crash. Production Manager
+   follow-up: provision DASHBOARD_PRODUCT_ID + INNGEST_EVENT_KEY on the
+   dashboard app.
+3. A 200 from the trigger route only proves Inngest Cloud ACCEPTED the
+   event over HTTP -- it does NOT prove the backend process has been
+   redeployed with inspectRepo registered against that event name. Until
+   confirmed, a click may "succeed" and then poll to its 90s timeout with
+   nothing having actually run. Worded for that outcome deliberately (see
+   RepoInspectTrigger's timeout copy).
+
+Consequence: this cannot be end-to-end verified live from this task alone
+-- typecheck (root + web), lint (root + web), the full root vitest suite
+(222 passed, including new getRepoSnapshotView/triggerRepoInspect/
+resolveProductWriteScope tests), and a real `next build` of the web app
+(confirms the Inngest SDK -- added to the dashboard's dependency surface
+for the first time via this change, Turbopack-inlined into the compiled
+server chunk rather than kept as an external node_modules dep, verified
+by inspecting the standalone output directly) all pass, but the
+click-button-see-real-tree proof needs (1)-(3) above resolved first, on
+staging, by someone with Coolify + Supabase SQL Editor access.
+
+-> PR #538 (feat/s1-repo-inspect-ui -> main), not self-merged. Follow-up
+   review notes (Inngest environment match on precondition 2;
+   router.refresh() client-state behavior belongs on the staging test
+   pass) posted as a PR comment, not reflected in code -- nothing they
+   raise changes the shipped behavior.
+```

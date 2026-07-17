@@ -128,3 +128,35 @@ export function resolveWriteScope(): WriteScope | null {
   }
   return { projectId, tenantId };
 }
+
+// ---------------------------------------------------------------------------
+// Guard 2b — server-pinned PRODUCT write scope (product-domain reboot, S1)
+// ---------------------------------------------------------------------------
+// Same fail-closed shape as resolveWriteScope above, for the new product
+// domain (products/repo_connections/repo_snapshots — see
+// src/metrics/repoInspect.ts). Deliberately a SEPARATE var/function, not a
+// third field bolted onto WriteScope: the product axis and the
+// project/tenant axis are two independent domains running side by side
+// during the reboot's strangler period (see docs/planning's S1 plan) and
+// have no relationship to each other — a route that only needs product scope
+// must not be forced to also configure/resolve an unrelated tenant id, and
+// vice versa.
+const PRODUCT_ENV_VAR = "DASHBOARD_PRODUCT_ID";
+
+export type ProductWriteScope = { productId: string };
+
+/**
+ * Resolve the dashboard's PRODUCT write scope directly from env, with NO
+ * fallback default — same fail-closed contract as resolveWriteScope. Reads
+ * are allowed a placeholder fallback (see web/lib/project.ts's
+ * DASHBOARD_PRODUCT_ID, which defaults to the real S1 pilot product id since
+ * there is exactly one product this sprint); a write must still refuse to
+ * proceed on a misconfigured deploy rather than trust that default.
+ */
+export function resolveProductWriteScope(): ProductWriteScope | null {
+  const productId = process.env[PRODUCT_ENV_VAR];
+  if (!productId || productId.trim() === "") {
+    return null;
+  }
+  return { productId };
+}

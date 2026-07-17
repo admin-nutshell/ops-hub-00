@@ -41,6 +41,9 @@
     "../src/http/dashboardWriteGuards.ts",
     "../src/config/model-allowlist.ts",
     "../src/inngest/utils.ts",
+    "../src/inngest/client.ts",
+    "../src/inngest/repo-inspect.ts",
+    "../src/metrics/repoInspect.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"
   ],
