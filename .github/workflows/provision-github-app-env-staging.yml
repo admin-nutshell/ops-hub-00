@@ -162,35 +162,56 @@ jobs:
 
           FAIL=0
 
+          # Coolify keeps a genuinely separate, intentional row per key for the
+          # "Production" scope (is_preview:false) and the "Preview Deployments"
+          # scope (is_preview:true) — confirmed by direct schema inspection in
+          # this repo's check-coolify-env-duplicates.yml (2026-07-17 CORRECTION
+          # note) after an earlier version of that guard mistook this two-scope
+          # split for 19 false-positive "duplicates". A REAL duplicate is two
+          # rows sharing BOTH the same key AND the same is_preview value — that
+          # is what this step actually checks. The scope that matters for the
+          # live running container is is_preview:false ("Production"); that one
+          # must have exactly 1 non-empty row for the delete path to be clean
+          # and for delete mode to leave 0. A second is_preview:true row is
+          # logged for visibility but does not fail the check.
           for KEY in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY; do
-            COUNT=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k)] | length' /tmp/verify.json)
+            if [ "$KEY" = "GITHUB_APP_PRIVATE_KEY" ]; then
+              jq -r --arg k "$KEY" '.[] | select(.key == $k) | "  scope: key=\(.key) is_preview=\(.is_preview) uuid=\(.uuid) value_len=\(.value | length)"' /tmp/verify.json
+            else
+              jq -r --arg k "$KEY" '.[] | select(.key == $k) | "  scope: key=\(.key) is_preview=\(.is_preview) uuid=\(.uuid) value=\(.value)"' /tmp/verify.json
+            fi
+
+            PROD_COUNT=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k and .is_preview == false)] | length' /tmp/verify.json)
+
             if [ "${{ steps.mode.outputs.mode }}" = "delete" ]; then
-              if [ "$COUNT" != "0" ]; then
-                echo "::error::$KEY still has $COUNT row(s) after delete"; FAIL=1
+              TOTAL=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k)] | length' /tmp/verify.json)
+              if [ "$TOTAL" != "0" ]; then
+                echo "::error::$KEY still has $TOTAL row(s) (any scope) after delete"; FAIL=1
               else
-                echo "$KEY: 0 rows (deleted, as expected)"
+                echo "$KEY: 0 rows in any scope (deleted, as expected)"
               fi
               continue
             fi
-            if [ "$COUNT" != "1" ]; then
-              echo "::error::$KEY has $COUNT row(s) — expected exactly 1"; FAIL=1
+
+            if [ "$PROD_COUNT" != "1" ]; then
+              echo "::error::$KEY (Production scope, is_preview=false) has $PROD_COUNT row(s) — expected exactly 1"; FAIL=1
               continue
             fi
-            LEN=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k)][0].value | length' /tmp/verify.json)
+            LEN=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k and .is_preview == false)][0].value | length' /tmp/verify.json)
             if [ "$LEN" -eq 0 ]; then
-              echo "::error::$KEY row is empty"; FAIL=1
+              echo "::error::$KEY (Production scope) row is empty"; FAIL=1
               continue
             fi
             if [ "$KEY" = "GITHUB_APP_PRIVATE_KEY" ]; then
-              echo "$KEY: 1 row, length=$LEN chars (value withheld)"
+              echo "$KEY (Production scope): 1 row, length=$LEN chars (value withheld)"
             else
-              VAL=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k)][0].value' /tmp/verify.json)
-              echo "$KEY: 1 row, value=$VAL"
+              VAL=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k and .is_preview == false)][0].value' /tmp/verify.json)
+              echo "$KEY (Production scope): 1 row, value=$VAL"
             fi
           done
 
           [ "$FAIL" -eq 0 ] || { echo "::error::verification failed — see above"; exit 1; }
-          echo "Verification passed."
+          echo "Verification passed (Production scope, is_preview=false, is what the running container reads)."
 
       - name: Summary
         if: always()
