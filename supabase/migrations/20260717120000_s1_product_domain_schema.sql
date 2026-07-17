@@ -63,17 +63,7 @@ create table repo_connections (
   default_branch          text not null,
   status                  text not null default 'active'
                             check (status in ('active', 'suspended')),
-  connected_at            timestamptz not null default now(),
-  -- Added per CodeRabbit review on PR #537 (S1 repo-inspect): (id, product_id)
-  -- must be independently unique so a later table can take a COMPOSITE FK on
-  -- (fk_col, product_id) referencing this pair — that is what lets Postgres
-  -- itself guarantee a child row's product_id can never drift from its
-  -- connection's real product_id, instead of relying on application code
-  -- alone. repo_snapshots (20260717140000) is the first consumer. `id` being
-  -- the primary key does NOT satisfy a reference to the (id, product_id)
-  -- pair on its own — Postgres requires this exact composite unique
-  -- constraint to exist before such a composite FK can be created.
-  unique (id, product_id)
+  connected_at            timestamptz not null default now()
 );
 
 create index repo_connections_product_id_idx on repo_connections (product_id);

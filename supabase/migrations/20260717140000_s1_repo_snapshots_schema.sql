@@ -37,7 +37,10 @@
 -- (same discipline as 20260717120100 — RLS policies land in the companion
 -- 20260717140100_s1_repo_snapshots_rls_policies.sql, reviewed together).
 -- Requires 20260717120000_s1_product_domain_schema.sql applied first
--- (references products, repo_connections).
+-- (references products, repo_connections) AND
+-- 20260717150000_s1_repo_connections_composite_unique.sql applied first
+-- (repo_snapshots' composite FK below requires that constraint to exist on
+-- repo_connections before Postgres will allow it).
 --
 -- NOT YET APPLIED to the live Supabase project as of this commit — same
 -- founder-runs-SQL-Editor workflow as every migration in this repo. The
