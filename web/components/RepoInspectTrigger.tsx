@@ -22,6 +22,33 @@ function fetchedAtOf(view: RepoSnapshotView): string | null {
   return view.status === "ready" ? view.fetchedAt : null;
 }
 
+// friendlyWriteError's 503 branch assumes the one cause it was written for —
+// the T-72 settings schema not yet applied (true for the three settings
+// write routes it's shared with: FeatureFlagsList/ModelRoutingForm/SlaForm).
+// This route's 503s never come from that cause at all: they're either
+// ProductScopeUnavailableError (DASHBOARD_PRODUCT_ID unset — see
+// requireProductScope() in web/lib/writeQueries.ts) or
+// RepoInspectDispatchError (the Inngest SDK refused to send — currently
+// always this one in practice, since INNGEST_EVENT_KEY is not yet
+// provisioned on the dashboard app; see triggerRepoInspect()'s doc comment
+// in src/metrics/repoInspect.ts). Flattening both into the generic
+// "migration hasn't been applied" line would actively mislead debugging —
+// someone would go chasing a DB migration for what's really a missing env
+// var. Map each to its own plain-language headline instead of either the
+// wrong generic line or the raw SDK-error jargon (`is INNGEST_EVENT_KEY
+// provisioned...`) — this dashboard also has a non-technical reader. The raw
+// server message still reaches the screen via WriteStatus's `detail` line
+// (handleTrigger below), so nothing engineering needs is lost. Every other
+// status (403 origin check, 400 validation, 0 network, etc.) still goes
+// through the shared mapping unchanged.
+function friendlyRepoInspectError(status: number, error: string): string {
+  if (status !== 503) return friendlyWriteError(status, error);
+  if (error.includes("DASHBOARD_PRODUCT_ID")) {
+    return "This dashboard isn't configured with a product to inspect yet.";
+  }
+  return "The inspection backend isn't connected in this environment yet — nothing's broken, it just hasn't been wired up.";
+}
+
 export function RepoInspectTrigger({ view }: { view: RepoSnapshotView }) {
   const router = useRouter();
   const [status, setStatus] = useState<WriteStatusState>({ kind: "idle" });
@@ -73,7 +100,7 @@ export function RepoInspectTrigger({ view }: { view: RepoSnapshotView }) {
     if (result.ok) {
       setPolling(true);
     } else {
-      setStatus({ kind: "error", message: friendlyWriteError(result.status, result.error), detail: result.error });
+      setStatus({ kind: "error", message: friendlyRepoInspectError(result.status, result.error), detail: result.error });
     }
   }
 
