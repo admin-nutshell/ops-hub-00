@@ -1,11 +1,16 @@
 name: DIAG — inspect Coolify env-var scope fields (read-only, no values)
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/diag-coolify-env-scope.yml"
   workflow_dispatch:
     inputs:
       app_uuid:
         description: "Coolify application UUID"
         required: true
+        default: "sbke5gqru1n54rj7gssgca2y"
 
 permissions:
   contents: read
@@ -19,9 +24,11 @@ jobs:
       - name: Fetch and inspect schema (never prints .value)
         run: |
           set -euo pipefail
+          APP_UUID="${{ inputs.app_uuid }}"
+          if [ -z "$APP_UUID" ]; then APP_UUID="sbke5gqru1n54rj7gssgca2y"; fi
           HTTP=$(curl -s --max-time 30 -o /tmp/envs.json -w "%{http_code}" \
             -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
-            "https://coolify.inatechshell.ca/api/v1/applications/${{ inputs.app_uuid }}/envs")
+            "https://coolify.inatechshell.ca/api/v1/applications/$APP_UUID/envs")
           echo "HTTP $HTTP"
           echo "=== field names present on first row ==="
           jq -r '.[0] | keys' /tmp/envs.json
