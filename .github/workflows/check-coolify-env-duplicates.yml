@@ -133,7 +133,26 @@ jobs:
             # touches this workflow file.
             APP_UUID="ajqplom2mghf5a8h6vf1q6xg"
             APP_LABEL="ops-hub-staging (PR self-test)"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          elif [ -n "${{ inputs.app }}" ]; then
+            # SECOND correction to this same bug class (see DECISIONS.md):
+            # branching on `github.event_name = "workflow_dispatch"` is ALSO
+            # unreliable, not just "= workflow_call". Confirmed by a real
+            # failed run: manually dispatching the OUTER caller
+            # (main-deploy.yml via workflow_dispatch) makes
+            # github.event_name report "workflow_dispatch" all the way down
+            # into THIS reusable workflow too, even though it's reached via
+            # a genuine `uses:` workflow_call, not a direct dispatch of this
+            # workflow. github.event_name cannot distinguish "I was directly
+            # dispatched" from "my caller was dispatched and called me via
+            # workflow_call" -- both report the same string.
+            #
+            # The reliable signal instead: `app` is a declared
+            # workflow_dispatch-only input (never declared for
+            # workflow_call), so `${{ inputs.app }}` resolves to a real,
+            # non-empty value (it even has a default) ONLY on a genuine
+            # direct dispatch of this exact workflow, and reliably resolves
+            # EMPTY on every workflow_call invocation, regardless of what
+            # triggered the caller (push, workflow_dispatch, schedule, ...).
             APP="${{ inputs.app }}"
             case "$APP" in
               ops-hub-staging)      APP_UUID="ajqplom2mghf5a8h6vf1q6xg" ;;
@@ -148,21 +167,10 @@ jobs:
             APP_LABEL="$APP"
           else
             # workflow_call path (main-deploy.yml, prod-deploy.yml calling this
-            # via `uses:`). github.event_name here reflects the CALLER's own
-            # triggering event (e.g. "push"), NOT literally "workflow_call" --
-            # a real, confirmed GitHub Actions behavior (see DECISIONS.md entry
-            # for this fix for the log evidence: a real failed run's log shows
-            # the script evaluating `if [ "push" = "workflow_call" ]` as false
-            # and falling through). This is why treating "workflow_call" as an
-            # explicit branch condition never actually matched, and every
-            # deploy since 2026-07-16 silently fell through to the old `else`
-            # branch and failed on an undefined `app` input. Only the two
-            # REAL, reliably-reported event names (`pull_request` for the
-            # self-test, `workflow_dispatch` for manual runs) get their own
-            # branch above; everything else — including every real
-            # workflow_call invocation, regardless of what string
-            # github.event_name reports for it — falls here and reads the
-            # workflow_call inputs directly.
+            # via `uses:`) -- reached whenever `inputs.app` is empty, which is
+            # the reliable signal (see the comment above): `app` is never a
+            # declared input for workflow_call, so it can never be non-empty
+            # here except on a genuine direct dispatch, already handled above.
             APP_UUID="$INPUT_APP_UUID"
             APP_LABEL="$INPUT_APP_LABEL"
             [ -n "$APP_LABEL" ] || APP_LABEL="$APP_UUID"
@@ -173,17 +181,14 @@ jobs:
           fi
           echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
           echo "app_label=$APP_LABEL" >> "$GITHUB_OUTPUT"
-          # Same event-name-detection bug class as the APP_UUID/APP_LABEL fix
-          # above: github.event_name is never literally "workflow_call" (see
-          # the comment on the else-branch above), so a check for it here
-          # never matches either -- MODE was silently hardcoding to "block"
-          # for every real workflow_call caller, ignoring whatever `mode:`
-          # value it actually passed. Only the two REAL, reliably-reported
-          # event names (`pull_request` self-test, `workflow_dispatch` manual
-          # runs) should force the strict "block" mode; everything else
-          # (every real workflow_call invocation) must read the caller's
-          # own `mode` input, honoring its "report" default.
-          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # Same reliable signal as the APP_UUID/APP_LABEL resolution above --
+          # NOT github.event_name (confirmed unreliable twice now: it's never
+          # literally "workflow_call", AND "= workflow_dispatch" also
+          # misfires when an outer caller like main-deploy.yml is itself
+          # manually dispatched). `inputs.app` non-empty is the genuine
+          # direct-dispatch signal; empty means a real workflow_call
+          # regardless of what triggered the caller.
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ -n "${{ inputs.app }}" ]; then
             MODE="block"
           else
             MODE="${{ inputs.mode }}"
