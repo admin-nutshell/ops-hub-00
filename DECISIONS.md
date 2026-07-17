@@ -9854,6 +9854,9 @@ by inspecting the standalone output directly) all pass, but the
 click-button-see-real-tree proof needs (1)-(3) above resolved first, on
 staging, by someone with Coolify + Supabase SQL Editor access.
 
--> PR opens against origin/main from feat/s1-repo-inspect-ui (worktree
-   .claude/worktrees/s1-repo-inspect-ui), not self-merged.
+-> PR #538 (feat/s1-repo-inspect-ui -> main), not self-merged. Follow-up
+   review notes (Inngest environment match on precondition 2;
+   router.refresh() client-state behavior belongs on the staging test
+   pass) posted as a PR comment, not reflected in code -- nothing they
+   raise changes the shipped behavior.
 ```
