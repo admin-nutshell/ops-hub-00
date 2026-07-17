@@ -95,6 +95,16 @@ env:
   MAX_BUDGET_USD: "7.00"
   SOFT_BUDGET_USD: "3.00"
   BUDGET_DURATION: "30d"
+  # O3 fix (T-90 gap, still open as of T-96): the original key had no expiry
+  # at all (`duration` was never set on /key/generate). `duration` is
+  # LiteLLM's key-TTL field, distinct from `budget_duration` above (which
+  # only resets the SPEND counter, not the key itself) -- an unexpired CI
+  # key that outlives its own workflow re-runs is a standing, avoidable
+  # credential-lifetime risk. 90d gives comfortable headroom over this
+  # workflow's own re-issue cadence (re-run on demand, observed roughly
+  # every few weeks per DECISIONS.md) without needing a tighter babysitting
+  # cadence than this manual, workflow_dispatch-only trigger can support.
+  KEY_DURATION: "90d"
   RPM_LIMIT: "60"
   KEY_ALIAS: "eval-gate-t96"
   OLD_KEY_ALIAS: "eval-gate-t90"
@@ -177,6 +187,7 @@ jobs:
             --argjson max_budget "$MAX_BUDGET_USD" \
             --argjson soft_budget "$SOFT_BUDGET_USD" \
             --arg duration "$BUDGET_DURATION" \
+            --arg key_duration "$KEY_DURATION" \
             --argjson rpm "$RPM_LIMIT" \
             '{
               key: $key,
@@ -185,6 +196,7 @@ jobs:
               max_budget: $max_budget,
               soft_budget: $soft_budget,
               budget_duration: $duration,
+              duration: $key_duration,
               rpm_limit: $rpm,
               metadata: {
                 purpose: "T-96 / Security Lead 2026-07-11 review — widened real eval gate CI live-run credential",
@@ -192,7 +204,8 @@ jobs:
                 supersedes_key_alias: "eval-gate-t90",
                 never_the_master_key: true,
                 provisioned_by: "production_manager",
-                provisioned_date: "2026-07-12"
+                provisioned_date: "2026-07-12",
+                key_expiry_fix: "O3 (T-90) -- duration was previously unset; now 90d"
               }
             }')
 
@@ -236,16 +249,44 @@ jobs:
 
           STORED_MODELS=$(jq -r '.info.models // .models // [] | sort | join(",")' /tmp/key_info.json 2>/dev/null || echo "")
           STORED_MAX_BUDGET=$(jq -r '.info.max_budget // .max_budget // empty' /tmp/key_info.json 2>/dev/null || echo "")
-          STORED_SOFT_BUDGET=$(jq -r '.info.soft_budget // .soft_budget // empty' /tmp/key_info.json 2>/dev/null || echo "")
+          # O2 fix (T-90 gap): the old path `.info.soft_budget` was always
+          # empty -- confirmed against a real /key/info response
+          # (2026-07-17 investigation) that LiteLLM actually nests this under
+          # `.info.litellm_budget_table.soft_budget`, not `.info.soft_budget`
+          # directly. Real path used now, with the old path kept as a
+          # fallback in case a future LiteLLM version moves it back.
+          STORED_SOFT_BUDGET=$(jq -r '.info.litellm_budget_table.soft_budget // .info.soft_budget // .litellm_budget_table.soft_budget // .soft_budget // empty' /tmp/key_info.json 2>/dev/null || echo "")
           STORED_DURATION=$(jq -r '.info.budget_duration // .budget_duration // empty' /tmp/key_info.json 2>/dev/null || echo "")
           STORED_RPM=$(jq -r '.info.rpm_limit // .rpm_limit // empty' /tmp/key_info.json 2>/dev/null || echo "")
           STORED_SPEND=$(jq -r '.info.spend // .spend // 0' /tmp/key_info.json 2>/dev/null || echo "0")
+          # O3 fix (T-90 gap): read back the key's own expiry timestamp —
+          # confirmed field name `expires` on a real /key/info response
+          # (2026-07-17 investigation; was `null` before this fix, since
+          # `duration` was never set on /key/generate).
+          STORED_EXPIRES=$(jq -r '.info.expires // .expires // empty' /tmp/key_info.json 2>/dev/null || echo "")
 
-          echo "models=$STORED_MODELS max_budget=$STORED_MAX_BUDGET soft_budget=$STORED_SOFT_BUDGET budget_duration=$STORED_DURATION rpm_limit=$STORED_RPM spend=$STORED_SPEND"
+          echo "models=$STORED_MODELS max_budget=$STORED_MAX_BUDGET soft_budget=$STORED_SOFT_BUDGET budget_duration=$STORED_DURATION rpm_limit=$STORED_RPM spend=$STORED_SPEND expires=$STORED_EXPIRES"
           echo "spend_baseline=$STORED_SPEND" >> "$GITHUB_OUTPUT"
 
           EXPECTED_MODELS=$(printf "%s\n%s\n%s" "$EVAL_TARGET_ALIAS" "$EVAL_JUDGE_ALIAS" "$EVAL_NVIDIA_ALIAS" | sort | paste -sd, -)
           [ "$STORED_MODELS" = "$EXPECTED_MODELS" ] || { echo "::error::stored models list ($STORED_MODELS) != expected ($EXPECTED_MODELS)"; exit 1; }
+
+          # O2 (T-90 gap): soft_budget must actually be set and readable —
+          # previously only echoed, never gated (unlike max_budget/rpm_limit
+          # below). Numeric compare, same reasoning as C5a's max_budget check.
+          SOFT_BUDGET_MATCH=$(awk -v s="$STORED_SOFT_BUDGET" -v e="$SOFT_BUDGET_USD" 'BEGIN { print (s+0 == e+0) ? "yes" : "no" }')
+          if [ -z "$STORED_SOFT_BUDGET" ] || [ "$SOFT_BUDGET_MATCH" != "yes" ]; then
+            echo "::error::stored soft_budget ($STORED_SOFT_BUDGET) != expected ($SOFT_BUDGET_USD) numerically, or missing — O2 not satisfied"
+            exit 1
+          fi
+          echo "soft_budget confirmed numerically equal: stored=$STORED_SOFT_BUDGET expected=$SOFT_BUDGET_USD"
+
+          # O3 (T-90 gap): the key must actually have an expiry set now.
+          if [ -z "$STORED_EXPIRES" ] || [ "$STORED_EXPIRES" = "null" ]; then
+            echo "::error::stored expires is empty/null — O3 not satisfied, duration was not applied"
+            exit 1
+          fi
+          echo "expires confirmed set: $STORED_EXPIRES"
 
           # C5a: numeric compare on max_budget (T-90 saw a cosmetic 7.0 vs 7.00
           # string mismatch on the exact same value — compare as numbers (awk,
@@ -262,6 +303,26 @@ jobs:
           [ "$STORED_RPM" = "$RPM_LIMIT" ] || { echo "::error::stored rpm_limit ($STORED_RPM) != expected ($RPM_LIMIT) — C3 not satisfied"; exit 1; }
 
           echo "Scope + budget + rpm_limit confirmed stored, not just requested."
+
+      - name: Check for a configured alert-delivery channel (O2, T-90 gap — restored, was dropped in the T-96 rewrite)
+        run: |
+          set -euo pipefail
+          # Informational only — reports whether soft_budget crossing would page
+          # anyone, without configuring anything. Does not fail the job either
+          # way; the max_budget hard cap (asserted above) is the real backstop
+          # per ADR-0007 §4. Restored from the original T-90 build (git history
+          # bdc1f51), which was silently dropped when this workflow was
+          # rewritten for T-96 — never re-added until now (T-90 O2).
+          HTTP=$(curl -s --max-time 20 -o /tmp/alerting.json -w "%{http_code}" \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Accept: application/json" \
+            "$LITELLM_STAGING_URL/alerting/settings" || echo "000")
+          echo "GET /alerting/settings -> HTTP $HTTP"
+          if [ "$HTTP" = "200" ]; then
+            jq -r 'if (. == [] or . == {}) then "no alerting settings configured" else . end' /tmp/alerting.json 2>/dev/null || true
+          else
+            echo "Alerting settings endpoint not available/not configured (HTTP $HTTP) — treat soft_budget as a recorded threshold only, NOT a live page, until an alert channel is confirmed."
+          fi
 
       - name: POSITIVE test — LITELLM_EVAL_KEY can call the target alias (triage-model)
         id: pos_target
@@ -604,6 +665,7 @@ jobs:
           echo " key_alias (new) : $KEY_ALIAS   (supersedes: $OLD_KEY_ALIAS)"
           echo " models in scope : $EVAL_TARGET_ALIAS, $EVAL_JUDGE_ALIAS, $EVAL_NVIDIA_ALIAS"
           echo " max_budget      : \$$MAX_BUDGET_USD USD / soft_budget \$$SOFT_BUDGET_USD USD / $BUDGET_DURATION (unchanged)"
+          echo " key duration    : $KEY_DURATION (NEW — O3/T-90 fix: key previously had no expiry at all)"
           echo " rpm_limit       : $RPM_LIMIT (NEW — C3 backstop for the meta/llama \$0-metering gap)"
           echo " stored as       : GitHub Actions secret LITELLM_EVAL_KEY (same name, rotated value)"
           echo ""
