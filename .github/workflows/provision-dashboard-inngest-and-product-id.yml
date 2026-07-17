@@ -179,16 +179,27 @@ jobs:
             FAIL=1
           fi
 
-          # Also confirm no stray rows at ANY scope beyond the one Production row
-          # (catches a duplicate landing in preview scope too, not just prod scope).
-          INNGEST_ANY=$(jq '[.[] | select(.key=="INNGEST_EVENT_KEY")] | length' /tmp/target_final.json)
-          PRODUCT_ANY=$(jq '[.[] | select(.key=="DASHBOARD_PRODUCT_ID")] | length' /tmp/target_final.json)
-          if [ "$INNGEST_ANY" != "1" ]; then
-            echo "::error::INNGEST_EVENT_KEY has $INNGEST_ANY row(s) total (any scope) -- expected exactly 1"
+          # Check for REAL duplicates only -- two-plus rows sharing the SAME
+          # (key, is_preview) pair. Do NOT flag "2 rows total" as an error:
+          # Coolify's POST /envs (no is_preview in the body) populates BOTH
+          # the Production (is_preview:false) AND Preview Deployments
+          # (is_preview:true) scopes by default -- this is normal, intentional
+          # per-app behavior, not a duplicate. An earlier version of THIS
+          # REPO's own duplicate guard (check-coolify-env-duplicates.yml,
+          # T-122) made exactly this mistake -- grouping by key alone and
+          # reporting 19 false-positive "duplicates" on ops-hub-staging/-prod
+          # (DECISIONS.md 2026-07-16/17) -- before being corrected to group by
+          # (key, is_preview). This step follows that corrected model.
+          INNGEST_PREVIEW_COUNT=$(jq '[.[] | select(.key=="INNGEST_EVENT_KEY" and .is_preview==true)] | length' /tmp/target_final.json)
+          PRODUCT_PREVIEW_COUNT=$(jq '[.[] | select(.key=="DASHBOARD_PRODUCT_ID" and .is_preview==true)] | length' /tmp/target_final.json)
+          echo "INNGEST_EVENT_KEY: $INNGEST_PREVIEW_COUNT row(s) at is_preview:true (expected 0 or 1 -- Coolify's default dual-scope POST behavior, not a duplicate)"
+          echo "DASHBOARD_PRODUCT_ID: $PRODUCT_PREVIEW_COUNT row(s) at is_preview:true (expected 0 or 1 -- same)"
+          if [ "$INNGEST_PREVIEW_COUNT" -gt 1 ]; then
+            echo "::error::INNGEST_EVENT_KEY has $INNGEST_PREVIEW_COUNT rows at is_preview:true -- that IS a real duplicate (same key, same scope)"
             FAIL=1
           fi
-          if [ "$PRODUCT_ANY" != "1" ]; then
-            echo "::error::DASHBOARD_PRODUCT_ID has $PRODUCT_ANY row(s) total (any scope) -- expected exactly 1"
+          if [ "$PRODUCT_PREVIEW_COUNT" -gt 1 ]; then
+            echo "::error::DASHBOARD_PRODUCT_ID has $PRODUCT_PREVIEW_COUNT rows at is_preview:true -- that IS a real duplicate (same key, same scope)"
             FAIL=1
           fi
 
