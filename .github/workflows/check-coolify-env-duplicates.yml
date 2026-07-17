@@ -6,12 +6,28 @@ name: Coolify — duplicate env-var guard (read-only)
 # "coolify-db"/"duplicate" entries, e.g. the LITELLM_URL dup-row incidents on
 # ops-hub-prod and ops-hub-staging). Coolify's UI "Save" — and, per T-104, even
 # a single API POST — appends a new env-var row instead of upserting an
-# existing key; the runtime then silently uses whichever row happens to win
-# (empirically the last one), with no error anywhere. This workflow detects
-# that condition before a redeploy proceeds. It is READ-ONLY: it never
-# deletes, edits, or creates an env-var row — fixing a detected duplicate
-# stays a human/manual action (or a separate, higher-risk future task), per
-# T-122's explicit scope boundary.
+# existing key; if two rows with the SAME key and the SAME `is_preview` scope
+# exist, the runtime silently uses whichever row happens to win (empirically
+# the last one), with no error anywhere. This workflow detects that condition
+# before a redeploy proceeds. It is READ-ONLY: it never deletes, edits, or
+# creates an env-var row — fixing a detected duplicate stays a human/manual
+# action (or a separate, higher-risk future task), per T-122's explicit scope
+# boundary.
+#
+# CORRECTION (2026-07-17): every Coolify application has TWO distinct,
+# intentional env-var scopes per key -- "Production" (`is_preview:false`)
+# and "Preview Deployments" (`is_preview:true`). These are not a stale-vs-
+# live pair; Coolify's runtime uses the matching scope for the traffic type,
+# with no ambiguity. An earlier version of this script grouped by `.key`
+# alone and reported every key with both scopes populated as a "duplicate"
+# -- a false positive, confirmed by direct schema inspection showing two
+# different uuids/values with different `is_preview` values, not a real
+# collision. This produced 19 false-positive "duplicate" findings on both
+# ops-hub-staging and ops-hub-prod (DECISIONS.md 2026-07-16/17) before a user
+# caught it by pointing out the Coolify UI clearly showed two SEPARATE,
+# labeled sections rather than one list with 19 dupes in it. The real check
+# groups by `(.key, .is_preview)` -- a genuine duplicate is two rows sharing
+# BOTH the same key AND the same scope.
 #
 # Three ways to run this:
 #   1. workflow_dispatch — manual, pick a known app or supply a custom UUID.
@@ -172,11 +188,22 @@ jobs:
           APP_LABEL="${{ steps.resolve.outputs.app_label }}"
           MODE="${{ steps.resolve.outputs.mode }}"
 
-          # Group rows by key, keep only keys with count > 1.
+          # Group rows by (key, is_preview) -- NOT by key alone. Coolify keeps
+          # a genuinely separate, intentional value per key for the
+          # "Production" environment (is_preview:false) and "Preview
+          # Deployments" (is_preview:true); these are two distinct, valid
+          # scopes, not a stale-vs-live duplicate pair. An earlier version of
+          # this script grouped by .key only and produced a false positive on
+          # every key that has both scopes populated -- confirmed via a
+          # direct schema inspection (2026-07-17) showing is_preview:false
+          # and is_preview:true as two DIFFERENT uuids/values for the same
+          # key, not a duplicate. A real duplicate is two rows with the SAME
+          # key AND the SAME is_preview value (that's the actual Coolify
+          # UI-Save-appends-a-row footgun this guard exists to catch).
           jq -r '
-            group_by(.key)
+            group_by([.key, .is_preview])
             | map(select(length > 1))
-            | map({key: .[0].key, count: length, uuids: [.[].uuid]})
+            | map({key: .[0].key, is_preview: .[0].is_preview, count: length, uuids: [.[].uuid]})
           ' /tmp/envs.json > /tmp/dupes.json
 
           DUPE_COUNT=$(jq 'length' /tmp/dupes.json)
@@ -195,7 +222,7 @@ jobs:
           echo "::error::Found $DUPE_COUNT duplicate env-var key(s) on '$APP_LABEL' — Coolify's runtime will silently pick one row (empirically the last), with no warning. Fix by hand in the Coolify UI: delete the stale row(s), keep exactly one per key."
           echo ""
           echo "=== Duplicate key(s) on '$APP_LABEL' ==="
-          jq -r '.[] | "  key=\(.key)  rows=\(.count)  env_uuids=\(.uuids | join(", "))"' /tmp/dupes.json
+          jq -r '.[] | "  key=\(.key)  is_preview=\(.is_preview)  rows=\(.count)  env_uuids=\(.uuids | join(", "))"' /tmp/dupes.json
           echo ""
           echo "This guard is READ-ONLY — it does not delete or fix rows. A human must"
           echo "resolve this in the Coolify UI (or via a scoped dedupe workflow, e.g."
