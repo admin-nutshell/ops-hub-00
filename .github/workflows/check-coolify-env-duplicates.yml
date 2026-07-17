@@ -122,19 +122,18 @@ jobs:
       # ── Resolve which app UUID to check ─────────────────────────────────────
       - name: Resolve target app UUID
         id: resolve
+        env:
+          INPUT_APP_UUID: ${{ inputs.app_uuid }}
+          INPUT_APP_LABEL: ${{ inputs.app_label }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_call" ]; then
-            APP_UUID="${{ inputs.app_uuid }}"
-            APP_LABEL="${{ inputs.app_label }}"
-            [ -n "$APP_LABEL" ] || APP_LABEL="$APP_UUID"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
             # Self-test target: ops-hub-staging is a safe, low-blast-radius
             # real app to verify this guard's logic against on every PR that
             # touches this workflow file.
             APP_UUID="ajqplom2mghf5a8h6vf1q6xg"
             APP_LABEL="ops-hub-staging (PR self-test)"
-          else
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             APP="${{ inputs.app }}"
             case "$APP" in
               ops-hub-staging)      APP_UUID="ajqplom2mghf5a8h6vf1q6xg" ;;
@@ -147,6 +146,26 @@ jobs:
               *) echo "::error::Unknown app '$APP'"; exit 1 ;;
             esac
             APP_LABEL="$APP"
+          else
+            # workflow_call path (main-deploy.yml, prod-deploy.yml calling this
+            # via `uses:`). github.event_name here reflects the CALLER's own
+            # triggering event (e.g. "push"), NOT literally "workflow_call" --
+            # a real, confirmed GitHub Actions behavior (see DECISIONS.md entry
+            # for this fix for the log evidence: a real failed run's log shows
+            # the script evaluating `if [ "push" = "workflow_call" ]` as false
+            # and falling through). This is why treating "workflow_call" as an
+            # explicit branch condition never actually matched, and every
+            # deploy since 2026-07-16 silently fell through to the old `else`
+            # branch and failed on an undefined `app` input. Only the two
+            # REAL, reliably-reported event names (`pull_request` for the
+            # self-test, `workflow_dispatch` for manual runs) get their own
+            # branch above; everything else — including every real
+            # workflow_call invocation, regardless of what string
+            # github.event_name reports for it — falls here and reads the
+            # workflow_call inputs directly.
+            APP_UUID="$INPUT_APP_UUID"
+            APP_LABEL="$INPUT_APP_LABEL"
+            [ -n "$APP_LABEL" ] || APP_LABEL="$APP_UUID"
           fi
           if [ -z "$APP_UUID" ] || [ "$APP_UUID" = "null" ]; then
             echo "::error::No app_uuid resolved — if app=custom, app_uuid is required."
@@ -154,10 +173,20 @@ jobs:
           fi
           echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
           echo "app_label=$APP_LABEL" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "workflow_call" ]; then
-            MODE="${{ inputs.mode }}"
-          else
+          # Same event-name-detection bug class as the APP_UUID/APP_LABEL fix
+          # above: github.event_name is never literally "workflow_call" (see
+          # the comment on the else-branch above), so a check for it here
+          # never matches either -- MODE was silently hardcoding to "block"
+          # for every real workflow_call caller, ignoring whatever `mode:`
+          # value it actually passed. Only the two REAL, reliably-reported
+          # event names (`pull_request` self-test, `workflow_dispatch` manual
+          # runs) should force the strict "block" mode; everything else
+          # (every real workflow_call invocation) must read the caller's
+          # own `mode` input, honoring its "report" default.
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             MODE="block"
+          else
+            MODE="${{ inputs.mode }}"
           fi
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "Checking '$APP_LABEL' ($APP_UUID) for duplicate env-var keys... (mode=$MODE)"
