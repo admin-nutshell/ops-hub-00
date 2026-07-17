@@ -9477,3 +9477,78 @@ Flagged directly and prominently to the user rather than only banked here.
 
 -> run 29550972288 ; WORK.md T-122 row (updated with prod finding)
 ```
+
+### 2026-07-17 — T-122 CORRECTION: the "19 duplicate env-var keys" finding on both staging and prod was a false positive — Coolify's Production/Preview-Deployments scopes, not stale duplicate rows. User was nearly sent to delete legitimate data; caught before any deletion happened.
+
+```
+2026-07-17 [Coordinator] The user, following the guidance given for the
+2026-07-16/17 "19 duplicate env-var keys" finding, opened the Coolify UI
+to begin cleanup and pasted back what they saw: NOT one flat list with
+19 keys appearing twice, but two clearly separate, labeled sections --
+"Production Environment Variables" and "Preview Deployments Environment
+Variables" -- each listing each key ONCE. This did not match the
+"stale-vs-live duplicate row" narrative the guard's findings had been
+reported under, and the user's own observation was the catch, not
+anything self-detected.
+
+INVESTIGATED IMMEDIATELY, before any deletion: built a small read-only
+diagnostic (never logs .value) to dump the actual Coolify API schema for
+one duplicate key (LITELLM_MASTER_KEY). Confirmed: the API returns an
+`is_preview` boolean field per row. The two "duplicate" rows for
+LITELLM_MASTER_KEY on ops-hub-prod are uuid rvm95e1e18mjybyjvqkx3iqz
+(is_preview:false, the real Production value) and uuid
+irq4znqh1vrdtswhzyajjpln (is_preview:true, the real Preview Deployments
+value) -- two DIFFERENT, both-legitimate values Coolify intentionally
+keeps for two different deployment contexts, not a stale row and a live
+row sharing one key.
+
+ROOT CAUSE: check-coolify-env-duplicates.yml's original detection logic
+(`group_by(.key) | map(select(length > 1))`) grouped purely by key, with
+no awareness of the is_preview scope field. Every key with both a
+Production and a Preview-Deployments value populated -- which is the
+NORMAL, CORRECT state, not an error -- got flagged as a "duplicate."
+This produced the "19 duplicate keys" result on BOTH ops-hub-staging
+(2026-07-16, PR #515's own live verification) and ops-hub-prod
+(2026-07-17, the post-merge confirmation run) -- neither was a real
+finding.
+
+USER IMPACT, STATED PLAINLY: the user was given a specific, detailed
+guide to go into the Coolify UI for both ops-hub-staging and
+ops-hub-prod and start deleting rows for 19 keys including
+LITELLM_MASTER_KEY, INNGEST_SIGNING_KEY, and NVIDIA_API_KEY. Had they
+followed that guidance and deleted the "Preview Deployments" row for
+each key (a plausible choice, since "Production" sounds like the one to
+keep), preview-deployment builds would have lost their credentials --
+a real, avoidable outage this session's own bad guidance would have
+caused. The user did NOT delete anything before flagging back what the
+Coolify UI actually showed; the mistake was caught with zero actual
+impact, but the guidance itself was wrong and is recorded as such here,
+not softened.
+
+FIXED (PR #527): check-coolify-env-duplicates.yml now groups by
+`(key, is_preview)` instead of `key` alone -- a real duplicate is two
+rows sharing BOTH the same key AND the same scope, which is the actual
+Coolify UI-Save-appends-a-row footgun this guard was built to catch.
+VERIFIED, not assumed fixed: re-ran the corrected logic against real
+ops-hub-staging via the pull_request self-test -- result: CLEAN, zero
+duplicates found. ops-hub-prod has not yet been re-checked with the
+corrected logic (follow-up, not done in this same session).
+
+LESSON, stated for the record: T-122's original build and its two
+independent reviews (Tech Lead APPROVE-WITH-FOLLOW-UPS, this session's
+own governance-correction pass) all missed this. The Tech Lead review
+verified the jq detection logic was "correct against Coolify's real
+/envs response shape" by checking field names existed and the grouping
+syntax was valid -- it did not question whether grouping by key ALONE
+was semantically correct, i.e. whether two rows sharing a key always
+means an error. Independent review caught real defects in this same
+build twice already (the invalid continue-on-error key, the mislabeled
+self-review) but this THIRD defect slipped past both an agent build and
+an agent review, and was only caught because a human looked at the
+actual UI and noticed the shape didn't match the narrative. Recorded
+as a genuine gap in this session's review discipline, not glossed over.
+
+-> .github/workflows/check-coolify-env-duplicates.yml (group_by fixed) ;
+   .github/workflows/main-deploy.yml (comment corrected) ; WORK.md T-122
+   row (corrected) ; PR #527 ; self-test run 29551738095 (CLEAN, post-fix)
+```
