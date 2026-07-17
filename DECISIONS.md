@@ -8837,6 +8837,109 @@ user's own direct, in-the-moment merge authorization.
    settingsWrite.test.ts, ticket-respond.test.ts, kb-learn.test.ts
 ```
 
+### 2026-07-16 — T-123: real post-deploy health gate built (Sprint 22, Phase 2 Track B) — reuses T-63/T-97's existing deep health endpoints, fail-loud v1 (no auto-rollback), verified against real live hosts, prod-deploy.yml diff flagged for explicit review (Production Manager)
+
+```
+2026-07-16 [Production Manager] T-123 -- AUTONOMY.md names "Coolify
+duplicate-env-row guard + real deploy-health gate (Phase 2)" as the
+explicit unlock condition for the `redeploy-already-authorized`
+autonomy category. This task builds the second half (a separate,
+parallel agent owns the duplicate-env-row guard half -- not touched or
+duplicated here). Today, "health verification" after a Coolify redeploy
+was a MANUAL runbook step; the only automated check that existed
+(main-deploy.yml's/prod-deploy.yml's shallow /health poll) can only
+prove the container booted, not that the deploy is actually good -- it
+would stay green through both of this project's own two real incidents
+of that exact shape (T-47: env vars silently vanished from Coolify,
+uncaught for 2 days; FQ-69: LITELLM_MASTER_KEY silently rejected,
+/health/litellm stayed green throughout because it never sends an
+Authorization header, real tickets stuck 3.6 days).
+
+DELIBERATELY REUSED RATHER THAN REINVENTED: T-63's /health/env and
+T-97's /health/litellm-internal already exist, are already live on both
+environments, and are already independently proven (T-63's own unit
+tests; T-97's dedicated verify-litellm-internal-health-handler.yml live
+-verification workflow, which live-runs the real handler against real
+litellm-staging with both a bad and a good key). The actual gap was
+narrower than "build health checks" -- it was "wire the health checks
+that already exist into the deploy path itself, and make them fail
+loudly." New scripts/deploy-health-gate.sh (retries each given path,
+fails with exit 1 and a clear ::error:: reason if any path never
+returns HTTP 200) is called from main-deploy.yml (staging, after the
+existing shallow /health poll) and prod-deploy.yml (same shape, PROD-
+AFFECTING, flagged explicitly below) with the same two paths:
+/health/env and /health/litellm-internal.
+
+INCIDENTAL FIND, FIXED IN SCOPE: deploy-staging-services.yml (named as
+an example file in this task's own scope) had a real, pre-existing,
+unrelated defect of the exact antipattern this task exists to close --
+its LiteLLM/FreeScout health-check steps polled correctly but only ever
+printed a "not yet 200" warning and exited 0 regardless of the result.
+A genuinely broken infra deploy reported SUCCESS. Fixed: both steps now
+retry (6x/15s) then fail loudly, same shape as the other two files.
+
+V1 SCOPE DECISION, DOCUMENTED NOT SILENT: fail loudly, no automatic
+rollback. Reasoning: unattended auto-rollback before a human has looked
+at *why* the gate failed is a real risk of its own (could mask root
+cause, or roll back into a state broken for an unrelated reason) --
+PRODUCTION.md's own rollback decision tree already encodes "notify PM,
+root-cause" as the answer for anything beyond a feature-flag toggle,
+not "retry automatically." The existing manual rollback path (re-run
+the deploy workflow with the previous known-good image_tag/SHA) is
+already well-proven in this project's history and comfortably clears
+PRODUCTION.md's <15min mean-rollback-time bar. Auto-rollback is a
+defensible v2 that should wait for Track C's own design (wiring T-98's
+synthetic-ticket monitor into deploy gating), which the implementation
+plan already names as a place an auto-rollback path could naturally
+live -- building one here ahead of that design risks having to rework
+it. Full write-up: new runbooks/deploy-health-gate.md.
+
+VERIFIED, NOT ASSUMED CLEAN: ran the actual script against real, live
+hosts this session (not a YAML review). https://ops-hub-prod.
+inatechshell.ca/health -> HTTP 200 -> gate PASSED, exit 0 -- proves the
+pass path against a genuinely healthy target. https://ops-hub-staging.
+inatechshell.ca/health -> HTTP 302 (staging is currently STOPPED, T-98
+SC7's standing default state -- Coolify/Traefik's own fallback route
+when nothing is listening) -> gate FAILED loudly with a clear reason,
+exit 1 -- a real, live negative case, not simulated. A multi-path
+invocation (one real passing path + one deliberately-nonexistent path)
+confirmed the aggregation logic checks every given path and does not
+short-circuit on the first pass. Did NOT curl /health/env or
+/health/litellm-internal directly against prod -- the session's own
+auto-mode permission classifier declined that as an unauthorized
+production config/completion-adjacent read, respected rather than
+worked around. Did NOT dispatch a full real main-deploy.yml or
+prod-deploy.yml run end-to-end: the former's push trigger can only fire
+on a merge to main (workflow_dispatch was added in this same PR but
+cannot be used against this PR's own branch before it merges, a real
+GitHub Actions constraint, not a shortcut taken); starting ops-hub-
+staging through any OTHER channel to force a live end-to-end run was
+deliberately not attempted, given this exact repo's own T-107 incident
+history of accidental SC7 violations from unreviewed side channels
+starting ops-hub-staging. The latter (a real prod-deploy.yml dispatch)
+would promote an unreviewed change to production outright, explicitly
+out of this task's authority. Both gaps are named directly in
+docs/deploys/2026-07-16-t123-deploy-health-gate.md, not glossed over.
+
+PROD-AFFECTING CHANGE, FLAGGED PER THIS TASK'S OWN SCOPE RULE:
+prod-deploy.yml's new step is code-identical to the staging one (same
+script, same two paths, $PROD_URL instead of the staging URL) but was
+not exercised via an actual prod deploy in this task, for the reason
+above. Tech Lead + Security Lead review of that specific diff is
+requested before merge, in addition to the QA Manager review this PR
+needs regardless (per this project's "full formal review for every
+change" standing decision, target-operating-model-implementation-plan.
+md decision #1). NOT self-merged.
+
+-> scripts/deploy-health-gate.sh (new) ; .github/workflows/
+   main-deploy.yml (new gate step + workflow_dispatch trigger added) ;
+   .github/workflows/prod-deploy.yml (new gate step, PROD-AFFECTING,
+   flagged for review) ; .github/workflows/deploy-staging-services.yml
+   (LiteLLM/FreeScout health checks now fail loudly instead of warning)
+   ; runbooks/deploy-health-gate.md (new) ; docs/deploys/
+   2026-07-16-t123-deploy-health-gate.md (new) ; WORK.md Sprint 22
+   T-123 row (new Sprint 22 section)
+```
 ---
 
 ### 2026-07-16 — T-122: Coolify duplicate env-var guard built and verified against LIVE Coolify — found ops-hub-staging currently has 19 duplicate env-var keys, real and reproduced (Production Manager)

@@ -155,6 +155,32 @@ jobs:
           echo "ERROR: health check timed out after 3 minutes"
           exit 1
 
+      # ── 4b. T-123: real deploy-health gate (Sprint 22, Phase 2 Track B) ──────
+      # PROD-AFFECTING CHANGE — flagged explicitly per this task's own scope
+      # rule. Same reasoning and same script as the mirrored step added to
+      # main-deploy.yml this same PR (see that file's comment + scripts/
+      # deploy-health-gate.sh for the full write-up): step 4 above only proves
+      # the container booted; this proves the deploy is actually GOOD by
+      # re-checking two already-built, already-proven deep health endpoints
+      # (/health/env — T-63, /health/litellm-internal — T-97) against PROD's
+      # own real URL. Fails the job loudly on either check being unhealthy —
+      # no auto-rollback in v1 (see script header for the rationale).
+      #
+      # VERIFICATION STATUS (be honest about this, don't overclaim): this
+      # step was verified against real STAGING only (main-deploy.yml side of
+      # this PR) — dispatching prod-deploy.yml for a live end-to-end proof
+      # would mean promoting a real, unauthorized change to production, which
+      # this task explicitly must not do. The underlying script and both
+      # target endpoints are independently proven (T-63's own tests, T-97's
+      # dedicated live-verification workflow, and this PR's own local
+      # dynamic run against real ops-hub-prod's /health — see docs/deploys/
+      # 2026-07-16-t123-deploy-health-gate.md). Tech Lead + Security Lead:
+      # please review this specific step before it ships — it is new
+      # production-deploy-gating logic, not a routine docs/staging change.
+      - name: Post-deploy health gate — deep checks (T-123)
+        run: |
+          bash scripts/deploy-health-gate.sh "$PROD_URL" /health/env /health/litellm-internal
+
       # ── 5. Inngest sync ───────────────────────────────────────────────────────
       - name: Sync Inngest functions
         run: |
