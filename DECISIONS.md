@@ -9702,3 +9702,75 @@ stated honestly in the PR rather than claimed as fully proven.
    flagged to the user, no PR filed (nothing to file yet without a
    diagnosed correct migration)
 ```
+
+### 2026-07-17 — litellm-staging DB schema issue RESOLVED via the pre-existing, sanctioned recovery process (apply-wall -> verify -> freeze-schema); O2/O3 hardening confirmed working end-to-end with real proof
+
+```
+2026-07-17 [Coordinator] Following up on the pre-existing budget_fallbacks
+column issue flagged earlier the same day. Research (via a dedicated
+investigation) confirmed this exact failure class was already anticipated
+by ADR-0004/the litellm-db-isolation-runbook: "if a future LiteLLM image
+version needs a schema change, temporarily flip DISABLE_SCHEMA_UPDATE=false,
+redeploy once, verify public survived, re-freeze." A workflow implementing
+this exact sequence already existed (fix-litellm-schema-isolation.yml,
+mode=apply-wall / mode=freeze-schema) with precedent (T-61/T-62, FQ-53).
+User authorized proceeding after this research.
+
+EXECUTED, staging only (this workflow is hardcoded to litellm-staging's
+UUID -- prod was never touched):
+
+1. Dispatched mode=apply-wall (run 29554511574). Coolify's own redeploy
+   status reported "finished." The workflow's OWN health-check step then
+   reported failure (12x HTTP 404 against a sslip.io-based diagnostic
+   URL) -- but a DIRECT curl against the real public endpoint
+   (https://litellm-staging.inatechshell.ca/health/readiness) returned
+   HTTP 200 at the same time. Diagnosed as a false negative in the
+   workflow's own stale/unreliable health-check URL (this repo's own
+   standing note: "No sslip.io as LITELLM_BASE_URL... sslip.io is a
+   fallback diagnostic tool only"), not a real problem -- confirmed, not
+   assumed, by checking the real endpoint directly rather than trusting
+   the workflow's own red X.
+2. PROVED the actual fix worked, independent of the workflow's own
+   (unreliable) self-check: dispatched provision-litellm-eval-key.yml
+   against unmodified `main` (run 29554679737) -- SUCCESS. POST
+   /key/generate returned HTTP 200; the budget_fallbacks error is gone.
+3. Re-froze immediately (mode=freeze-schema, run 29554711534), per the
+   runbook's own urgency about minimizing the open window. Same false-
+   negative health-check pattern as step 1 (Coolify: "finished"; direct
+   curl: HTTP 200) -- diagnosed the same way, not re-litigated. Directly
+   confirmed DISABLE_SCHEMA_UPDATE=true was actually re-set by reading
+   the workflow's own step log: "POST DISABLE_SCHEMA_UPDATE=true -> HTTP
+   201" -- not inferred from the failed overall run status.
+4. Ran this session's own (now-fixed) T-122 duplicate-env guard against
+   litellm-staging as a final sanity check on the whole sequence (the
+   env-var delete-then-recreate pattern this workflow uses is exactly
+   the kind of operation that class of bug could resurface in) -- run
+   29554852851: CLEAN, no duplicates.
+5. Re-ran THIS SESSION'S OWN T-90 O2/O3 fix (branch
+   fix/t90-o1-o3-eval-key-hardening, not yet merged) against the now-
+   fixed database -- run 29554873474: SUCCESS. Real, positive
+   confirmation, not inferred: "soft_budget confirmed numerically equal:
+   stored=3.0 expected=3.00", "expires confirmed set:
+   2026-10-15T04:27:00+00:00" (90 days out, matching KEY_DURATION=90d
+   exactly), "max_budget confirmed numerically equal: stored=7.0
+   expected=7.00", alert-channel check ran (HTTP 200). All three T-90
+   gaps (O1 already fixed, O2 and O3 fixed this session) are now
+   verified working end-to-end against real litellm-staging, not just
+   individually reasoned about.
+
+NET RESULT: the pre-existing DB issue is resolved using the project's
+own established, previously-proven recovery process -- no new mechanism
+invented, no ad-hoc SQL run, no founder action needed (the restricted-
+role infrastructure from T-61/T-62 already existed; this was routine
+use of it, not new provisioning). litellm-prod was not touched and was
+never confirmed to have the same issue -- out of scope for this pass,
+would need its own separate check if ever relevant (prod's
+/key/generate is not part of the live customer-facing ticket pipeline
+either, so no urgency identified).
+
+-> .github/workflows/provision-litellm-eval-key.yml (O2/O3 fix, PR
+   #533, now verified end-to-end, still not self-merged) ; runs
+   29554511574 (apply-wall) / 29554679737 (proof the DB fix worked) /
+   29554711534 (freeze-schema) / 29554852851 (duplicate-env sanity
+   check, clean) / 29554873474 (O2/O3 fix, full success)
+```
