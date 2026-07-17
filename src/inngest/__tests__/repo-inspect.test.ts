@@ -20,7 +20,7 @@ vi.mock("../../github/appAuth", () => ({
 }));
 
 import { mintInstallationToken } from "../../github/appAuth";
-import { inspectProductRepo } from "../repo-inspect";
+import { assertValidRepoFullName, inspectProductRepo } from "../repo-inspect";
 
 const CONNECTION_ROW = {
   id: "conn-1",
@@ -79,6 +79,38 @@ function mockGithubResponses(
   return fetchMock;
 }
 
+describe("assertValidRepoFullName", () => {
+  it("accepts a clean owner/repo shape", () => {
+    expect(() => assertValidRepoFullName("admin-nutshell/web-app-tns-06")).not.toThrow();
+  });
+
+  it("rejects a dot-segment path-traversal attempt (../etc)", () => {
+    // The naive shape regex some reviewers reach for (/^[\w.-]+\/[\w.-]+$/)
+    // would WRONGLY ACCEPT this — "." is inside the character class, so
+    // ".." is a legal single component under that regex alone. This case
+    // exists specifically to prove the dot-segment guard fires, not just
+    // the two-component shape check.
+    expect(() => assertValidRepoFullName("../etc")).toThrow(/Invalid repo_full_name/);
+  });
+
+  it("rejects a trailing .. component (owner/..)", () => {
+    expect(() => assertValidRepoFullName("owner/..")).toThrow(/Invalid repo_full_name/);
+  });
+
+  it("rejects extra path segments (owner/repo/extra)", () => {
+    expect(() => assertValidRepoFullName("owner/repo/extra")).toThrow(/Invalid repo_full_name/);
+  });
+
+  it("rejects a single component with no slash", () => {
+    expect(() => assertValidRepoFullName("owner-only")).toThrow(/Invalid repo_full_name/);
+  });
+
+  it("rejects characters that could alter URL meaning (?, #)", () => {
+    expect(() => assertValidRepoFullName("owner/repo?x=1")).toThrow(/Invalid repo_full_name/);
+    expect(() => assertValidRepoFullName("owner/repo#frag")).toThrow(/Invalid repo_full_name/);
+  });
+});
+
 describe("inspectProductRepo", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
@@ -92,6 +124,7 @@ describe("inspectProductRepo", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("returns skipped when there is no active repo connection for the product", async () => {
@@ -190,6 +223,25 @@ describe("inspectProductRepo", () => {
       expect(result.snapshot.tree.entry_count).toBe(2000);
       expect(result.snapshot.tree.truncated).toBe(true);
     }
+  });
+
+  it("rejects a malformed repo_full_name before minting a token or writing anything", async () => {
+    const malformedConnection = { ...CONNECTION_ROW, repo_full_name: "owner/../etc" };
+    const client = makeClient(fetchTxn(malformedConnection));
+    const pool = makePool(client);
+    // mintInstallationToken's mock.calls accumulate across cases in this
+    // describe block (vi.restoreAllMocks() does not clear call history for
+    // a vi.mock()-factory-produced vi.fn()) — snapshot the count rather than
+    // assert an absolute zero, so this assertion means "this call made no
+    // NEW mint attempt," not "no prior test in this file ever minted."
+    const mintCallsBefore = vi.mocked(mintInstallationToken).mock.calls.length;
+
+    await expect(inspectProductRepo(pool, "product-1")).rejects.toThrow(
+      "Invalid repo_full_name shape"
+    );
+    expect(vi.mocked(mintInstallationToken).mock.calls.length).toBe(mintCallsBefore);
+    // Only the fetch txn's 4 calls should have run — no write txn attempted.
+    expect(vi.mocked(client.query).mock.calls.length).toBe(4);
   });
 
   it("propagates a GitHub API error without writing anything", async () => {

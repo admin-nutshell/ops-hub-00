@@ -53,6 +53,7 @@ describe("mintInstallationToken", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("mints a JWT signed with the App's private key, iss=appId, exp-iat <= 600s", async () => {

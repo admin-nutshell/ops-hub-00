@@ -50,7 +50,17 @@ create table repo_snapshots (
   -- One snapshot per connection; re-inspection UPSERTs this row rather than
   -- appending (see SCOPE note above). ON DELETE CASCADE: a snapshot has no
   -- meaning once its connection is gone.
-  repo_connection_id  uuid not null references repo_connections(id) on delete cascade,
+  --
+  -- No inline FK on repo_connection_id here — the COMPOSITE foreign key
+  -- below (on repo_connection_id + product_id together) replaces it. A
+  -- simple FK on repo_connection_id alone only guarantees the connection
+  -- exists; it says nothing about whether THIS row's product_id actually
+  -- matches that connection's real product_id. Before this change that
+  -- match was enforced only by application code (repo-inspect.ts passes the
+  -- same productId used to fetch the connection) — a real gap for a table
+  -- that exists specifically to serve product-scoped reads. Added per
+  -- CodeRabbit review on PR #537.
+  repo_connection_id  uuid not null,
   repo_full_name      text not null,
   default_branch      text not null,
   -- Capped, filtered list of { path, type, size } entries — never the raw
@@ -73,7 +83,14 @@ create table repo_snapshots (
   -- note as `tree` above.
   commits             jsonb not null,
   fetched_at          timestamptz not null default now(),
-  unique (repo_connection_id)
+  unique (repo_connection_id),
+  -- Composite FK: guarantees at the DATABASE level (not just application
+  -- code) that this row's product_id can never drift from the real
+  -- product_id of the repo_connections row it points to. Requires the
+  -- unique(id, product_id) constraint added to repo_connections in the
+  -- companion 20260717120000 migration.
+  foreign key (repo_connection_id, product_id)
+    references repo_connections (id, product_id) on delete cascade
 );
 
 -- RLS scoping lookups filter by product_id directly (the unique index above

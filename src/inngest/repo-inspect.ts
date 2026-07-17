@@ -63,13 +63,41 @@ function isNoisePath(path: string): boolean {
   );
 }
 
+// repo_full_name is DB-sourced (repo_connections.repo_full_name) but is
+// interpolated directly into a GitHub API URL path below — validate its
+// shape before it is ever used to build a URL. Must be exactly two
+// non-empty, path-safe components separated by "/" (owner/repo), and
+// neither component may be "." or ".." (a bare regex character-class check
+// like /^[\w.-]+\/[\w.-]+$/ would still ACCEPT "owner/.." or "../repo"
+// since "." is inside the class — the dot-segment check below is what
+// actually blocks path traversal, not the shape regex alone).
+const REPO_FULL_NAME_COMPONENT_RE = /^[\w.-]+$/;
+
+export function assertValidRepoFullName(repoFullName: string): void {
+  const parts = repoFullName.split("/");
+  const invalid =
+    parts.length !== 2 ||
+    parts.some(
+      (part) =>
+        part === "" || part === "." || part === ".." || !REPO_FULL_NAME_COMPONENT_RE.test(part)
+    );
+  if (invalid) {
+    throw new Error(`Invalid repo_full_name shape: ${JSON.stringify(repoFullName)}`);
+  }
+}
+
+function repoApiPath(repoFullName: string): string {
+  const [owner, repo] = repoFullName.split("/");
+  return `${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
 async function fetchRepoTree(
   repoFullName: string,
   branch: string,
   token: string
 ): Promise<{ entries: TreeEntry[]; entry_count: number; truncated: boolean }> {
   const resp = await fetch(
-    `https://api.github.com/repos/${repoFullName}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
+    `https://api.github.com/repos/${repoApiPath(repoFullName)}/git/trees/${encodeURIComponent(branch)}?recursive=1`,
     {
       signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
       headers: githubHeaders(token),
@@ -96,10 +124,13 @@ async function fetchRepoTree(
 }
 
 async function fetchRecentCommits(repoFullName: string, token: string): Promise<CommitSummary[]> {
-  const resp = await fetch(`https://api.github.com/repos/${repoFullName}/commits?per_page=10`, {
-    signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
-    headers: githubHeaders(token),
-  });
+  const resp = await fetch(
+    `https://api.github.com/repos/${repoApiPath(repoFullName)}/commits?per_page=10`,
+    {
+      signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS),
+      headers: githubHeaders(token),
+    }
+  );
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`GitHub commits fetch ${resp.status}: ${text.slice(0, 200)}`);
@@ -156,6 +187,14 @@ export async function inspectProductRepo(
   if (!connection) {
     return { skipped: true, reason: "no_active_repo_connection" };
   }
+
+  // repo_full_name is DB-sourced and gets interpolated into GitHub API URLs
+  // by fetchRepoTree/fetchRecentCommits below — validate its shape once,
+  // here, before minting a token or making any network call. Throws on
+  // anything that isn't a clean two-component owner/repo shape (rejects
+  // extra path segments, "." / ".." dot-segments, and other characters that
+  // could alter the URL's meaning).
+  assertValidRepoFullName(connection.repo_full_name);
 
   // 2. Mint a fresh installation token for THIS connection's installation id
   // — never a hardcoded id, never cached, never persisted (see
