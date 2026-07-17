@@ -77,41 +77,41 @@ jobs:
   # check-coolify-env-duplicates.yml header). Read-only; fixing a detected
   # duplicate is a manual Coolify UI step, not automated here.
   #
-  # NON-BLOCKING FOR NOW (`mode: report`, no `needs:` on `deploy`).
+  # NOW BLOCKING (`mode: block`, `deploy` below has `needs: guard`).
   #
-  # CORRECTION (2026-07-17): the "19 duplicate env-var keys" figure
-  # originally cited here (PR #515 / DECISIONS.md 2026-07-16) was a FALSE
-  # POSITIVE — the guard's own detection logic grouped by key alone, without
-  # accounting for Coolify's separate Production/Preview-Deployments env-var
-  # scopes (`is_preview` field). All 19 were legitimate distinct
-  # production-vs-preview value pairs, not stale duplicates. Fixed in
-  # check-coolify-env-duplicates.yml (groups by key+is_preview now) — see
-  # DECISIONS.md 2026-07-17. Kept non-blocking (`mode: report`) regardless,
-  # since a genuine duplicate could still exist and hasn't been re-checked
-  # against the corrected logic yet.
+  # HISTORY, kept for the record: originally shipped `mode: report`
+  # (non-blocking) because a since-corrected detection bug reported a false
+  # "19 duplicate env-var keys" finding (PR #515 / DECISIONS.md 2026-07-16)
+  # — the guard grouped by key alone, without accounting for Coolify's
+  # separate Production/Preview-Deployments env-var scopes (`is_preview`
+  # field). Fixed in check-coolify-env-duplicates.yml (groups by
+  # key+is_preview now) and re-verified clean against real `ops-hub-staging`
+  # AND `ops-hub-prod` post-fix (DECISIONS.md 2026-07-17) — no pre-existing
+  # mess to clean up, so flipping to blocking has zero deploy impact today.
+  # A genuine future duplicate (the real Coolify UI-Save-appends-a-row
+  # footgun this guard exists to catch) will now actually stop a deploy
+  # instead of only logging a warning.
   #
   # `continue-on-error` is NOT used here — a caller job invoking a reusable
   # workflow via `uses:` does not support that key (GitHub rejects the whole
   # workflow file as invalid at parse time if it's present; caught by
   # independent Tech Lead review before this shipped, see DECISIONS.md
-  # 2026-07-16). `mode: report` is the mechanism instead — the guard's own
-  # job always exits 0 in that mode, printing an ::error:: annotation on any
-  # duplicate without failing this job or blocking `deploy`.
-  # This job still runs and reports on every deploy (visibility now); flip
-  # to blocking (`mode: block`, add `needs: guard` on `deploy` below) once a
-  # re-check against the corrected logic confirms the target app is clean.
+  # 2026-07-16). `mode: block` makes the guard job itself fail (non-zero
+  # exit) on a real duplicate; `needs: guard` on `deploy` is what actually
+  # stops the deploy from proceeding.
   guard:
-    name: Pre-deploy — Coolify duplicate env-var guard (report-only for now, see comment above)
+    name: Pre-deploy — Coolify duplicate env-var guard (blocking)
     uses: ./.github/workflows/check-coolify-env-duplicates.yml
     with:
       app_uuid: "ajqplom2mghf5a8h6vf1q6xg"
       app_label: "ops-hub-staging"
-      mode: report
+      mode: block
     secrets:
       COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
 
   deploy:
     name: Build & Deploy to Coolify Staging
+    needs: guard
     runs-on: ubuntu-latest
 
     env:

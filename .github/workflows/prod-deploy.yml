@@ -56,36 +56,40 @@ jobs:
   # manual Coolify UI step (or a scoped dedupe workflow, e.g. t104-dedupe-
   # and-restart-opshub-prod.yml), not automated here.
   #
-  # NON-BLOCKING FOR NOW (`continue-on-error: true`, no `needs:` on `deploy`):
-  # T-122's live verification found ops-hub-STAGING currently has 19
-  # duplicate env-var keys (see main-deploy.yml's guard job comment / PR #515
-  # / DECISIONS.md 2026-07-16) — ops-hub-PROD has NOT yet been verified live
-  # the same way (this repo's new-workflow-file limitation means only a
-  # staging self-test could run pre-merge; a real prod check needs a
-  # workflow_dispatch run after this merges). Given staging's real count,
-  # assuming prod is clean without checking would violate this project's own
-  # "verified, not assumed clean" norm — so this stays report-only until
-  # someone dispatches check-coolify-env-duplicates.yml against ops-hub-prod
-  # post-merge and confirms it's clean, at which point flip this to blocking
-  # (`mode: block`, add `needs: guard` on `deploy` below).
+  # NOW BLOCKING (`mode: block`, `deploy` below has `needs: guard`).
+  #
+  # HISTORY, kept for the record: originally shipped `mode: report`
+  # (non-blocking) — T-122's initial live verification found what was
+  # believed to be 19 duplicate env-var keys on ops-hub-staging (PR #515 /
+  # DECISIONS.md 2026-07-16), and ops-hub-prod hadn't yet been checked live
+  # at merge time, so this stayed non-blocking per this project's "verified,
+  # not assumed clean" norm. Both turned out moot: the "19 duplicates" was a
+  # detection bug (grouped by key alone, missing Coolify's separate
+  # Production/Preview-Deployments `is_preview` scopes — fixed in
+  # check-coolify-env-duplicates.yml), and a direct post-fix check confirmed
+  # ops-hub-prod itself is genuinely clean too (DECISIONS.md 2026-07-17,
+  # run 29551910778). No pre-existing mess — flipping to blocking has zero
+  # deploy impact today; it only fires on a genuine future duplicate.
   #
   # `continue-on-error` is NOT used here — a caller job invoking a reusable
   # workflow via `uses:` does not support that key (GitHub rejects the whole
   # workflow file as invalid at parse time if it's present; caught by
   # independent Tech Lead review before this shipped, see DECISIONS.md
-  # 2026-07-16). `mode: report` is the mechanism instead.
+  # 2026-07-16). `mode: block` makes the guard job itself fail on a real
+  # duplicate; `needs: guard` on `deploy` is what stops the promotion.
   guard:
-    name: Pre-deploy — Coolify duplicate env-var guard (report-only for now, see comment above)
+    name: Pre-deploy — Coolify duplicate env-var guard (blocking)
     uses: ./.github/workflows/check-coolify-env-duplicates.yml
     with:
       app_uuid: "sbke5gqru1n54rj7gssgca2y"
       app_label: "ops-hub-prod"
-      mode: report
+      mode: block
     secrets:
       COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
 
   deploy:
     name: Promote to ops-hub-prod
+    needs: guard
     runs-on: ubuntu-latest
 
     env:
