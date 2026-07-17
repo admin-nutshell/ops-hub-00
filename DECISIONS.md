@@ -9625,3 +9625,80 @@ lesson from today's earlier Coolify false-positive incident.
    already merged, not reverted -- G6's own audit-trail work is correct
    and wanted, only the bundled CODEOWNERS commit was the problem)
 ```
+
+### 2026-07-17 — T-90 O1-O3 hardening built; discovered a real, PRE-EXISTING, unrelated litellm-staging database schema issue blocking live key-provisioning verification (not caused by this session's changes, confirmed by testing the unmodified `main` version too)
+
+```
+2026-07-17 [Coordinator] Went to fix T-90's three known hardening gaps
+in .github/workflows/provision-litellm-eval-key.yml (LITELLM_EVAL_KEY,
+the CI eval-gate credential):
+
+O1 (raw key in a URL query string) -- confirmed ALREADY fixed in the
+T-96 rewrite (grep found zero remaining ?key= usage). No action needed.
+
+O2 (soft_budget readback always empty) -- root-caused against a REAL
+past run's own logged /key/info response (run 29179933873, 2026-07-12),
+not guessed: LiteLLM nests it at .info.litellm_budget_table.soft_budget,
+not .info.soft_budget as the old jq path assumed. Fixed the path, added
+a real numeric assertion (previously only echoed, never gated), and
+restored the alert-delivery-channel check that existed in T-90's
+original build (git history bdc1f51) but was silently dropped in the
+T-96 rewrite.
+
+O3 (key never expires) -- added `duration: "90d"` to the /key/generate
+payload (a field distinct from budget_duration, which only resets the
+spend counter, not the key's own lifetime) and a hard assertion that
+the stored `expires` field is actually set post-registration. Field
+name confirmed against the same real historical /key/info response
+(showed `"expires": null` before this fix).
+
+ATTEMPTED LIVE VERIFICATION, HIT A REAL UNRELATED BLOCKER: dispatched
+the fixed workflow against its own branch (GitHub allows dispatching an
+existing workflow's non-default-branch ref, unlike a brand-new
+workflow file) to prove the fix end-to-end against real
+litellm-staging. It failed at POST /key/generate with HTTP 500:
+"The column LiteLLM_VerificationToken.budget_fallbacks does not exist
+in the current database." To rule out this session's own changes as
+the cause before assuming anything, dispatched the UNMODIFIED workflow
+already live on `main` (run 29553917009) against the same target --
+it failed with the IDENTICAL error. This conclusively confirms: this is
+a genuine, PRE-EXISTING litellm-staging infrastructure problem (the
+running LiteLLM proxy application version expects a database column
+that was never migrated in), completely unrelated to today's O1-O3
+fix, and it was already silently broken before this session touched it.
+
+SEVERITY ASSESSED, NOT ASSUMED: this error is scoped to LiteLLM's
+key-MANAGEMENT code path (/key/generate, and by extension /key/delete
+per the same run's pre-register-delete step also returning HTTP 500).
+It is very unlikely to affect the live customer-facing ticket pipeline
+-- ticket-triage/-respond/kb-learn all call /chat/completions using an
+ALREADY-REGISTERED key, a different code path that has no evident
+reason to touch a key-creation-time budget_fallbacks column. Checked a
+real prod ticket (via check-recent-prod-tickets.yml, run 29553961333)
+to sanity-check: found a real, already-processed ticket in a
+`resolved` state -- consistent with, though not dispositive proof of,
+live triage continuing to function normally. A more definitive live
+chat-completions probe was not run this session (diagnose-litellm.yml
+failed on an unrelated, older script bug -- a multi-app-name-collision
+parsing issue, not informative here, not chased further).
+
+NOT FIXED HERE, DELIBERATELY: this is LiteLLM's own database schema --
+fixing it means either a manual migration (columns this session has no
+visibility into the correct DDL for) or a LiteLLM proxy version
+change/rollback, both real infrastructure actions with a materially
+different risk profile than this session's read-only checks and
+workflow-file edits. Flagged to the user directly rather than guessed
+at. This session's T-90 hardening PR itself is logically complete and
+individually verified (the jq paths and payload field were confirmed
+against real historical API responses, not invented) but could not be
+proven end-to-end live due to this separate, pre-existing blocker --
+stated honestly in the PR rather than claimed as fully proven.
+
+-> .github/workflows/provision-litellm-eval-key.yml (O2/O3 fixed, PR
+   open, not self-merged) ; runs 29553877059 (my branch, failed on the
+   pre-existing DB issue) / 29553917009 (unmodified main, same failure,
+   proves it's pre-existing) / 29553961333 (recent-tickets sanity check,
+   success) ; litellm-staging DB schema issue itself -- NOT fixed,
+   flagged to the user, no PR filed (nothing to file yet without a
+   diagnosed correct migration)
+```
