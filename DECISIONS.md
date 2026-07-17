@@ -9437,3 +9437,43 @@ banked comment; normalized-red risk once `pull_request` self-test permanently sh
 actually lands. -> `.github/workflows/check-coolify-env-duplicates.yml` (mode input
 added) ; `.github/workflows/main-deploy.yml` / `prod-deploy.yml` (continue-on-error
 removed, mode: report added) ; PR #515
+```
+
+### 2026-07-17 — T-122 post-merge confirmation: `ops-hub-prod` ALSO has 19 duplicate env-var keys, identical set to staging — flagged to the user, cleanup not attempted (touches live production secrets)
+
+```
+2026-07-17 [Coordinator] Post-merge follow-up named in T-122/PR #515's own
+row: the wired caller path had only been proven via the pull_request
+self-test (staging-only, for blast-radius safety). Dispatched the merged
+check-coolify-env-duplicates.yml workflow directly against ops-hub-prod
+(workflow_dispatch, app=ops-hub-prod) -- read-only, no mutation, matches
+the diagnostic-readonly approved autonomy category.
+
+RESULT: run 29550972288 -- ops-hub-prod has 19 duplicate env-var keys,
+the exact same count and largely the same key set as ops-hub-staging
+(AGENT_COST_SYNC_ENABLED, FREESCOUT_BOT_USER_ID, FREESCOUT_DB_URL,
+INNGEST_EVENT_KEY, INNGEST_SIGNING_KEY, LANGFUSE_PUBLIC_KEY,
+LANGFUSE_SECRET_KEY, LITELLM_EXTERNAL_URL, LITELLM_FALLBACK_MODEL,
+LITELLM_KBLEARN_MODEL, LITELLM_MASTER_KEY, LITELLM_RESPOND_MODEL,
+LITELLM_TRIAGE_MODEL, NVIDIA_API_KEY, OPS_HUB_APP_LOGIN_URL,
+POLLING_ENABLED, POLLING_PROJECT_ID, POLLING_TENANT_ID, SENTRY_DSN).
+
+SIGNIFICANCE: this is the first live confirmation the append-not-upsert
+Coolify footgun affects PRODUCTION, not just staging -- prior sessions'
+manual coolify-db audits caught individual dup-row incidents (T-104's
+LITELLM_URL) but this is the first systematic, complete accounting for
+prod. Real secrets are duplicated (LITELLM_MASTER_KEY, INNGEST_SIGNING_KEY,
+NVIDIA_API_KEY) -- Coolify's runtime silently uses whichever row wins
+(empirically the last), so today's actual production behavior is not
+provably wrong, but it is unverified and undocumented which row is live
+for each key, with no warning if that ever silently flips (e.g. on a
+future Coolify UI edit that appends yet another row).
+
+NOT ACTED ON: cleanup (deleting the stale row per key) was not attempted.
+This touches live production secrets/credentials -- explicitly out of
+scope for read-only detection work, and a materially different risk class
+than the equivalent staging cleanup already flagged as agent-owned.
+Flagged directly and prominently to the user rather than only banked here.
+
+-> run 29550972288 ; WORK.md T-122 row (updated with prod finding)
+```
