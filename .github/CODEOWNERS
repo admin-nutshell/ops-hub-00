@@ -1,13 +1,30 @@
-# CODEOWNERS — GitHub-enforced review requirement
+# CODEOWNERS — routes founder-only paths to review (see CORRECTION below
+# for its real enforcement status today)
 #
 # GitHub's CODEOWNERS mechanism only understands real GitHub accounts, not
 # the 11 Claude Code agent personas (they have no GitHub identity of their
 # own -- see .claude/agents/README.md). So this file is scoped narrowly and
 # deliberately: it only routes the paths that AUTONOMY.md marks
 # `founder-only` (money, legal, security-toggle, and any edit to the
-# governance rules themselves) to the founder's own account, giving those
-# specific categories a REAL, GitHub-enforced human-review gate that cannot
-# be bypassed by a self-merge.
+# governance rules themselves) to the founder's own account.
+#
+# CORRECTION (2026-07-16, Security Lead review, FQ-78): this file's header
+# originally claimed these paths get "a REAL, GitHub-enforced human-review
+# gate that cannot be bypassed by a self-merge." That is NOT true as this
+# repo's branch protection stands today -- GitHub only enforces CODEOWNERS
+# when `require_code_owner_reviews` is on (`branches/main/protection`
+# confirms it is currently `false`; `required_approving_review_count` is
+# also `0`, set that way in DECISIONS.md 2026-06-21 because self-approval
+# is structurally impossible in this single-account repo). As shipped, this
+# file provides ADVISORY routing and visibility (who a founder-only-path PR
+# should be reviewed by) -- not a blocking gate. Flipping
+# `require_code_owner_reviews` on would be a separate, founder-only future
+# decision, and it is not a trivial flip: this repo's own account
+# (@admin-nutshell) is both the sole founder-account owner AND every PR
+# author, and GitHub forbids self-approval -- turning enforcement on today
+# would deadlock every founder-only-path PR shut, not protect it. That
+# problem needs its own design (e.g. a second reviewing identity) before
+# enforcement is viable; not attempted in this PR.
 #
 # Everything else in this repo is deliberately NOT listed here. Specialist
 # review (Security Lead on a migration, Evals Lead on a prompt change, etc.)
