@@ -1,0 +1,15 @@
+{
+  "name": "ops-hub-connector",
+  "url": "https://ops-hub-staging.inatechshell.ca",
+  "description": "In a Tech-Shell Ops Hub connector — S1 read-only foundation. Reads repo contents, PRs, checks, statuses, and security events for connected product repos. No write permissions in S1; contents:write is a deliberate later-sprint escalation gated on the fix-author agent existing. No webhooks in S1 (default_events intentionally empty; no webhook consumer is built this sprint). redirect_url is a placeholder: ops-hub has no public OAuth callback endpoint yet — edit before using the manifest POST flow, or ignore it entirely when creating the App manually in the UI.",
+  "public": false,
+  "redirect_url": "https://example.com/REPLACE-ME-no-oauth-callback-endpoint-exists-yet",
+  "default_permissions": {
+    "contents": "read",
+    "pull_requests": "read",
+    "checks": "read",
+    "statuses": "read",
+    "security_events": "read"
+  },
+  "default_events": []
+}
