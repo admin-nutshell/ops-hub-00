@@ -19,7 +19,8 @@ import {
   getCurrentSlaConfig,
   getFeatureFlags,
 } from "../../src/metrics/dashboard";
-import { DASHBOARD_PROJECT_ID, DASHBOARD_TENANT_ID } from "./project";
+import { getRepoSnapshotView } from "../../src/metrics/repoInspect";
+import { DASHBOARD_PROJECT_ID, DASHBOARD_TENANT_ID, DASHBOARD_PRODUCT_ID } from "./project";
 
 // Same connection convention as every Inngest function in this codebase:
 // createLazyPool(envVar) — lazily constructs a `pg` Pool the first time it's
@@ -77,3 +78,8 @@ export const loadCurrentSlaConfig = () =>
   getCurrentSlaConfig(pool(), DASHBOARD_PROJECT_ID, DASHBOARD_TENANT_ID);
 
 export const loadFeatureFlags = () => getFeatureFlags(pool(), DASHBOARD_PROJECT_ID);
+
+// Product-domain reboot (S1) — repo-inspection panel read. Bound to
+// DASHBOARD_PRODUCT_ID (a separate axis from DASHBOARD_PROJECT_ID/
+// DASHBOARD_TENANT_ID above; see web/lib/project.ts's doc comment).
+export const loadRepoSnapshotView = () => getRepoSnapshotView(pool(), DASHBOARD_PRODUCT_ID);

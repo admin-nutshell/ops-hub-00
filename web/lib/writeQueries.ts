@@ -11,6 +11,7 @@ import {
   isTrustedOrigin,
   parseAllowedOrigins,
   resolveWriteScope,
+  resolveProductWriteScope,
   type OriginCheckInput,
 } from "../../src/http/dashboardWriteGuards";
 import {
@@ -23,6 +24,7 @@ import {
   SettingsWriteError,
   ValidationError,
 } from "../../src/metrics/settingsWrite";
+import { triggerRepoInspect } from "../../src/metrics/repoInspect";
 
 export { SettingsWriteError, ValidationError };
 
@@ -51,6 +53,13 @@ class ScopeUnavailableError extends SettingsWriteError {
   }
 }
 
+class ProductScopeUnavailableError extends SettingsWriteError {
+  constructor() {
+    super("dashboard product write scope is not configured (DASHBOARD_PRODUCT_ID unset)", 503);
+    this.name = "ProductScopeUnavailableError";
+  }
+}
+
 export type RequestOriginInfo = Pick<OriginCheckInput, "originHeader" | "refererHeader" | "requestHost">;
 
 function assertTrustedOrigin(origin: RequestOriginInfo): void {
@@ -67,6 +76,14 @@ function requireScope() {
   const scope = resolveWriteScope();
   if (!scope) {
     throw new ScopeUnavailableError();
+  }
+  return scope;
+}
+
+function requireProductScope() {
+  const scope = resolveProductWriteScope();
+  if (!scope) {
+    throw new ProductScopeUnavailableError();
   }
   return scope;
 }
@@ -90,4 +107,15 @@ export async function writeFeatureFlagToggle(rawPayload: unknown, origin: Reques
   const scope = requireScope();
   const input = validateFeatureFlagInput(rawPayload);
   return toggleFeatureFlag(pool(), { projectId: scope.projectId }, input);
+}
+
+// Product-domain reboot (S1) — dispatches ops-hub/repo.inspect.requested for
+// the dashboard's configured pilot product. No request body (no client input
+// at all — the product id is server-pinned, never client-supplied) and no
+// DB pool: see triggerRepoInspect's doc comment for why this path never
+// touches the database directly.
+export async function triggerRepoInspectRequest(origin: RequestOriginInfo) {
+  assertTrustedOrigin(origin);
+  const scope = requireProductScope();
+  return triggerRepoInspect(scope.productId);
 }
