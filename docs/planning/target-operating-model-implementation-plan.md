@@ -56,6 +56,18 @@ below).
 `AUTONOMY.md` names its own unlock conditions. This section is the authoritative
 cross-reference — do not let the two documents drift.
 
+**A second drift risk, named by Tech Lead review (PR #501, 2026-07-16):**
+`.github/CODEOWNERS` routes `AUTONOMY.md`'s `founder-only` file-shaped paths
+(`AUTONOMY.md`, `CONSTITUTION.md`, `.coderabbit.yaml`, `/CLAUDE.md`,
+`CODEOWNERS` itself) to the founder's account — but nothing keeps the two
+files in sync automatically. If a future `AUTONOMY.md` edit adds a new
+`founder-only` file-shaped category, `CODEOWNERS` needs a matching entry, or
+the routing quietly falls behind what the policy actually says. Low severity
+in practice (any `AUTONOMY.md` edit is itself `meta-governance-edit` —
+founder + Security Lead + Tech Lead gated — which is a natural place to also
+check CODEOWNERS), but worth checking explicitly whenever `AUTONOMY.md`'s
+`founder-only` list changes.
+
 | AUTONOMY.md category | Gate (verbatim from AUTONOMY.md) | Phase | Status |
 |---|---|---|---|
 | `dependency-bump-ci-green` | Dependabot + pnpm audit CI step exists and is green (Phase 0) | 0 | ✅ **Gate exists → category auto-transitioned to `approved`** (G3/PR #502 merged). No AUTONOMY.md edit needed — the transition is automatic per the file's own §"Machine-readable policy block" rule. |
