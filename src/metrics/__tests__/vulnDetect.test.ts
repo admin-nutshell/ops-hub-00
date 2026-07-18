@@ -12,7 +12,7 @@ import { getVulnFindingsView, triggerVulnDetect, VulnDetectDispatchError } from 
 
 const PRODUCT_ID = "8bafa6a6-4d80-4983-89bc-e536d3dba672";
 
-function txn(rows: Record<string, unknown>[], latest: string | null) {
+function txn(rows: Record<string, unknown>[], latest: Date | null) {
   return [
     { rows: [] }, // BEGIN
     { rows: [] }, // set_config product
@@ -37,7 +37,13 @@ describe("getVulnFindingsView", () => {
     });
   });
 
-  it("returns findings ordered as given by the query, with package_name extracted from detail", async () => {
+  it("returns findings ordered as given by the query, with package_name extracted from detail, and timestamps converted to ISO-8601 strings", async () => {
+    // pg returns real Date objects for these columns now (no ::text cast in
+    // the query — see vulnDetect.ts's comment on why), so the mocked rows
+    // mirror that: real Date objects in, .toISOString() strings out. This is
+    // also why these input timestamps carry no milliseconds (matching a
+    // realistic pg Date) while the expected output does (.toISOString()
+    // always emits them).
     const rows = [
       {
         id: "f1",
@@ -45,8 +51,8 @@ describe("getVulnFindingsView", () => {
         title: "js-yaml: DoS",
         package_name: "js-yaml",
         state: "detected",
-        created_at: "2026-07-17T10:00:00Z",
-        updated_at: "2026-07-17T10:00:00Z",
+        created_at: new Date("2026-07-17T10:00:00Z"),
+        updated_at: new Date("2026-07-17T10:00:00Z"),
       },
       {
         id: "f2",
@@ -54,11 +60,11 @@ describe("getVulnFindingsView", () => {
         title: "codeql-rule: something",
         package_name: null,
         state: "triaged",
-        created_at: "2026-07-16T10:00:00Z",
-        updated_at: "2026-07-17T11:00:00Z",
+        created_at: new Date("2026-07-16T10:00:00Z"),
+        updated_at: new Date("2026-07-17T11:00:00Z"),
       },
     ];
-    const client = makeClient(txn(rows, "2026-07-17T11:00:00Z"));
+    const client = makeClient(txn(rows, new Date("2026-07-17T11:00:00Z")));
     const pool = makePool(client);
     await expect(getVulnFindingsView(pool, PRODUCT_ID)).resolves.toEqual({
       status: "ready",
@@ -69,8 +75,8 @@ describe("getVulnFindingsView", () => {
           title: "js-yaml: DoS",
           packageName: "js-yaml",
           state: "detected",
-          createdAt: "2026-07-17T10:00:00Z",
-          updatedAt: "2026-07-17T10:00:00Z",
+          createdAt: "2026-07-17T10:00:00.000Z",
+          updatedAt: "2026-07-17T10:00:00.000Z",
         },
         {
           id: "f2",
@@ -78,11 +84,11 @@ describe("getVulnFindingsView", () => {
           title: "codeql-rule: something",
           packageName: null,
           state: "triaged",
-          createdAt: "2026-07-16T10:00:00Z",
-          updatedAt: "2026-07-17T11:00:00Z",
+          createdAt: "2026-07-16T10:00:00.000Z",
+          updatedAt: "2026-07-17T11:00:00.000Z",
         },
       ],
-      latestUpdatedAt: "2026-07-17T11:00:00Z",
+      latestUpdatedAt: "2026-07-17T11:00:00.000Z",
     });
   });
 

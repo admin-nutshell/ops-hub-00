@@ -79,8 +79,8 @@ type FindingRow = {
   title: string;
   package_name: string | null;
   state: string;
-  created_at: string;
-  updated_at: string;
+  created_at: Date;
+  updated_at: Date;
 };
 
 // Bounded default — this is a dashboard summary panel, not a full triage
@@ -123,10 +123,19 @@ export async function getVulnFindingsView(
 
     let result: VulnFindingsView;
     try {
+      // created_at/updated_at are left as native timestamptz (no ::text cast
+      // — contrast getRepoSnapshotView's fetched_at::text) so pg's driver
+      // hands back real JS Date objects here, which are then converted with
+      // .toISOString() below. A SQL-side ::text cast produces Postgres's own
+      // "ISO" DateStyle output (space-separated, +00 offset, e.g. "2026-07-17
+      // 10:00:00+00") — not the strict, DateStyle-independent ISO-8601
+      // JS/JSON expect (e.g. "2026-07-17T10:00:00.000Z") — so converting in
+      // JS is the only way to guarantee the format this view's `string`
+      // fields promise, regardless of the server's configured DateStyle.
       const { rows } = await client.query<FindingRow>(
         `SELECT id, severity, title,
                 detail -> 'dependency' -> 'package' ->> 'name' AS package_name,
-                state, created_at::text, updated_at::text
+                state, created_at, updated_at
            FROM findings
           WHERE product_id = $1 AND finding_type = 'vuln'
           ORDER BY CASE severity
@@ -141,8 +150,8 @@ export async function getVulnFindingsView(
         [productId]
       );
 
-      const { rows: latestRows } = await client.query<{ latest: string | null }>(
-        `SELECT max(updated_at)::text AS latest
+      const { rows: latestRows } = await client.query<{ latest: Date | null }>(
+        `SELECT max(updated_at) AS latest
            FROM findings
           WHERE product_id = $1 AND finding_type = 'vuln'`,
         [productId]
@@ -156,10 +165,10 @@ export async function getVulnFindingsView(
           title: row.title,
           packageName: row.package_name,
           state: row.state,
-          createdAt: row.created_at,
-          updatedAt: row.updated_at,
+          createdAt: row.created_at.toISOString(),
+          updatedAt: row.updated_at.toISOString(),
         })),
-        latestUpdatedAt: latestRows[0]?.latest ?? null,
+        latestUpdatedAt: latestRows[0]?.latest?.toISOString() ?? null,
       };
     } catch (err) {
       if (!isUndefinedTable(err)) throw err;
