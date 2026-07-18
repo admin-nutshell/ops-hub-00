@@ -25,6 +25,7 @@ import {
   ValidationError,
 } from "../../src/metrics/settingsWrite";
 import { triggerRepoInspect } from "../../src/metrics/repoInspect";
+import { triggerVulnDetect } from "../../src/metrics/vulnDetect";
 
 export { SettingsWriteError, ValidationError };
 
@@ -118,4 +119,15 @@ export async function triggerRepoInspectRequest(origin: RequestOriginInfo) {
   assertTrustedOrigin(origin);
   const scope = requireProductScope();
   return triggerRepoInspect(scope.productId);
+}
+
+// Product-domain reboot (S2) — dispatches ops-hub/vuln.detect.requested for
+// the dashboard's configured pilot product. Same shape as
+// triggerRepoInspectRequest above (no request body, product id server-pinned
+// via resolveProductWriteScope, no DB pool — see triggerVulnDetect's doc
+// comment for why this path never touches the database directly).
+export async function triggerVulnDetectRequest(origin: RequestOriginInfo) {
+  assertTrustedOrigin(origin);
+  const scope = requireProductScope();
+  return triggerVulnDetect(scope.productId);
 }
