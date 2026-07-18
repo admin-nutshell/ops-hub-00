@@ -44,10 +44,13 @@ create table fix_attempts (
   diff_ref         text,                      -- pointer to the sandbox run's diff artifact —
                                                -- NEVER the inline diff content (see file header).
                                                -- NULL until the sandbox run completes.
-  eval_score       numeric,                   -- fix-quality rubric score (grader model !=
+  eval_score       numeric check (eval_score is null or (eval_score >= 0 and eval_score <= 1)),
+                                               -- fix-quality rubric score (grader model !=
                                                -- author model, same discipline as the live
-                                               -- eval gate); NULL until graded.
-  cost_usd         numeric,                   -- NULL until the attempt completes and cost is
+                                               -- eval gate); NULL until graded. Scaled 0-1,
+                                               -- same convention as eval_gate_case_results.
+  cost_usd         numeric check (cost_usd is null or cost_usd >= 0),
+                                               -- NULL until the attempt completes and cost is
                                                -- known (mirrors agent_cost_events' own pattern
                                                -- of recording cost after the fact).
   created_at       timestamptz not null default now(),
@@ -62,8 +65,11 @@ create table fix_attempts (
   unique (product_id, id)
 );
 
-create index fix_attempts_finding_id_idx on fix_attempts (finding_id);
-create index fix_attempts_status_idx     on fix_attempts (status);
+create index fix_attempts_finding_id_idx    on fix_attempts (finding_id);
+-- Composite, not single-column: every real query is RLS-scoped by product_id
+-- first, so (product_id, status) serves the actual query plan; the bare
+-- unique(product_id, id) above doesn't cover a status-filtered lookup.
+create index fix_attempts_product_status_idx on fix_attempts (product_id, status);
 
 comment on table fix_attempts is
   'One sandboxed attempt at fixing a finding (S3). The sandbox that produces diff_ref holds '
@@ -85,7 +91,7 @@ create table pull_requests (
   id                 uuid primary key default gen_random_uuid(),
   product_id         uuid not null references products(id) on delete restrict,
   fix_attempt_id     uuid not null,
-  github_pr_number   integer not null,
+  github_pr_number   integer not null check (github_pr_number > 0),
   branch             text not null,
   state              text not null default 'draft'
                        check (state in (
@@ -112,7 +118,9 @@ create table pull_requests (
   unique (product_id, github_pr_number)
 );
 
-create index pull_requests_state_idx on pull_requests (state);
+-- Composite, not single-column — same RLS-scoped-query-plan rationale as
+-- fix_attempts_product_status_idx above.
+create index pull_requests_product_state_idx on pull_requests (product_id, state);
 
 create trigger fix_attempts_set_updated_at
   before update on fix_attempts
