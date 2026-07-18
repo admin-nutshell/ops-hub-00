@@ -4,7 +4,8 @@
 -- *** SECURITY LEAD REVIEW REQUIRED (matches the 20260717120100/20260717160100
 -- precedent) ***
 -- Forward-only. Companion to 20260718120100_s3_fix_attempts_pull_requests_schema.sql.
--- Requires that migration (and its own prerequisite, 20260718120000) applied first.
+-- Requires that migration (and its own prerequisites, 20260718115900 and
+-- 20260718120000) applied first.
 --
 -- Same enforcement model as every prior S1/S2 product-scoped table: fail-closed
 -- `using (product_id = current_product_id())`, non-superuser `ops_hub_app` role

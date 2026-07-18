@@ -9,8 +9,11 @@
 -- tenants, projects, audit_log, feature_flags, kb_articles, or any S1/S2
 -- table's existing data.
 --
--- Requires 20260718120000_s3_findings_composite_unique.sql applied first
--- (fix_attempts' composite FK to findings depends on that constraint).
+-- Requires 20260718115900_s3_findings_composite_unique_index.sql and
+-- 20260718120000_s3_findings_composite_unique_constraint.sql applied first,
+-- in that order (fix_attempts' composite FK to findings depends on that
+-- constraint; it's built in two steps to avoid locking the live findings
+-- table — see that pair's headers).
 --
 -- RLS policies land in the companion migration
 -- 20260718120200_s3_fix_attempts_pull_requests_rls_policies.sql, reviewed
