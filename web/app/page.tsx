@@ -12,13 +12,27 @@ import { TicketQueue } from "../components/TicketQueue";
 import { PipelinePanel } from "../components/PipelinePanel";
 import { SystemHealthPanel } from "../components/SystemHealthPanel";
 import { PlatformIncidentsPanel } from "../components/PlatformIncidentsPanel";
+import { RepoInspectPanel } from "../components/RepoInspectPanel";
+import { VulnFindingsPanel } from "../components/VulnFindingsPanel";
 import { CardSkeleton, PanelSkeleton } from "../components/Skeleton";
+
+// Force dynamic rendering — same reasoning as settings/page.tsx's identical
+// directive (read it there for the full incident writeup): RepoInspectPanel
+// reads via `pg` directly (no `fetch()` call), and its client-side polling
+// (RepoInspectTrigger's router.refresh()) is only useful if every refresh
+// actually re-runs the query instead of re-serving a build-time snapshot.
+// Before this page relied entirely on TopBar's `no-store` fetch to force
+// dynamic rendering as a side effect — an incidental guarantee this panel
+// must not inherit silently, per the exact lesson that incident documents.
+export const dynamic = "force-dynamic";
 
 // Read-only MVP (T-59, Sprint 6). Every widget below is its own async Server
 // Component wrapped in <Suspense> so slow/failing queries never block or
 // blank the rest of the page — each streams and fails independently. Sprint 7
 // (T-75) adds a Settings screen alongside this one (see NavTabs) — this page
-// itself stays read-only; nothing here writes.
+// itself stays read-only; nothing here writes except RepoInspectPanel's (S1)
+// and VulnFindingsPanel's (S2) trigger buttons — both only send an Inngest
+// event, never touch this page's own DB reads.
 export default function DashboardPage() {
   return (
     <main className="mx-auto flex max-w-[1320px] flex-col gap-[30px] px-8 pt-8 pb-[72px]">
@@ -63,6 +77,14 @@ export default function DashboardPage() {
           </Suspense>
         </div>
       </section>
+
+      <Suspense fallback={<PanelSkeleton rows={6} />}>
+        <RepoInspectPanel />
+      </Suspense>
+
+      <Suspense fallback={<PanelSkeleton rows={6} />}>
+        <VulnFindingsPanel />
+      </Suspense>
     </main>
   );
 }

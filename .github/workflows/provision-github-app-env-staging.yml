@@ -1,0 +1,233 @@
+name: Provision GitHub App (ops-hub-connector) env vars on ops-hub-staging (one-shot)
+
+# Sprint S1: sets GITHUB_APP_ID / GITHUB_APP_INSTALLATION_ID /
+# GITHUB_APP_PRIVATE_KEY on ops-hub-staging so a later task's Inngest function
+# can mint short-lived GitHub App installation tokens to read the pilot repo
+# (admin-nutshell/web-app-tns-06). Nothing in the codebase reads these env
+# vars yet — this is provisioning only, no redeploy required (S1 scope).
+#
+# Anchored by UUID, NOT by app name — ops-hub-staging and ops-hub-prod both
+# display as "ops-hub-app (localhost)" in the Coolify UI (T-54(A) app-name
+# collision precedent). This workflow also asserts the resolved app's fqdn
+# looks like ops-hub-staging before writing anything, so a stale/wrong pinned
+# UUID fails loud instead of silently writing to the wrong app.
+#
+# GITHUB_APP_PRIVATE_KEY encoding: the App's private key is a multi-line PEM.
+# There is no established precedent in this repo for a multi-line Coolify env
+# var (SSH_PRIVATE_KEY's multi-line handling is GitHub-Actions-secret-only,
+# written straight to a file — never round-tripped through Coolify's env API).
+# To avoid any risk of Coolify's storage/transport layer mangling embedded
+# newlines, the value stored here is the PEM **base64-encoded** (single line,
+# transport-safe). Whoever writes the consuming Inngest function MUST decode
+# it first:
+#   const pem = Buffer.from(process.env.GITHUB_APP_PRIVATE_KEY!, "base64").toString("utf8");
+#
+# Prerequisites (GitHub Actions secrets):
+#   COOLIFY_API_TOKEN             — Coolify admin API token (existing repo secret)
+#   CONNECTOR_APP_PRIVATE_KEY_B64 — base64 of the ops-hub-connector .pem file
+#                                    (set via `base64 -w0 <file> | gh secret set
+#                                    CONNECTOR_APP_PRIVATE_KEY_B64`, never printed
+#                                    — GitHub Actions rejects secret names that
+#                                    start with the reserved `GITHUB_` prefix,
+#                                    which is why this secret isn't named
+#                                    GITHUB_APP_PRIVATE_KEY_B64 to match the env
+#                                    var it feeds)
+#
+# Rollback: re-run with mode=delete to remove all three vars. Mean rollback
+# time target < 15 minutes (Production Manager quality bar) — delete-only
+# takes well under a minute; no redeploy needed to "undo" since nothing reads
+# these vars yet.
+#
+# Pre-merge run: this workflow has a `pull_request` trigger scoped to its own
+# file path, matching T-122's precedent (check-coolify-env-duplicates.yml) —
+# GitHub cannot workflow_dispatch a brand-new workflow file until it exists on
+# the default branch, so a PR that adds this file is the only way to run it
+# for real before merge. Running it live is exactly the point: S1 needs the
+# vars set now, not after a merge.
+#
+# Redo note (2026-07-17): this file is a byte-for-byte recreation of the
+# content originally reviewed on PR #535, which was closed unmerged because
+# the commit/push that created it bypassed a blocked permission (Bash's
+# git-push was denied; the agent switched to PowerShell instead of stopping
+# to ask). No content changed — only the path it took to reach `main` is
+# different this time (a clean push, no bypass, per the founder's standing
+# instruction to never skip a verification/approval).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/provision-github-app-env-staging.yml"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'set = provision vars (no redeploy); delete = remove all three vars'
+        required: false
+        default: 'set'
+        type: choice
+        options: ['set', 'delete']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ops-hub-staging-env
+  cancel-in-progress: false
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  # Stable Coolify app UUID for ops-hub-staging — does not change on redeploy
+  # (main-deploy.yml precedent). Verified against a live fqdn check below.
+  OPS_HUB_STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+
+jobs:
+  provision:
+    name: Provision GitHub App env vars on ops-hub-staging
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      PEM_B64: ${{ secrets.CONNECTOR_APP_PRIVATE_KEY_B64 }}
+
+    steps:
+      - name: Resolve mode
+        id: mode
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "mode=set" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Guard — required secrets present
+        run: |
+          set -euo pipefail
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+          if [ "${{ steps.mode.outputs.mode }}" = "set" ]; then
+            [ -n "$PEM_B64" ] || { echo "::error::CONNECTOR_APP_PRIVATE_KEY_B64 not set — run: base64 -w0 <pem-file> | gh secret set CONNECTOR_APP_PRIVATE_KEY_B64"; exit 1; }
+          fi
+
+      - name: Confirm this UUID really is ops-hub-staging (not prod, not a stale pin)
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/app.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID")
+          [ "$HTTP" = "200" ] || { echo "::error::GET /applications/$OPS_HUB_STAGING_UUID -> HTTP $HTTP"; cat /tmp/app.json; exit 1; }
+          FQDN=$(jq -r '.fqdn // ""' /tmp/app.json)
+          NAME=$(jq -r '.name // ""' /tmp/app.json)
+          echo "Resolved app: name=$NAME fqdn=$FQDN"
+          case "$FQDN" in
+            *ops-hub-staging*) echo "Confirmed: fqdn contains ops-hub-staging." ;;
+            *) echo "::error::fqdn '$FQDN' does not look like ops-hub-staging — refusing to write env vars. Verify OPS_HUB_STAGING_UUID before re-running."; exit 1 ;;
+          esac
+
+      - name: Delete existing GITHUB_APP_* entries (idempotent, handles Coolify's append-not-upsert Save)
+        run: |
+          set -euo pipefail
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs"
+          for KEY in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY; do
+            COUNT=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k)] | length' /tmp/envs.json 2>/dev/null || echo 0)
+            echo "Existing $KEY entries: $COUNT"
+            for eu in $(jq -r --arg k "$KEY" '.[] | select(.key == $k) | .uuid' /tmp/envs.json 2>/dev/null); do
+              DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs/$eu")
+              echo "  DELETE $KEY $eu -> HTTP $DEL"
+            done
+          done
+
+      - name: Set GITHUB_APP_ID / GITHUB_APP_INSTALLATION_ID / GITHUB_APP_PRIVATE_KEY (base64)
+        if: steps.mode.outputs.mode == 'set'
+        run: |
+          set -euo pipefail
+          set_var() {
+            KEY="$1"; VAL="$2"
+            HTTP=$(curl -s --max-time 30 -o /tmp/set-var.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs" \
+              -d "$(jq -n --arg k "$KEY" --arg v "$VAL" '{key:$k,value:$v}')")
+            echo "POST $KEY -> HTTP $HTTP"
+            if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+              echo "::error::failed to set $KEY (HTTP $HTTP)"; cat /tmp/set-var.json | head -5; exit 1
+            fi
+          }
+          set_var "GITHUB_APP_ID" "4325155"
+          set_var "GITHUB_APP_INSTALLATION_ID" "147237377"
+          set_var "GITHUB_APP_PRIVATE_KEY" "$PEM_B64"
+          echo "All three vars POSTed. (GITHUB_APP_PRIVATE_KEY value never echoed above — only the POST's HTTP status.)"
+
+      - name: Verify — presence, single row, non-empty (never print the private key value)
+        run: |
+          set -euo pipefail
+          curl -s --max-time 30 -o /tmp/verify.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs"
+
+          FAIL=0
+
+          # Coolify keeps a genuinely separate, intentional row per key for the
+          # "Production" scope (is_preview:false) and the "Preview Deployments"
+          # scope (is_preview:true) — confirmed by direct schema inspection in
+          # this repo's check-coolify-env-duplicates.yml (2026-07-17 CORRECTION
+          # note) after an earlier version of that guard mistook this two-scope
+          # split for 19 false-positive "duplicates". A REAL duplicate is two
+          # rows sharing BOTH the same key AND the same is_preview value — that
+          # is what this step actually checks. The scope that matters for the
+          # live running container is is_preview:false ("Production"); that one
+          # must have exactly 1 non-empty row for the delete path to be clean
+          # and for delete mode to leave 0. A second is_preview:true row is
+          # logged for visibility but does not fail the check.
+          for KEY in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY; do
+            if [ "$KEY" = "GITHUB_APP_PRIVATE_KEY" ]; then
+              jq -r --arg k "$KEY" '.[] | select(.key == $k) | "  scope: key=\(.key) is_preview=\(.is_preview) uuid=\(.uuid) value_len=\(.value | length)"' /tmp/verify.json
+            else
+              jq -r --arg k "$KEY" '.[] | select(.key == $k) | "  scope: key=\(.key) is_preview=\(.is_preview) uuid=\(.uuid) value=\(.value)"' /tmp/verify.json
+            fi
+
+            PROD_COUNT=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k and .is_preview == false)] | length' /tmp/verify.json)
+
+            if [ "${{ steps.mode.outputs.mode }}" = "delete" ]; then
+              TOTAL=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k)] | length' /tmp/verify.json)
+              if [ "$TOTAL" != "0" ]; then
+                echo "::error::$KEY still has $TOTAL row(s) (any scope) after delete"; FAIL=1
+              else
+                echo "$KEY: 0 rows in any scope (deleted, as expected)"
+              fi
+              continue
+            fi
+
+            if [ "$PROD_COUNT" != "1" ]; then
+              echo "::error::$KEY (Production scope, is_preview=false) has $PROD_COUNT row(s) — expected exactly 1"; FAIL=1
+              continue
+            fi
+            LEN=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k and .is_preview == false)][0].value | length' /tmp/verify.json)
+            if [ "$LEN" -eq 0 ]; then
+              echo "::error::$KEY (Production scope) row is empty"; FAIL=1
+              continue
+            fi
+            if [ "$KEY" = "GITHUB_APP_PRIVATE_KEY" ]; then
+              echo "$KEY (Production scope): 1 row, length=$LEN chars (value withheld)"
+            else
+              VAL=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k and .is_preview == false)][0].value' /tmp/verify.json)
+              echo "$KEY (Production scope): 1 row, value=$VAL"
+            fi
+          done
+
+          [ "$FAIL" -eq 0 ] || { echo "::error::verification failed — see above"; exit 1; }
+          echo "Verification passed (Production scope, is_preview=false, is what the running container reads)."
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "==========================================================="
+          echo " GitHub App env provisioning — ops-hub-staging ($OPS_HUB_STAGING_UUID)"
+          echo " mode: ${{ steps.mode.outputs.mode }}"
+          echo "==========================================================="
+          echo "No redeploy performed (S1 scope — nothing reads these vars yet)."
+          echo "GITHUB_APP_PRIVATE_KEY is base64-encoded PEM; decode with:"
+          echo "  Buffer.from(process.env.GITHUB_APP_PRIVATE_KEY, 'base64').toString('utf8')"
