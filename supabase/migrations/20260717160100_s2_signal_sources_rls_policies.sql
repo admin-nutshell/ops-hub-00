@@ -57,10 +57,19 @@ create policy signal_sources_update on signal_sources
 --   select privilege_type from information_schema.role_table_grants
 --     where table_name = 'signal_sources' and grantee = 'ops_hub_app' and privilege_type = 'DELETE';
 --     -- must return 0 rows
---   -- real FK landed on findings.source_id:
---   select conname from pg_constraint
+--   -- real FK landed on findings.source_id, and it is the COMPOSITE form
+--   -- (product_id, source_id) -> signal_sources(product_id, id), not a
+--   -- simple FK on source_id alone (CodeRabbit PR #543 finding):
+--   select conname, pg_get_constraintdef(oid) from pg_constraint
 --     where conrelid = 'findings'::regclass and conname = 'findings_source_id_fkey';
---     -- expect exactly 1 row
+--     -- expect exactly 1 row; definition should read
+--     -- FOREIGN KEY (product_id, source_id) REFERENCES signal_sources(product_id, id)
+--     -- ON DELETE SET NULL (source_id)
+--   -- supporting unique(product_id, id) landed on signal_sources:
+--   select conname from pg_constraint
+--     where conrelid = 'signal_sources'::regclass and contype = 'u';
+--     -- expect two rows: the (product_id, kind) idempotency key and the
+--     -- (product_id, id) key that makes the composite FK above possible
 --   -- fail-closed smoke test (no GUC set => zero rows for a real source):
 --   --   set role ops_hub_app; select * from signal_sources; reset role;
 --   --   (expect 0 rows with no app.current_product set, even if a row exists)

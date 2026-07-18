@@ -57,6 +57,22 @@
 -- Inngest function this table backs (src/inngest/detect-vulnerabilities.ts)
 -- will fail its write step until this migration (+ its RLS companion) is
 -- applied live.
+--
+-- UPDATE (same review pass, before merge): CodeRabbit's review of this PR
+-- (#543) flagged that findings.source_id below (as originally written) was
+-- a simple FK on source_id alone — it guarantees the signal_sources row
+-- exists, but nothing at the DATABASE level guarantees THIS finding's
+-- product_id actually matches that source's real product_id, only
+-- application code does (detect-vulnerabilitiesForProduct passing the same
+-- productId used to look up the source). Same gap class CodeRabbit found in
+-- PR #537 for repo_snapshots -> repo_connections (see
+-- 20260717150000_s1_repo_connections_composite_unique.sql for the
+-- precedent). Fixed below with a composite FK + supporting
+-- unique(product_id, id) on signal_sources. Unlike the 20260717150000
+-- precedent, this did NOT require a separate forward-only migration: this
+-- file (and its RLS companion) are confirmed NOT YET APPLIED to the live
+-- database as of this fix, so editing them in place carries no risk of
+-- schema-history/live-database drift.
 
 -- ---------------------------------------------------------------------------
 -- signal_sources  (a configured detection input for a product) — product-scoped
@@ -69,7 +85,16 @@ create table signal_sources (
   status      text not null default 'active'
                 check (status in ('active', 'suspended')),
   created_at  timestamptz not null default now(),
-  unique (product_id, kind)
+  unique (product_id, kind),
+  -- Enables a composite FK from findings(product_id, source_id) so a
+  -- finding's product_id is guaranteed by Postgres to match its
+  -- signal_source's real product_id — not just by application code.
+  -- Strictly implied by the existing primary key (id is already globally
+  -- unique); adds a guarantee, changes no existing data. Same pattern as
+  -- repo_connections_id_product_id_key (20260717150000) for
+  -- repo_snapshots -> repo_connections. Added per CodeRabbit review on PR
+  -- #543.
+  unique (product_id, id)
 );
 
 -- unique(product_id, kind) above already covers product_id-prefixed lookups
@@ -107,9 +132,33 @@ comment on table signal_sources is
 -- could populate it meaningfully — no signal_sources table existed to point
 -- to). This ALTER validates against current data at apply time regardless;
 -- it will fail loudly rather than silently if that assumption is ever wrong.
+--
+-- COMPOSITE, not a simple FK on source_id alone: references
+-- signal_sources(product_id, id) — requires the unique(product_id, id)
+-- constraint added on signal_sources above — so Postgres itself rejects any
+-- row where source_id resolves to a real signal_sources row but that row's
+-- product_id differs from this finding's product_id. A simple FK on
+-- source_id alone cannot express that; it was only ever enforced by
+-- application code (the same productId used to create-or-reuse the source
+-- in detect-vulnerabilities.ts). See 20260717150000 for the identical
+-- pattern applied to repo_snapshots -> repo_connections.
+--
+-- ON DELETE SET NULL (source_id) — the PG15+ column-list form, not a bare
+-- `ON DELETE SET NULL`. This project's Supabase project is confirmed PG15
+-- (see docs/adr/0004-litellm-schema-isolation-restricted-role.md and
+-- docs/engineering/litellm-db-isolation-runbook.md, both written against
+-- "Supabase's PG15"). The column list matters here: findings.product_id is
+-- NOT NULL (it carries its own ON DELETE RESTRICT lifecycle against
+-- products, untouched by this migration) — a bare composite
+-- `ON DELETE SET NULL` would try to null BOTH referencing columns on
+-- delete and fail with a NOT NULL violation. Naming only `source_id`
+-- preserves the exact original intent (see the paragraph above this ALTER
+-- in the prior revision of this file): a finding must survive its source
+-- being removed, losing only the source link, never itself.
 alter table findings
   add constraint findings_source_id_fkey
-  foreign key (source_id) references signal_sources(id) on delete set null;
+  foreign key (product_id, source_id) references signal_sources (product_id, id)
+  on delete set null (source_id);
 
 -- Supports "findings from this source" lookups (detect-vulnerabilities.ts's
 -- upsert path does not need this — it always writes by (product_id,
@@ -121,6 +170,8 @@ create index findings_source_id_idx on findings (source_id);
 -- S1 migration file (that file stays exactly as applied; this is how its
 -- now-stale comment text gets corrected going forward).
 comment on column findings.source_id is
-  'FK to signal_sources(id), ON DELETE SET NULL (added 20260717160000 — see that '
-  'migration for the ON DELETE SET NULL vs CASCADE rationale). NULL is valid: a finding '
-  'predating signal_sources, or one whose source was later removed.';
+  'Composite FK to signal_sources(product_id, id), ON DELETE SET NULL (source_id) '
+  '(added 20260717160000 — see that migration for the ON DELETE SET NULL vs CASCADE '
+  'rationale, and for why the FK is composite on (product_id, source_id) rather than '
+  'source_id alone). NULL is valid: a finding predating signal_sources, or one whose '
+  'source was later removed.';

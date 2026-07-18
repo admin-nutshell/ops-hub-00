@@ -163,16 +163,33 @@ async function fetchCodeScanningAlerts(
     `https://api.github.com/repos/${repoApiPath(repoFullName)}/code-scanning/alerts?state=open&per_page=${ALERTS_PER_PAGE}`,
     { signal: AbortSignal.timeout(GITHUB_FETCH_TIMEOUT_MS), headers: githubHeaders(token) }
   );
-  // Code scanning is commonly not enabled on a repo at all (unlike Dependabot
-  // alerts, which the S2 task confirms this App already has access to) —
-  // GitHub returns 404 (feature disabled) or 403 (no access) in that case.
-  // That is a valid, common "zero results" case for this function, NOT an
-  // error — treat it as such rather than failing the whole run.
-  if (resp.status === 404 || resp.status === 403) {
-    return [];
-  }
   if (!resp.ok) {
     const text = await resp.text();
+    // Code scanning is commonly not enabled on a repo at all (unlike
+    // Dependabot alerts, which the S2 task confirms this App already has
+    // access to). Confirmed live against the pilot repo
+    // (admin-nutshell/web-app-tns-06): GitHub signals that specific case
+    // with HTTP 403 (NOT 404 — no live case observed for that status) and a
+    // JSON body whose `message` field reads "Code scanning is not enabled
+    // for this repository...". That exact, body-verified case is the only
+    // valid "zero results" — CodeRabbit correctly flagged that blindly
+    // swallowing ANY 403/404 (rate limit, auth failure, wrong permissions,
+    // a genuinely missing repo, etc.) as zero findings would mask a real
+    // failure as a false-clean run. Every other status/body propagates as a
+    // real error below, same discipline as the Dependabot path.
+    if (resp.status === 403 || resp.status === 404) {
+      let disabled = false;
+      try {
+        const body = JSON.parse(text) as { message?: string };
+        disabled = /code scanning is not enabled/i.test(body.message ?? "");
+      } catch {
+        // Non-JSON body on a 403/404 is not the known "disabled" shape —
+        // fall through and treat it as a real error below.
+      }
+      if (disabled) {
+        return [];
+      }
+    }
     throw new Error(`GitHub code-scanning alerts fetch ${resp.status}: ${text.slice(0, 200)}`);
   }
   return (await resp.json()) as CodeScanningAlert[];
@@ -311,13 +328,32 @@ export async function detectVulnerabilitiesForProduct(
     // DO UPDATE branch is a no-op write (kind = its own current value) whose
     // only purpose is to make RETURNING id fire on the conflict path too —
     // ON CONFLICT DO NOTHING RETURNING would return no row at all here.
+    //
+    // The WHERE clause on the DO UPDATE branch gates this on the existing
+    // row's status: a source is suspended via status (see the schema
+    // migration's status check constraint), never hard-deleted, and a
+    // suspended source must not silently keep being used to write findings.
+    // When the existing (product_id, kind) row is suspended, the WHERE
+    // condition is false, so Postgres neither inserts (conflict) nor
+    // updates (WHERE false) — RETURNING yields zero rows. That is how the
+    // suspended case is detected below; it is NOT an error path.
     const { rows: sourceRows } = await writeClient.query<{ id: string }>(
       `INSERT INTO signal_sources (product_id, kind)
        VALUES ($1, 'security_events')
        ON CONFLICT (product_id, kind) DO UPDATE SET kind = signal_sources.kind
+       WHERE signal_sources.status = 'active'
        RETURNING id`,
       [productId]
     );
+    if (sourceRows.length === 0) {
+      // Existing source is suspended (or, in principle, some other row
+      // vanished from under us mid-transaction) — skip cleanly rather than
+      // writing findings against a source that isn't active. Roll back
+      // (nothing else has been written yet) and return the same
+      // discriminated skip shape the no-connection path already uses.
+      await writeClient.query("ROLLBACK");
+      return { skipped: true, reason: "source_suspended" };
+    }
     const sourceId = sourceRows[0].id;
 
     for (const finding of normalized) {

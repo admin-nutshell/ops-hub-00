@@ -50,14 +50,40 @@ function writeTxn(findingInsertedFlags: boolean[], sourceId = "source-1") {
   ];
 }
 
+// The signal_sources upsert's WHERE clause (status = 'active') returns zero
+// rows, rather than an id, when the existing (product_id, kind) row is
+// suspended — see the source_suspended handling in
+// detectVulnerabilitiesForProduct. No finding upsert, no audit_log write:
+// the transaction rolls back immediately after observing the empty result.
+function suspendedSourceWriteTxn() {
+  return [
+    { rows: [] }, // BEGIN
+    { rows: [] }, // set_config product
+    { rows: [] }, // signal_sources upsert — WHERE status='active' excludes the suspended row
+    { rows: [] }, // ROLLBACK
+  ];
+}
+
+// GitHub's actual response body when code scanning is disabled for a repo
+// (confirmed live against the pilot repo, admin-nutshell/web-app-tns-06 —
+// HTTP 403, not 404) — see detectCodeScanningAlerts' body-check comment.
+const CODE_SCANNING_DISABLED_BODY = JSON.stringify({
+  message:
+    "Code scanning is not enabled for this repository. Please enable code scanning in the repository settings.",
+  documentation_url: "https://docs.github.com/rest/code-scanning/code-scanning",
+  status: "403",
+});
+
 function mockGithubResponses(opts: {
-  dependabot?: { status?: number; body?: unknown[] };
-  codeScanning?: { status?: number; body?: unknown[] };
+  dependabot?: { status?: number; body?: unknown[]; errorText?: string };
+  codeScanning?: { status?: number; body?: unknown[]; errorText?: string };
 }) {
   const dependabotStatus = opts.dependabot?.status ?? 200;
   const dependabotBody = opts.dependabot?.body ?? [];
+  const dependabotErrorText = opts.dependabot?.errorText ?? "dependabot error body";
   const codeScanningStatus = opts.codeScanning?.status ?? 200;
   const codeScanningBody = opts.codeScanning?.body ?? [];
+  const codeScanningErrorText = opts.codeScanning?.errorText ?? "code-scanning error body";
 
   const fetchMock = vi.fn().mockImplementation((url: string) => {
     if (url.includes("/dependabot/alerts")) {
@@ -65,7 +91,7 @@ function mockGithubResponses(opts: {
         ok: dependabotStatus >= 200 && dependabotStatus < 300,
         status: dependabotStatus,
         json: async () => dependabotBody,
-        text: async () => "dependabot error body",
+        text: async () => dependabotErrorText,
       });
     }
     if (url.includes("/code-scanning/alerts")) {
@@ -73,7 +99,7 @@ function mockGithubResponses(opts: {
         ok: codeScanningStatus >= 200 && codeScanningStatus < 300,
         status: codeScanningStatus,
         json: async () => codeScanningBody,
-        text: async () => "code-scanning error body",
+        text: async () => codeScanningErrorText,
       });
     }
     throw new Error(`unexpected fetch url: ${url}`);
@@ -232,7 +258,7 @@ describe("detectVulnerabilitiesForProduct", () => {
     expect((calls[2][1] as unknown[])[2]).toBe("low"); // note -> low
   });
 
-  it("treats a 404 on code-scanning alerts as zero results, not an error", async () => {
+  it("treats a 404 on code-scanning alerts as zero results when the body confirms it's disabled", async () => {
     const client = makeClient([...fetchTxn(CONNECTION_ROW), ...writeTxn([true])]);
     const pool = makePool(client);
     mockGithubResponses({
@@ -245,7 +271,7 @@ describe("detectVulnerabilitiesForProduct", () => {
           },
         ],
       },
-      codeScanning: { status: 404 },
+      codeScanning: { status: 404, errorText: CODE_SCANNING_DISABLED_BODY },
     });
 
     const result = await detectVulnerabilitiesForProduct(pool, "product-1");
@@ -260,16 +286,76 @@ describe("detectVulnerabilitiesForProduct", () => {
     });
   });
 
-  it("treats a 403 on code-scanning alerts as zero results, not an error", async () => {
+  it("treats a 403 on code-scanning alerts as zero results when the body confirms it's disabled (the real GitHub shape)", async () => {
     const client = makeClient([...fetchTxn(CONNECTION_ROW), ...writeTxn([])]);
     const pool = makePool(client);
-    mockGithubResponses({ codeScanning: { status: 403 } });
+    mockGithubResponses({
+      codeScanning: { status: 403, errorText: CODE_SCANNING_DISABLED_BODY },
+    });
 
     const result = await detectVulnerabilitiesForProduct(pool, "product-1");
     expect(result).toMatchObject({
       detected: true,
       summary: { code_scanning_alert_count: 0, code_scanning_error: null },
     });
+  });
+
+  it("propagates a 403 on code-scanning alerts as a real error when the body does NOT confirm it's disabled (e.g. rate limit / permission denied)", async () => {
+    const client = makeClient([...fetchTxn(CONNECTION_ROW), ...writeTxn([true])]);
+    const pool = makePool(client);
+    mockGithubResponses({
+      dependabot: {
+        body: [
+          {
+            number: 20,
+            dependency: { package: { name: "pkg" } },
+            security_advisory: { severity: "low" },
+          },
+        ],
+      },
+      codeScanning: {
+        status: 403,
+        errorText: JSON.stringify({ message: "API rate limit exceeded for installation." }),
+      },
+    });
+
+    const result = await detectVulnerabilitiesForProduct(pool, "product-1");
+    // Must NOT be swallowed as zero results — Dependabot's real results
+    // still land, but code_scanning_error is populated, not null, and
+    // code_scanning_alert_count stays 0 because nothing was actually
+    // fetched successfully (this is the pre-fix bug: the old code returned
+    // this exact shape as a false-clean run, `code_scanning_error: null`).
+    expect(result).toMatchObject({
+      detected: true,
+      summary: {
+        dependabot_alert_count: 1,
+        findings_inserted: 1,
+        code_scanning_alert_count: 0,
+      },
+    });
+    if ("detected" in result) {
+      expect(result.summary.code_scanning_error).not.toBeNull();
+      expect(result.summary.code_scanning_error).toMatch(/403/);
+    }
+  });
+
+  it("propagates a 404 on code-scanning alerts as a real error when the body does NOT confirm it's disabled (e.g. repo not found)", async () => {
+    const client = makeClient(fetchTxn(CONNECTION_ROW));
+    const pool = makePool(client);
+    mockGithubResponses({
+      dependabot: { status: 500 },
+      codeScanning: {
+        status: 404,
+        errorText: JSON.stringify({ message: "Not Found" }),
+      },
+    });
+
+    // Both fetches fail here (dependabot 500, code-scanning 404-but-not-
+    // disabled) — the function throws for Inngest retry, same as the
+    // existing "both alert fetches failed" case.
+    await expect(detectVulnerabilitiesForProduct(pool, "product-1")).rejects.toThrow(
+      "Both alert fetches failed"
+    );
   });
 
   it("keeps Dependabot results when code-scanning fails with a real (non-404/403) error", async () => {
@@ -361,7 +447,7 @@ describe("detectVulnerabilitiesForProduct", () => {
     expect(setClause).toMatch(/detail\s*=\s*EXCLUDED\.detail/);
   });
 
-  it("creates-or-reuses the signal_sources row idempotently via ON CONFLICT (product_id, kind)", async () => {
+  it("creates-or-reuses the signal_sources row idempotently via ON CONFLICT (product_id, kind), gated on status = 'active'", async () => {
     const client = makeClient([...fetchTxn(CONNECTION_ROW), ...writeTxn([])]);
     const pool = makePool(client);
     mockGithubResponses({});
@@ -376,8 +462,44 @@ describe("detectVulnerabilitiesForProduct", () => {
     // 'security_events' is a SQL literal in the VALUES clause, not a bound
     // parameter — only product_id is passed positionally.
     expect(sql).toMatch(/VALUES \(\$1, 'security_events'\)/);
+    // The DO UPDATE branch must only match an active row — a suspended
+    // source must never return an id via this upsert (CodeRabbit PR #543
+    // finding). Without this WHERE clause, a suspended source's row would
+    // satisfy the conflict and RETURNING would hand back its id like any
+    // other reusable source.
+    expect(sql).toMatch(/WHERE signal_sources\.status = 'active'/);
     const params = sourceCall[1] as unknown[];
     expect(params).toEqual(["product-1"]);
+  });
+
+  it("skips cleanly with source_suspended and writes nothing when the existing signal_sources row is suspended", async () => {
+    const client = makeClient([...fetchTxn(CONNECTION_ROW), ...suspendedSourceWriteTxn()]);
+    const pool = makePool(client);
+    mockGithubResponses({
+      dependabot: {
+        body: [
+          {
+            number: 30,
+            dependency: { package: { name: "pkg" } },
+            security_advisory: { severity: "low" },
+          },
+        ],
+      },
+    });
+
+    const result = await detectVulnerabilitiesForProduct(pool, "product-1");
+    expect(result).toEqual({ skipped: true, reason: "source_suspended" });
+
+    const calls = vi.mocked(client.query).mock.calls;
+    // fetch txn (4 calls) + BEGIN, set_config, upsert (empty), ROLLBACK (4 calls) = 8 total.
+    // No finding upsert and no audit_log write happened — the transaction
+    // rolled back the moment the upsert came back empty, even though a
+    // Dependabot alert was successfully fetched and would otherwise have
+    // produced a finding.
+    expect(calls.length).toBe(8);
+    expect(String(calls[7][0])).toMatch(/ROLLBACK/);
+    expect(calls.some((c) => String(c[0]).includes("INSERT INTO findings"))).toBe(false);
+    expect(calls.some((c) => String(c[0]).includes("INSERT INTO audit_log"))).toBe(false);
   });
 
   it("writes an audit_log summary row with counts only, never raw alert payloads", async () => {
