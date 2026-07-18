@@ -93,7 +93,7 @@ Full trail: `DECISIONS.md` 2026-07-17/18.
 **Recent decisions:** `DECISIONS.md`
 **Founder queue:** `FOUNDER_QUEUE.md`
 
-Critical path (pre-reboot, still accurate for this scope): Sprint 22 closed clean, nothing blocking within it. Remaining founder-gated carries, not committed to any sprint: `enforce_admins` policy, provider-credential divergence (trigger still hasn't fired), per-user session auth (deferred until a second dashboard user or a SOC-2 need). `T-90 O1–O3`, the general Coolify env-var dup-row footgun, and FQ-63 (dashboard domain) are all resolved — no longer carries. **Current real critical path is the reboot above (S1 and S2 both done and proven live; S3 not yet started) — the "Sprint N" numbering itself is on hold, not actively being scoped further, while the reboot is the active work.**
+Critical path (pre-reboot, still accurate for this scope): Sprint 22 closed clean, nothing blocking within it. Remaining founder-gated carries, not committed to any sprint: `enforce_admins` policy, provider-credential divergence (trigger still hasn't fired), per-user session auth (deferred until a second dashboard user or a SOC-2 need). `T-90 O1–O3`, the general Coolify env-var dup-row footgun, and FQ-63 (dashboard domain) are all resolved — no longer carries. **Current real critical path is the reboot above (S1 and S2 both done and proven live; S3 in progress, schema PR merged pending live apply) — the "Sprint N" numbering itself is on hold, not actively being scoped further, while the reboot is the active work.**
 
 ---
 
