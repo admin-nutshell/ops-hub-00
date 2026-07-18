@@ -13,6 +13,7 @@ import { PipelinePanel } from "../components/PipelinePanel";
 import { SystemHealthPanel } from "../components/SystemHealthPanel";
 import { PlatformIncidentsPanel } from "../components/PlatformIncidentsPanel";
 import { RepoInspectPanel } from "../components/RepoInspectPanel";
+import { VulnFindingsPanel } from "../components/VulnFindingsPanel";
 import { CardSkeleton, PanelSkeleton } from "../components/Skeleton";
 
 // Force dynamic rendering — same reasoning as settings/page.tsx's identical
@@ -29,9 +30,9 @@ export const dynamic = "force-dynamic";
 // Component wrapped in <Suspense> so slow/failing queries never block or
 // blank the rest of the page — each streams and fails independently. Sprint 7
 // (T-75) adds a Settings screen alongside this one (see NavTabs) — this page
-// itself stays read-only; nothing here writes (RepoInspectPanel's trigger
-// button is the one exception, added in S1 of the product-domain reboot — it
-// only sends an Inngest event, never touches this page's own DB reads).
+// itself stays read-only; nothing here writes except RepoInspectPanel's (S1)
+// and VulnFindingsPanel's (S2) trigger buttons — both only send an Inngest
+// event, never touch this page's own DB reads.
 export default function DashboardPage() {
   return (
     <main className="mx-auto flex max-w-[1320px] flex-col gap-[30px] px-8 pt-8 pb-[72px]">
@@ -79,6 +80,10 @@ export default function DashboardPage() {
 
       <Suspense fallback={<PanelSkeleton rows={6} />}>
         <RepoInspectPanel />
+      </Suspense>
+
+      <Suspense fallback={<PanelSkeleton rows={6} />}>
+        <VulnFindingsPanel />
       </Suspense>
     </main>
   );
