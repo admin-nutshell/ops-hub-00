@@ -36,7 +36,11 @@ create table agent_routing (
   product_id     uuid not null references products(id) on delete cascade,
   agent_role     text not null check (agent_role in ('fix_author')),
   primary_model  text not null,                 -- registered LiteLLM alias string (never a raw provider id)
-  fallback_model text,                          -- nullable; no reboot agent role uses a fallback slot yet
+  fallback_model text,                          -- nullable; no reboot agent role uses a fallback slot yet.
+                                                 -- NOT YET READ by resolveAgentModelRouting() (which hardcodes
+                                                 -- fallback: null) — whoever wires a fallback slot for a future
+                                                 -- role MUST route this through the same isAllowedAgentModel
+                                                 -- gating pickModel() applies to primary_model, not read raw.
   updated_at     timestamptz not null default now(),
   updated_by     text,                          -- audit convenience; authoritative record is audit_log
   unique (product_id, agent_role)
