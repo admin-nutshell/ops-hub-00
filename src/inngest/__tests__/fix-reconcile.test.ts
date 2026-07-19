@@ -239,7 +239,9 @@ describe("fetchSandboxResults", () => {
       // list artifacts
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ artifacts: [{ id: 42, name: "sandbox-results-summary" }] }),
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 210 }],
+        }),
       })
       // download zip
       .mockResolvedValueOnce({
@@ -279,6 +281,81 @@ describe("fetchSandboxResults", () => {
     });
     await expect(fetchSandboxResults(999)).rejects.toThrow(/GITHUB_STATUS_DISPATCH_TOKEN/);
   });
+
+  it("returns null (never downloads) when the artifact's reported size exceeds the cap", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 10_000_000 }],
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("process", {
+      ...process,
+      env: { ...process.env, GITHUB_STATUS_DISPATCH_TOKEN: "tok" },
+    });
+
+    const results = await fetchSandboxResults(999);
+    expect(results).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // rejected before ever downloading the zip
+  });
+
+  it("returns null (never inflates) when the zip entry's declared uncompressed size exceeds the cap — a decompression-bomb-style artifact", async () => {
+    // A real oversized entry (not a hand-crafted header lie) — content padded
+    // past MAX_RESULTS_ARTIFACT_BYTES (64KB) with highly-compressible filler,
+    // so its COMPRESSED size (what artifact.size_in_bytes reports) stays
+    // small while its declared uncompressed size is what actually trips the
+    // second-layer check, before AdmZip ever calls getData()/inflates it.
+    const bloated = { ...PASSING_RESULTS, filler: "a".repeat(100_000) };
+    const zipBuf = buildResultsZip(bloated);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 300 }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () =>
+          zipBuf.buffer.slice(zipBuf.byteOffset, zipBuf.byteOffset + zipBuf.byteLength),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("process", {
+      ...process,
+      env: { ...process.env, GITHUB_STATUS_DISPATCH_TOKEN: "tok" },
+    });
+
+    const results = await fetchSandboxResults(999);
+    expect(results).toBeNull();
+  });
+
+  it("returns null (does not throw) when results.json does not parse as JSON at all", async () => {
+    const zip = new AdmZip();
+    zip.addFile("results.json", Buffer.from("{ not: valid json", "utf8"));
+    const zipBuf = zip.toBuffer();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 20 }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () =>
+          zipBuf.buffer.slice(zipBuf.byteOffset, zipBuf.byteOffset + zipBuf.byteLength),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("process", {
+      ...process,
+      env: { ...process.env, GITHUB_STATUS_DISPATCH_TOKEN: "tok" },
+    });
+
+    await expect(fetchSandboxResults(999)).resolves.toBeNull();
+  });
 });
 
 describe("reconcileOnce", () => {
@@ -304,7 +381,7 @@ describe("reconcileOnce", () => {
     const resolveClient = makeClient([
       { rows: [] }, // BEGIN
       { rows: [] }, // set_config
-      { rows: [] }, // UPDATE
+      { rows: [], rowCount: 1 }, // UPDATE
       { rows: [] }, // INSERT audit_log
       { rows: [] }, // COMMIT
     ]);
@@ -322,7 +399,9 @@ describe("reconcileOnce", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ workflow_runs: [ghRun()] }) }) // list runs
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ artifacts: [{ id: 42, name: "sandbox-results-summary" }] }),
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 210 }],
+        }),
       }) // list artifacts
       .mockResolvedValueOnce({
         ok: true,
@@ -332,7 +411,7 @@ describe("reconcileOnce", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await reconcileOnce(pool);
-    expect(result).toEqual({ resolved: 1, skipped: 0 });
+    expect(result).toEqual({ resolved: 1, skipped: 0, errored: 0 });
 
     const updateCall = calls(resolveClient)[2];
     expect(updateCall[0]).toMatch(/UPDATE fix_attempts/);
@@ -359,7 +438,7 @@ describe("reconcileOnce", () => {
     const resolveClient = makeClient([
       { rows: [] },
       { rows: [] },
-      { rows: [] },
+      { rows: [], rowCount: 1 },
       { rows: [] },
       { rows: [] },
     ]);
@@ -377,7 +456,9 @@ describe("reconcileOnce", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ workflow_runs: [ghRun()] }) })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ artifacts: [{ id: 42, name: "sandbox-results-summary" }] }),
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 210 }],
+        }),
       })
       .mockResolvedValueOnce({
         ok: true,
@@ -387,7 +468,7 @@ describe("reconcileOnce", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await reconcileOnce(pool);
-    expect(result).toEqual({ resolved: 1, skipped: 0 });
+    expect(result).toEqual({ resolved: 1, skipped: 0, errored: 0 });
     const updateCall = calls(resolveClient)[2];
     expect(updateCall[1]).toEqual(["failed", "999", "gha-run:999", ATTEMPT_ID, PRODUCT_ID]);
   });
@@ -404,7 +485,7 @@ describe("reconcileOnce", () => {
     const resolveClient = makeClient([
       { rows: [] },
       { rows: [] },
-      { rows: [] },
+      { rows: [], rowCount: 1 },
       { rows: [] },
       { rows: [] },
     ]);
@@ -422,7 +503,9 @@ describe("reconcileOnce", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ workflow_runs: [ghRun()] }) })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ artifacts: [{ id: 42, name: "sandbox-results-summary" }] }),
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 210 }],
+        }),
       })
       .mockResolvedValueOnce({
         ok: true,
@@ -432,7 +515,7 @@ describe("reconcileOnce", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await reconcileOnce(pool);
-    expect(result).toEqual({ resolved: 1, skipped: 0 });
+    expect(result).toEqual({ resolved: 1, skipped: 0, errored: 0 });
     const auditCall = calls(resolveClient)[3];
     expect(auditCall[0]).toMatch(/fix\.reconcile\.anomaly/);
     expect(JSON.parse((auditCall[1] as unknown[])[1] as string).reason).toMatch(/mismatch/);
@@ -458,7 +541,7 @@ describe("reconcileOnce", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await reconcileOnce(pool);
-    expect(result).toEqual({ resolved: 0, skipped: 1 });
+    expect(result).toEqual({ resolved: 0, skipped: 1, errored: 0 });
     expect(fetchMock).toHaveBeenCalledTimes(1); // only the list-runs call, never artifacts
   });
 
@@ -474,7 +557,7 @@ describe("reconcileOnce", () => {
     const resolveClient = makeClient([
       { rows: [] },
       { rows: [] },
-      { rows: [] },
+      { rows: [], rowCount: 1 },
       { rows: [] },
       { rows: [] },
     ]);
@@ -492,7 +575,9 @@ describe("reconcileOnce", () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ workflow_runs: [ghRun()] }) })
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ artifacts: [{ id: 42, name: "sandbox-results-summary" }] }),
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 210 }],
+        }),
       })
       .mockResolvedValueOnce({
         ok: true,
@@ -515,7 +600,111 @@ describe("reconcileOnce", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await reconcileOnce(pool);
-    expect(result).toEqual({ resolved: 0, skipped: 0 });
+    expect(result).toEqual({ resolved: 0, skipped: 0, errored: 0 });
     expect(fetchMock).not.toHaveBeenCalled(); // no candidates => never calls GitHub at all
+  });
+
+  it("does not write an audit_log entry when the conditional UPDATE affects zero rows (already resolved elsewhere)", async () => {
+    const fetchClient = makeClient([
+      { rows: [] },
+      { rows: [] },
+      {
+        rows: [{ id: ATTEMPT_ID, created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString() }],
+      },
+      { rows: [] },
+    ]);
+    const resolveClient = makeClient([
+      { rows: [] }, // BEGIN
+      { rows: [] }, // set_config
+      { rows: [], rowCount: 0 }, // UPDATE — matched zero rows (already resolved elsewhere)
+      { rows: [] }, // COMMIT (no audit INSERT in between)
+    ]);
+    let connectCall = 0;
+    const pool = {
+      connect: vi.fn().mockImplementation(() => {
+        connectCall++;
+        return Promise.resolve(connectCall === 1 ? fetchClient : resolveClient);
+      }),
+    } as unknown as Parameters<typeof reconcileOnce>[0];
+
+    const zipBuf = buildResultsZip(PASSING_RESULTS);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ workflow_runs: [ghRun()] }) })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 210 }],
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () =>
+          zipBuf.buffer.slice(zipBuf.byteOffset, zipBuf.byteOffset + zipBuf.byteLength),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await reconcileOnce(pool);
+    expect(result).toEqual({ resolved: 1, skipped: 0, errored: 0 });
+    // Exactly 4 calls: BEGIN, set_config, UPDATE, COMMIT — no audit INSERT.
+    expect(calls(resolveClient)).toHaveLength(4);
+  });
+
+  it("isolates a per-candidate error: one candidate erroring never blocks another candidate's resolution", async () => {
+    const otherAttemptId = "22222222-2222-2222-2222-222222222222";
+    const fetchClient = makeClient([
+      { rows: [] },
+      { rows: [] },
+      {
+        rows: [
+          { id: ATTEMPT_ID, created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString() },
+          { id: otherAttemptId, created_at: new Date(Date.now() - 5 * 60 * 1000).toISOString() },
+        ],
+      },
+      { rows: [] },
+    ]);
+    const resolveClient = makeClient([
+      { rows: [] },
+      { rows: [] },
+      { rows: [], rowCount: 1 },
+      { rows: [] },
+      { rows: [] },
+    ]);
+    let connectCall = 0;
+    const pool = {
+      connect: vi.fn().mockImplementation(() => {
+        connectCall++;
+        return Promise.resolve(connectCall === 1 ? fetchClient : resolveClient);
+      }),
+    } as unknown as Parameters<typeof reconcileOnce>[0];
+
+    const zipBuf = buildResultsZip({ ...PASSING_RESULTS, fix_attempt_id: otherAttemptId });
+    const runs = [
+      ghRun({ id: 1, display_title: `S3 Fix Sandbox — attempt ${ATTEMPT_ID}` }),
+      ghRun({ id: 2, display_title: `S3 Fix Sandbox — attempt ${otherAttemptId}` }),
+    ];
+    // Both candidates reach "need-results" off the SAME listRecentSandboxRuns
+    // call; the first candidate's fetchSandboxResults (list-artifacts) call
+    // rejects outright (simulating a transient GitHub API error), the
+    // second's succeeds normally.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ workflow_runs: runs }) }) // list runs (once)
+      .mockRejectedValueOnce(new Error("network blip")) // candidate 1's list-artifacts call
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          artifacts: [{ id: 42, name: "sandbox-results-summary", size_in_bytes: 210 }],
+        }),
+      }) // candidate 2's list-artifacts call
+      .mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: async () =>
+          zipBuf.buffer.slice(zipBuf.byteOffset, zipBuf.byteOffset + zipBuf.byteLength),
+      }); // candidate 2's zip download
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await reconcileOnce(pool);
+    expect(result).toEqual({ resolved: 1, skipped: 0, errored: 1 });
   });
 });

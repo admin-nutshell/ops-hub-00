@@ -21,6 +21,18 @@ name: S3 Fix Sandbox — sandboxed patch/test/scan run (no secrets, egress-restr
 # (results.json alone, flat — a single-zip-layer artifact for the
 # reconciliation mechanism to parse without needing a tar reader too).
 #
+# results.json IS AN ADVISORY SIGNAL, NOT A TRUST BOUNDARY (Security Lead
+# review, src/inngest/fix-reconcile.ts's PR): the `sandbox` job below runs
+# the AI-authored, untrusted-content-derived patch (npm ci/build/lint/test)
+# in the SAME job/VM/user as the later steps that write and upload
+# results.json — GitHub Actions does not kill background processes between
+# steps of one job, so a hostile patch could in principle background a
+# process that tampers with results.json before upload. Reconciliation
+# treats this file's content as triage input (which attempts are worth a
+# human looking at), never as a security verdict — the authoritative gates
+# remain the product repo's own real CI and a human reviewing/merging the
+# draft PR, per the reboot plan's two-independent-gates requirement.
+#
 # TWO-JOB SECURITY SPLIT (this is the actual mechanism behind "no secrets in
 # the sandbox" — a private repo cannot be checked out with literally zero
 # credentials, so the credential and the untrusted code execution are put in

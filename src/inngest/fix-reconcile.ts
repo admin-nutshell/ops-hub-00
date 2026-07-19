@@ -45,6 +45,25 @@ import { githubHeaders } from "../github/appAuth";
 // GITHUB_STATUS_DISPATCH_TOKEN (or a repo-write GitHub identity) can call
 // workflow_dispatch at all — same trust boundary as any other repo secret.
 //
+// A THIRD THING results.json IS NOT A DEFENSE AGAINST (Security Lead review,
+// this PR): the sandbox job's own `sandbox` job runs the AI-authored,
+// untrusted-content-derived patch (npm ci / build / lint / test) in the SAME
+// job, same VM, same user as the later steps that write and upload
+// results.json. GitHub Actions does not kill background processes between
+// steps of one job — a malicious/prompt-injected patch could background a
+// process that overwrites results.json after the legitimate write step, or
+// interferes with it, before upload. This file's status resolution is
+// therefore an ADVISORY signal, forgeable from inside the sandbox itself —
+// NOT a trust boundary. The authoritative gates for a fix remain (per the
+// reboot plan) the product repo's own real CI and a human opening/reviewing/
+// merging the draft PR; this reconciliation mechanism's job is triage
+// (which attempts are even worth a human looking at), not a security
+// verdict. A follow-up (not this PR) could derive build/lint/test outcomes
+// from GitHub's jobs API (control-plane data, not runner-writable) instead
+// of trusting the artifact's own content — raises the bar from "write a
+// file" to "compromise the runner agent," though full tamper-proofing from
+// inside a VM running untrusted code is impossible in principle regardless.
+//
 // WHY A SECOND, FLAT ARTIFACT (`sandbox-results-summary`): the existing
 // `sandbox-results` artifact is a GitHub-Actions zip wrapping a single
 // `sandbox-results.tar.gz` file (diff + logs + results.json) — a human
@@ -169,7 +188,15 @@ type GhRun = {
 type GhArtifact = {
   id: number;
   name: string;
+  size_in_bytes: number;
 };
+
+// The real results.json is ~200 bytes. 64KB is generous headroom while still
+// rejecting a decompression-bomb-style artifact well before it's downloaded
+// or decompressed — see fetchSandboxResults for the two checks this caps
+// (the artifact's own reported size, then the zip entry's declared
+// uncompressed size, checked before AdmZip actually inflates it).
+const MAX_RESULTS_ARTIFACT_BYTES = 64 * 1024;
 
 function requireDispatchToken(): string {
   const token = process.env.GITHUB_STATUS_DISPATCH_TOKEN;
@@ -245,7 +272,11 @@ function isSandboxResults(v: unknown): v is SandboxResults {
 // file header) and parses results.json out of it. Returns null if the run
 // completed with no such artifact (e.g. it failed before the results-writing
 // step ever ran — a legitimate "no result to reconcile from" case, not an
-// error).
+// error), if the artifact/entry is larger than expected (a possible
+// decompression-bomb-style artifact — see MAX_RESULTS_ARTIFACT_BYTES; the
+// sandbox runs untrusted, AI-authored code and could in principle try to
+// substitute a hostile artifact, same threat class as the file header's
+// forgeability note), or if the entry doesn't parse as JSON at all.
 export async function fetchSandboxResults(runId: number): Promise<SandboxResults | null> {
   const token = requireDispatchToken();
   const listResp = await fetch(
@@ -259,6 +290,7 @@ export async function fetchSandboxResults(runId: number): Promise<SandboxResults
   const listJson = (await listResp.json()) as { artifacts?: GhArtifact[] };
   const artifact = (listJson.artifacts ?? []).find((a) => a.name === "sandbox-results-summary");
   if (!artifact) return null;
+  if (artifact.size_in_bytes > MAX_RESULTS_ARTIFACT_BYTES) return null;
 
   const zipResp = await fetch(
     `https://api.github.com/repos/${OPS_HUB_REPO_OWNER}/${OPS_HUB_REPO_NAME}/actions/artifacts/${artifact.id}/zip`,
@@ -272,8 +304,16 @@ export async function fetchSandboxResults(runId: number): Promise<SandboxResults
   const zip = new AdmZip(zipBuf);
   const entry = zip.getEntry("results.json");
   if (!entry) return null;
-  const parsed: unknown = JSON.parse(entry.getData().toString("utf8"));
-  return isSandboxResults(parsed) ? parsed : null;
+  // Declared uncompressed size, checked BEFORE getData() actually inflates
+  // it — the whole point of this check is to never decompress an oversized
+  // entry in the first place.
+  if (entry.header.size > MAX_RESULTS_ARTIFACT_BYTES) return null;
+  try {
+    const parsed: unknown = JSON.parse(entry.getData().toString("utf8"));
+    return isSandboxResults(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 // success = build clean, lint clean, test either passed or was legitimately
@@ -293,7 +333,7 @@ export function deriveOutcome(r: SandboxResults): "completed" | "failed" {
 
 type Resolution =
   | { kind: "resolve"; status: "completed" | "failed"; sandboxRunId: string; diffRef: string }
-  | { kind: "fail"; reason: string }
+  | { kind: "fail"; reason: string; sandboxRunId?: string }
   | { kind: "skip" };
 
 // Pure decision function — given the matching runs for one candidate and its
@@ -347,9 +387,15 @@ export function decideForCandidate(params: {
   return { decision: "need-results", run };
 }
 
-// Product-scoped, conditional on current status (skips silently if another
-// process already resolved this row — e.g. a human dismissal path added
-// later, or an overlapping reconciliation tick).
+// Product-scoped, conditional on current status (a no-op if another process
+// already resolved this row — e.g. an overlapping reconciliation tick, or a
+// human dismissal path added later). The audit_log insert is itself gated on
+// the UPDATE's rowCount: if the conditional UPDATE matched zero rows, this
+// resolution never actually applied, and writing an audit entry anyway would
+// assert a state change that didn't happen — a real integrity problem for a
+// platform whose audit trail is meant to be a truthful record of every
+// autonomous action, not just of every attempt (Security Lead review, this
+// PR).
 async function resolveAttempt(
   pool: Pool,
   candidate: CandidateAttempt,
@@ -363,7 +409,7 @@ async function resolveAttempt(
     ]);
 
     if (resolution.kind === "resolve") {
-      await client.query(
+      const updateResult = await client.query(
         `UPDATE fix_attempts
          SET status = $1, sandbox_run_id = $2, diff_ref = $3, updated_at = now()
          WHERE id = $4 AND product_id = $5 AND status IN ('pending', 'running')`,
@@ -375,33 +421,37 @@ async function resolveAttempt(
           candidate.product_id,
         ]
       );
-      await client.query(
-        `INSERT INTO audit_log (actor, action, resource_type, resource_id, payload)
-         VALUES ('fix-reconcile', 'fix.reconcile', 'fix_attempt', $1, $2)`,
-        [
-          candidate.id,
-          JSON.stringify({
-            product_id: candidate.product_id,
-            outcome: resolution.status,
-            sandbox_run_id: resolution.sandboxRunId,
-          }),
-        ]
-      );
+      if (updateResult.rowCount) {
+        await client.query(
+          `INSERT INTO audit_log (actor, action, resource_type, resource_id, payload)
+           VALUES ('fix-reconcile', 'fix.reconcile', 'fix_attempt', $1, $2)`,
+          [
+            candidate.id,
+            JSON.stringify({
+              product_id: candidate.product_id,
+              outcome: resolution.status,
+              sandbox_run_id: resolution.sandboxRunId,
+            }),
+          ]
+        );
+      }
     } else {
-      await client.query(
+      const updateResult = await client.query(
         `UPDATE fix_attempts
-         SET status = 'failed', updated_at = now()
-         WHERE id = $1 AND product_id = $2 AND status IN ('pending', 'running')`,
-        [candidate.id, candidate.product_id]
+         SET status = 'failed', sandbox_run_id = COALESCE($1, sandbox_run_id), updated_at = now()
+         WHERE id = $2 AND product_id = $3 AND status IN ('pending', 'running')`,
+        [resolution.sandboxRunId ?? null, candidate.id, candidate.product_id]
       );
-      await client.query(
-        `INSERT INTO audit_log (actor, action, resource_type, resource_id, payload)
-         VALUES ('fix-reconcile', 'fix.reconcile.anomaly', 'fix_attempt', $1, $2)`,
-        [
-          candidate.id,
-          JSON.stringify({ product_id: candidate.product_id, reason: resolution.reason }),
-        ]
-      );
+      if (updateResult.rowCount) {
+        await client.query(
+          `INSERT INTO audit_log (actor, action, resource_type, resource_id, payload)
+           VALUES ('fix-reconcile', 'fix.reconcile.anomaly', 'fix_attempt', $1, $2)`,
+          [
+            candidate.id,
+            JSON.stringify({ product_id: candidate.product_id, reason: resolution.reason }),
+          ]
+        );
+      }
     }
     await client.query("COMMIT");
   } catch (err) {
@@ -412,70 +462,89 @@ async function resolveAttempt(
   }
 }
 
-export async function reconcileOnce(pool: Pool): Promise<{ resolved: number; skipped: number }> {
+export async function reconcileOnce(
+  pool: Pool
+): Promise<{ resolved: number; skipped: number; errored: number }> {
   const productIds = getReconcileProductIds();
   const candidates: CandidateAttempt[] = [];
   for (const productId of productIds) {
     candidates.push(...(await fetchCandidates(pool, productId)));
   }
   if (candidates.length === 0) {
-    return { resolved: 0, skipped: 0 };
+    return { resolved: 0, skipped: 0, errored: 0 };
   }
 
   const runs = await listRecentSandboxRuns();
   const nowMs = Date.now();
   let resolved = 0;
   let skipped = 0;
+  let errored = 0;
 
+  // Each candidate is isolated in its own try/catch: one candidate hitting a
+  // transient GitHub API error (or, before the JSON.parse guard above
+  // existed, a malformed artifact) must never abort the rest of the sweep —
+  // an unhandled throw here previously took down every other candidate AND
+  // every other configured product for the remainder of this tick (Security
+  // Lead review, this PR). An errored candidate is simply left unresolved —
+  // it's still 'pending'/'running' in the DB and will be re-evaluated next
+  // tick, same as if this tick had never run for it at all.
   for (const candidate of candidates) {
-    const matches = findMatchingRuns(runs, candidate.id);
-    const decision = decideForCandidate({ candidate, matches, nowMs });
+    try {
+      const matches = findMatchingRuns(runs, candidate.id);
+      const decision = decideForCandidate({ candidate, matches, nowMs });
 
-    if (decision.decision === "resolved") {
-      if (decision.resolution.kind === "skip") {
-        skipped++;
+      if (decision.decision === "resolved") {
+        if (decision.resolution.kind === "skip") {
+          skipped++;
+          continue;
+        }
+        await resolveAttempt(pool, candidate, decision.resolution);
+        resolved++;
         continue;
       }
-      await resolveAttempt(pool, candidate, decision.resolution);
-      resolved++;
-      continue;
-    }
 
-    // decision.decision === "need-results": the matched run completed;
-    // fetch+parse its results artifact before deciding the final outcome.
-    const results = await fetchSandboxResults(decision.run.id);
-    if (!results) {
+      // decision.decision === "need-results": the matched run completed;
+      // fetch+parse its results artifact before deciding the final outcome.
+      const results = await fetchSandboxResults(decision.run.id);
+      if (!results) {
+        await resolveAttempt(pool, candidate, {
+          kind: "fail",
+          reason: "sandbox run completed but no results artifact found",
+          sandboxRunId: String(decision.run.id),
+        });
+        resolved++;
+        continue;
+      }
+      if (results.fix_attempt_id !== candidate.id) {
+        // Not a spoofing defense (see file header) — guards accidental
+        // run-name collision only. This DOES resolve the attempt to
+        // 'failed' (terminal, audited) rather than leaving it unresolved:
+        // guessing which of two candidates a run actually belongs to would
+        // be worse than treating an unattributable result as a failure and
+        // letting a human/future attempt re-examine it via the audit trail.
+        await resolveAttempt(pool, candidate, {
+          kind: "fail",
+          reason: `results.json fix_attempt_id mismatch (run ${decision.run.id})`,
+          sandboxRunId: String(decision.run.id),
+        });
+        resolved++;
+        continue;
+      }
+
+      const outcome = deriveOutcome(results);
       await resolveAttempt(pool, candidate, {
-        kind: "fail",
-        reason: "sandbox run completed but no results artifact found",
+        kind: "resolve",
+        status: outcome,
+        sandboxRunId: String(decision.run.id),
+        diffRef: `gha-run:${decision.run.id}`,
       });
       resolved++;
-      continue;
+    } catch {
+      errored++;
     }
-    if (results.fix_attempt_id !== candidate.id) {
-      // Not a spoofing defense (see file header) — guards accidental
-      // run-name collision. Deliberately does NOT auto-fail: leaving status
-      // unchanged surfaces this for manual/security review rather than
-      // guessing which of two candidates the run actually belongs to.
-      await resolveAttempt(pool, candidate, {
-        kind: "fail",
-        reason: `results.json fix_attempt_id mismatch (run ${decision.run.id})`,
-      });
-      resolved++;
-      continue;
-    }
-
-    const outcome = deriveOutcome(results);
-    await resolveAttempt(pool, candidate, {
-      kind: "resolve",
-      status: outcome,
-      sandboxRunId: String(decision.run.id),
-      diffRef: `gha-run:${decision.run.id}`,
-    });
-    resolved++;
   }
 
-  return { resolved, skipped };
+  return { resolved, skipped, errored };
 }
 
 type InngestCtx = Parameters<Parameters<typeof inngest.createFunction>[1]>[0];
@@ -490,7 +559,7 @@ export const fixReconcile = inngest.createFunction(
   { id: "fix-reconcile", retries: 2, triggers: [{ cron: "*/5 * * * *" }] },
   async ({ step }: InngestCtx) => {
     if (process.env.FIX_RECONCILE_ENABLED !== "true") {
-      return { resolved: 0, skipped: 0 };
+      return { resolved: 0, skipped: 0, errored: 0 };
     }
     return step.run("reconcile", () => reconcileOnce(getPool()));
   }
