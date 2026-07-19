@@ -17,21 +17,21 @@ import { resolveAgentModelRouting } from "./agent-model-routing";
 //
 // WHY THE SPLIT: dispatching `s3-fix-sandbox.yml`'s workflow_dispatch event
 // requires a GitHub credential with `actions:write` on THIS repo
-// (admin-nutshell/ops-hub-00) — a credential that does not exist anywhere in
-// this codebase today (confirmed: no such token/secret, no existing dispatch
-// call from backend code). The existing `ops-hub-connector` GitHub App is
-// installed on the PRODUCT repo (web-app-tns-06) only and cannot act on this
-// repo at all. Provisioning a new actions:write-on-ops-hub-00 credential is a
-// founder-gated decision (arguably a BIGGER trust grant than the pending PR-E
-// App-permission escalation, since it reaches the infra repo that holds every
-// pipeline) — filed as FQ-79, not silently provisioned. See that entry for
-// the pull-vs-push alternative (a scheduled in-repo workflow polling pending
-// fix_attempts, using the built-in GITHUB_TOKEN, no new standing credential).
+// (admin-nutshell/ops-hub-00). This file was originally written (and
+// reviewed/merged) on the belief that no such credential existed anywhere in
+// this codebase — WRONG, self-corrected 2026-07-19: `GITHUB_STATUS_DISPATCH_
+// TOKEN` already exists (a fine-grained PAT scoped to exactly this repo with
+// `Actions: Read and Write`, set as a Coolify env var on ops-hub-staging
+// since 2026-06-28 for the status-page incident feature, `statusWebhook.ts`)
+// and already has exactly the scope this needs. See FOUNDER_QUEUE.md FQ-79
+// for the full disclosure of how that got missed. The dispatch+poll half is
+// still a separate follow-up PR (not built in this file) — the split itself
+// remains the right call for reviewability, it just no longer needs a NEW
+// founder-provisioned credential; the existing token is reused as-is.
 //
-// Building this half now (no credential needed, fully unit-testable) rather
-// than waiting keeps the founder-gated ask as small and late as possible —
-// once FQ-79 is answered, only the dispatch+poll half remains to complete
-// the loop.
+// Building this half first (fully unit-testable, no credential dependency)
+// rather than waiting keeps this PR small — the dispatch+poll half is a
+// separate follow-up now that FQ-79's Item 1 is resolved.
 //
 // INJECTION DISCIPLINE: finding.title/finding.detail are UNTRUSTED external
 // content (GitHub's own alert payloads — see findings.detail's column
