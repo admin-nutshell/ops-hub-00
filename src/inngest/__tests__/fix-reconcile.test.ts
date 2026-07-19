@@ -451,12 +451,10 @@ describe("reconcileOnce", () => {
       typeof reconcileOnce
     >[0];
 
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ workflow_runs: [ghRun({ status: "in_progress" })] }),
-      });
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ workflow_runs: [ghRun({ status: "in_progress" })] }),
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await reconcileOnce(pool);
