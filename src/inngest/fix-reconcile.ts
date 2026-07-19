@@ -210,6 +210,17 @@ function requireDispatchToken(): string {
 // candidate) — every candidate this tick is matched against the same list in
 // memory, which keeps GitHub API usage to O(1) calls per tick regardless of
 // batch size.
+//
+// KNOWN LIMITATION, not paginated (Security Lead review, this PR): only the
+// 50 most recent workflow_dispatch runs are considered. At today's pilot
+// volume this comfortably covers every candidate's actual run. If dispatch
+// volume ever grows enough that a candidate's real run can be pushed off
+// this single page before reconciliation sees it (a burst of manual test
+// dispatches, a fix-author retry storm, or real S6+ multi-product volume),
+// that candidate would read as zero matches and eventually fail as
+// "abandoned" despite a real, possibly-passing run existing further back in
+// history. Revisit (add pagination, or filter server-side by a created-after
+// timestamp) before S6 onboards a second product.
 export async function listRecentSandboxRuns(): Promise<GhRun[]> {
   const token = requireDispatchToken();
   const url = new URL(
@@ -539,7 +550,14 @@ export async function reconcileOnce(
         diffRef: `gha-run:${decision.run.id}`,
       });
       resolved++;
-    } catch {
+    } catch (err) {
+      // Logged (candidate id + a truncated error message only — never diff/
+      // log content) so an errored candidate is diagnosable from the
+      // process's own logs, not just visible as a bare count in the return
+      // value (Security Lead review follow-up, this PR).
+      console.warn(
+        `fix-reconcile: candidate ${candidate.id} errored: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`
+      );
       errored++;
     }
   }
