@@ -8,11 +8,18 @@ import { makeClient, makePool, mockFetchOk } from "./helpers";
  * agent_routing) — a cheap PRE-CHECK only — -> LLM call (LiteLLM) -> write
  * txn (SELECT ... FOR UPDATE the finding row — the AUTHORITATIVE re-check,
  * race-free against concurrent dispatches/retries and mid-flight human
- * dismissals — then INSERT fix_attempts, conditionally advance
- * findings.state, INSERT audit_log). pg Pool + fetch are mocked; no real
- * DB, no real LiteLLM call. The sandbox-dispatch half does not exist yet
- * (see the file's own header — founder-gated, FQ-79) so this only covers
- * authoring.
+ * dismissals — then INSERT fix_attempts, INSERT audit_log). pg Pool + fetch
+ * are mocked; no real DB, no real LiteLLM call. The sandbox-dispatch half
+ * does not exist yet (see the file's own header — founder-gated, FQ-79) so
+ * this only covers authoring.
+ *
+ * fix_attempts.status is ALWAYS 'failed' in this PR (even when a valid diff
+ * was extracted) and findings.state is NEVER advanced — see the file's own
+ * "STATUS IS ALWAYS 'failed'" comment for why (CodeRabbit review: a
+ * 'pending'/in-progress row here would be unrecoverable, since nothing in
+ * this PR persists or dispatches the diff). `diffExtracted` in the return
+ * value and `diff_extracted` in the audit_log payload are what distinguish
+ * a real candidate fix from "no fix found."
  */
 
 vi.mock("../../langfuse", () => ({ langfuse: null }));
@@ -67,27 +74,20 @@ function fetchTxn(opts: {
 
 // The write transaction's AUTHORITATIVE re-check: SELECT ... FOR UPDATE the
 // finding row, then (only if still eligible) SELECT fix_attempts again, then
-// (only if still no in-flight attempt) INSERT fix_attempts, conditionally
-// UPDATE findings, INSERT audit_log, COMMIT. Any negative outcome
-// ROLLBACKs immediately without inserting anything.
-function writeTxnAuthored(opts: {
-  lockedState?: string;
-  existingAttempt?: Record<string, unknown> | null;
-  fixAttemptId?: string;
-  advanceState: boolean;
-}) {
+// (only if still no in-flight attempt) INSERT fix_attempts (status always
+// 'failed' — see file header), INSERT audit_log, COMMIT. Any negative
+// outcome ROLLBACKs immediately without inserting anything.
+function writeTxnAuthored(opts: { lockedState?: string; fixAttemptId?: string }) {
   const lockedState = opts.lockedState ?? "detected";
-  const rows: { rows: Record<string, unknown>[] }[] = [
+  return [
     { rows: [] }, // BEGIN
     { rows: [] }, // set_config product
     { rows: [{ state: lockedState }] }, // SELECT findings FOR UPDATE
-    { rows: opts.existingAttempt ? [opts.existingAttempt] : [] }, // SELECT fix_attempts (authoritative)
+    { rows: [] }, // SELECT fix_attempts (authoritative)
     { rows: [{ id: opts.fixAttemptId ?? "attempt-1" }] }, // INSERT fix_attempts
+    { rows: [] }, // INSERT audit_log
+    { rows: [] }, // COMMIT
   ];
-  if (opts.advanceState) rows.push({ rows: [] }); // UPDATE findings
-  rows.push({ rows: [] }); // INSERT audit_log
-  rows.push({ rows: [] }); // COMMIT
-  return rows;
 }
 
 function writeTxnRolledBackOnLockedState(lockedState: string | null) {
@@ -149,6 +149,7 @@ describe("authorFixForFinding", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     _resetPool();
   });
 
@@ -185,11 +186,9 @@ describe("authorFixForFinding", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("records a 'pending' fix_attempts row and advances the finding on a successful diff", async () => {
+  it("records a 'failed' fix_attempts row with diffExtracted:true when the model returns a valid diff", async () => {
     const fetchClient = makeClient(fetchTxn({}));
-    const writeClient = makeClient(
-      writeTxnAuthored({ fixAttemptId: "attempt-1", advanceState: true })
-    );
+    const writeClient = makeClient(writeTxnAuthored({ fixAttemptId: "attempt-1" }));
     const pool = poolAlternating(fetchClient, writeClient);
     mockFetchOk(VALID_DIFF);
 
@@ -202,16 +201,14 @@ describe("authorFixForFinding", () => {
       diffExtracted: true,
     });
     const insertCall = calls(writeClient).find(([q]) => q.includes("INSERT INTO fix_attempts"))!;
-    expect(insertCall[1]).toEqual(["prod-1", "finding-1", "triage-model", "pending"]);
-    const updateCall = calls(writeClient).find(([q]) => q.includes("UPDATE findings"));
-    expect(updateCall).toBeDefined();
+    expect(insertCall[0]).toContain("'failed'");
+    expect(insertCall[1]).toEqual(["prod-1", "finding-1", "triage-model"]);
+    expect(calls(writeClient).some(([q]) => q.includes("UPDATE findings"))).toBe(false);
   });
 
-  it("records a 'failed' fix_attempts row and does NOT advance the finding when the model returns no fix", async () => {
+  it("records a 'failed' fix_attempts row with diffExtracted:false when the model returns no fix", async () => {
     const fetchClient = makeClient(fetchTxn({}));
-    const writeClient = makeClient(
-      writeTxnAuthored({ fixAttemptId: "attempt-2", advanceState: false })
-    );
+    const writeClient = makeClient(writeTxnAuthored({ fixAttemptId: "attempt-2" }));
     const pool = poolAlternating(fetchClient, writeClient);
     mockFetchOk("NO_FIX_AVAILABLE");
 
@@ -224,25 +221,37 @@ describe("authorFixForFinding", () => {
       diffExtracted: false,
     });
     const insertCall = calls(writeClient).find(([q]) => q.includes("INSERT INTO fix_attempts"))!;
-    expect(insertCall[1]).toEqual(["prod-1", "finding-1", "triage-model", "failed"]);
-    const updateCall = calls(writeClient).find(([q]) => q.includes("UPDATE findings"));
-    expect(updateCall).toBeUndefined();
+    expect(insertCall[1]).toEqual(["prod-1", "finding-1", "triage-model"]);
+    expect(calls(writeClient).some(([q]) => q.includes("UPDATE findings"))).toBe(false);
+  });
+
+  it("scopes the write-txn fix_attempts lookup and insert by product_id, not finding_id alone", async () => {
+    const fetchClient = makeClient(fetchTxn({}));
+    const writeClient = makeClient(writeTxnAuthored({ fixAttemptId: "attempt-1" }));
+    const pool = poolAlternating(fetchClient, writeClient);
+    mockFetchOk(VALID_DIFF);
+
+    await authorFixForFinding(pool, "prod-1", "finding-1");
+
+    const attemptSelectCall = calls(writeClient).find(([q]) => q.includes("FROM fix_attempts"))!;
+    expect(attemptSelectCall[1]).toEqual(["prod-1", "finding-1"]);
+    const insertCall = calls(writeClient).find(([q]) => q.includes("INSERT INTO fix_attempts"))!;
+    expect(insertCall[1]).toEqual(["prod-1", "finding-1", "triage-model"]);
   });
 
   it("never writes the raw diff or raw finding.detail into audit_log", async () => {
     const fetchClient = makeClient(fetchTxn({}));
-    const writeClient = makeClient(
-      writeTxnAuthored({ fixAttemptId: "attempt-1", advanceState: true })
-    );
+    const writeClient = makeClient(writeTxnAuthored({ fixAttemptId: "attempt-1" }));
     const pool = poolAlternating(fetchClient, writeClient);
     mockFetchOk(VALID_DIFF);
 
     await authorFixForFinding(pool, "prod-1", "finding-1");
 
     const auditCall = calls(writeClient).find(([q]) => q.includes("INSERT INTO audit_log"))!;
-    const payload = JSON.stringify(auditCall[1]);
-    expect(payload).not.toContain(VALID_DIFF);
-    expect(payload).not.toContain("CVE-2025-XXXX");
+    const payloadJson = (auditCall[1] as unknown[])[1] as string;
+    expect(payloadJson).not.toContain(VALID_DIFF);
+    expect(payloadJson).not.toContain("CVE-2025-XXXX");
+    expect(JSON.parse(payloadJson)).toMatchObject({ diff_extracted: true });
   });
 
   it("propagates a LiteLLM failure without writing any fix_attempts row", async () => {
@@ -262,7 +271,7 @@ describe("authorFixForFinding", () => {
     // Read-txn pre-check saw an eligible 'detected' finding (so the LLM call
     // happens); by the time the write txn takes the row lock, a human has
     // dismissed it. The authoritative re-check must catch this — never
-    // commit a 'pending' fix_attempts row against a dismissed finding.
+    // commit a fix_attempts row against a dismissed finding.
     const fetchClient = makeClient(fetchTxn({}));
     const writeClient = makeClient(writeTxnRolledBackOnLockedState("dismissed"));
     const pool = poolAlternating(fetchClient, writeClient);
@@ -305,9 +314,7 @@ describe("authorFixForFinding", () => {
 
   it("scopes both the read-txn and write-txn finding lookups by product_id, not id alone", async () => {
     const fetchClient = makeClient(fetchTxn({}));
-    const writeClient = makeClient(
-      writeTxnAuthored({ fixAttemptId: "attempt-1", advanceState: true })
-    );
+    const writeClient = makeClient(writeTxnAuthored({ fixAttemptId: "attempt-1" }));
     const pool = poolAlternating(fetchClient, writeClient);
     mockFetchOk(VALID_DIFF);
 

@@ -56,6 +56,23 @@ import { resolveAgentModelRouting } from "./agent-model-routing";
 // __tests__/fix-author.test.ts. A third, low-severity note (scope the
 // findings read by product_id, not id alone — RLS already enforces this, but
 // belt-and-suspenders matches every other reboot query) is also applied.
+//
+// CODERABBIT REVIEW (same PR, after the Security Lead pass): two more real
+// findings, both fixed — (1) the `fix_attempts` lookups still keyed on
+// `finding_id` alone rather than `(product_id, finding_id)` even after the
+// Security Lead's product_id note landed on the `findings` reads; extended
+// to every fix_attempts query in this file. (2) a genuine data-integrity bug:
+// this file was inserting `status = 'pending'` whenever a diff was
+// extracted, but nothing in this PR persists that diff anywhere durable and
+// nothing dispatches it — a `pending` row here would be an unrecoverable
+// dead end (the in-flight-attempt check above would skip re-authoring this
+// finding forever, for a patch that no longer exists anywhere). Fixed: status
+// is always `'failed'` in this PR regardless of whether a diff was
+// extracted, with `diff_extracted` in the audit_log payload as the signal
+// that distinguishes a real candidate fix from "no fix found" — see the
+// `STATUS IS ALWAYS 'failed'` comment in authorFixForFinding for the full
+// reasoning and what has to be true before a future PR can legitimately
+// write `pending` again.
 
 export type FindingRow = {
   id: string;
@@ -90,9 +107,12 @@ export function _resetPool(mock?: Pool): void {
 // A finding in one of these states is not eligible for a new fix attempt —
 // already shipped, or a human explicitly dismissed it as not worth fixing.
 const TERMINAL_FINDING_STATES: ReadonlySet<string> = new Set(["shipped", "dismissed"]);
-// A finding moves to fix_in_progress only from one of these states — never
-// clobbers a state a human or a later stage already advanced past.
-const ELIGIBLE_FOR_IN_PROGRESS: ReadonlySet<string> = new Set(["detected", "triaged"]);
+// NOTE: this PR never advances findings.state to 'fix_in_progress' — see the
+// STATUS IS ALWAYS 'failed' comment in authorFixForFinding's write
+// transaction for why. A future dispatch-capable PR will introduce that
+// transition (gated on state in ('detected','triaged'), never clobbering a
+// state a human or a later stage already advanced past) alongside real
+// 'pending' semantics.
 
 // Bound the untrusted detail payload's contribution to prompt size/cost —
 // same discipline as detect-vulnerabilities.ts's ALERTS_PER_PAGE/TITLE_MAX_LEN
@@ -232,9 +252,9 @@ export async function authorFixForFinding(
     if (finding) {
       const { rows: attemptRows } = await fetchClient.query<ExistingAttemptRow>(
         `SELECT id FROM fix_attempts
-         WHERE finding_id = $1 AND status IN ('pending', 'running')
+         WHERE product_id = $1 AND finding_id = $2 AND status IN ('pending', 'running')
          LIMIT 1`,
-        [findingId]
+        [productId, findingId]
       );
       existingAttempt = attemptRows[0] ?? null;
     }
@@ -311,30 +331,46 @@ export async function authorFixForFinding(
 
     const { rows: attemptRows } = await writeClient.query<ExistingAttemptRow>(
       `SELECT id FROM fix_attempts
-       WHERE finding_id = $1 AND status IN ('pending', 'running')
+       WHERE product_id = $1 AND finding_id = $2 AND status IN ('pending', 'running')
        LIMIT 1`,
-      [findingId]
+      [productId, findingId]
     );
     if (attemptRows[0]) {
       await writeClient.query("ROLLBACK");
       return { skipped: true, reason: "attempt_in_progress" };
     }
 
+    // STATUS IS ALWAYS 'failed' IN THIS PR, EVEN WHEN A VALID DIFF WAS
+    // EXTRACTED — deliberate, not a bug (CodeRabbit review, this PR): the
+    // extracted diff lives only in the `diff` local variable and is never
+    // persisted anywhere (see the schema migration's own threat-model note —
+    // diff_ref is a pointer to the SANDBOX RUN's artifact, never inline
+    // content, and this PR has no sandbox-dispatch half yet — FQ-79). A
+    // 'pending' row here would imply "queued for dispatch," but nothing
+    // durable would exist for a future dispatcher to actually dispatch, and
+    // the in-flight-attempt check above would then skip re-authoring this
+    // finding FOREVER — an unrecoverable dead end. `diff_extracted` in the
+    // audit_log payload below is what distinguishes "the model found a real
+    // fix" from "no fix available" for a human reviewing failed attempts,
+    // without overclaiming a status this PR cannot back up. A future PR that
+    // adds real dispatch (once FQ-79 is decided) either dispatches in the
+    // same invocation (diff never needs to survive across a process
+    // boundary) or adds genuine durable diff storage FIRST — then this
+    // status can legitimately become 'pending'.
     const { rows: insertedRows } = await writeClient.query<{ id: string }>(
       `INSERT INTO fix_attempts (product_id, finding_id, agent, model_alias, status)
-       VALUES ($1, $2, 'fix-author-agent', $3, $4)
+       VALUES ($1, $2, 'fix-author-agent', $3, 'failed')
        RETURNING id`,
-      [productId, findingId, model, diff ? "pending" : "failed"]
+      [productId, findingId, model]
     );
     const fixAttemptId = insertedRows[0].id;
 
-    if (diff && ELIGIBLE_FOR_IN_PROGRESS.has(currentState)) {
-      await writeClient.query(
-        `UPDATE findings SET state = 'fix_in_progress'
-         WHERE id = $1 AND state IN ('detected', 'triaged')`,
-        [findingId]
-      );
-    }
+    // findings.state is NOT advanced to 'fix_in_progress' in this PR for the
+    // same reason: nothing is actually in progress once this function
+    // returns (no durable diff, no dispatch) — advancing it would
+    // misrepresent system state to a human looking at the dashboard. A
+    // future dispatch-capable PR gates the real transition on state in
+    // ('detected', 'triaged'), same as TERMINAL_FINDING_STATES' own guard.
 
     await writeClient.query(
       `INSERT INTO audit_log (actor, action, resource_type, resource_id, payload)
