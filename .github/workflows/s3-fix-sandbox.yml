@@ -53,6 +53,16 @@ name: S3 Fix Sandbox — sandboxed patch/test/scan run (no secrets, egress-restr
 #     exfiltrate), the residual risk is source-code disclosure of the
 #     already-public-within-the-org pilot repo, not credential theft.
 #
+# ALLOWLIST DISCOVERED VIA A REAL BLOCKED RUN, NOT GUESSED: the first live
+# dispatch (2026-07-19, run 29666779286) had `npm ci` genuinely blocked and
+# fail — real evidence harden-runner's egress restriction works, not a
+# no-op — because this repo's `supabase` devDependency downloads a platform
+# binary from `release-assets.githubusercontent.com` during its postinstall
+# script, a distinct host from `objects.githubusercontent.com`. Added below.
+# A future pilot product with different postinstall needs may require
+# widening this list the same way — expect harden-runner's own run log to
+# name the exact blocked domain, same self-documenting loop as this one.
+#
 # ALL WORKFLOW INPUTS ARE PASSED THROUGH `env:` BLOCKS, NEVER INTERPOLATED
 # DIRECTLY INTO `run:` SHELL (`${{ inputs.* }}` inline in a script is
 # GitHub's own documented script-injection footgun — a crafted
@@ -184,6 +194,7 @@ jobs:
             github.com:443
             api.github.com:443
             objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
             *.actions.githubusercontent.com:443
             *.blob.core.windows.net:443
             registry.npmjs.org:443
