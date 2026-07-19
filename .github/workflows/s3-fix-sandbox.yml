@@ -5,8 +5,17 @@ name: S3 Fix Sandbox — sandboxed patch/test/scan run (no secrets, egress-restr
 # no secrets and no GitHub token, and is egress-restricted... It cannot reach
 # the network, the LiteLLM master key, Supabase, or the App key." This file
 # is PR C in the S3 sequence — a standalone, workflow_dispatch-able sandbox.
-# PR D (fix-author-agent) will dispatch this programmatically per fix_attempt
-# once it exists; for now it is manually dispatchable for testing.
+# fix-author-agent (src/inngest/fix-author.ts) dispatches this programmatically
+# per fix_attempt, reusing GITHUB_STATUS_DISPATCH_TOKEN (an existing Coolify-
+# held credential, Actions: Read/Write on this repo — see FOUNDER_QUEUE.md
+# FQ-79 for why no new credential was needed); it remains manually dispatchable
+# for testing too.
+#
+# fix_attempt_id (added alongside the dispatch caller): workflow_dispatch's
+# own API returns HTTP 204 with no run id, so the caller cannot learn which
+# run it just started. This input plus `run-name:` lets a reconciliation step
+# find the exact run afterward by name (and results.json below repeats the id
+# as a second, redundant correlation signal in the output artifact).
 #
 # TWO-JOB SECURITY SPLIT (this is the actual mechanism behind "no secrets in
 # the sandbox" — a private repo cannot be checked out with literally zero
@@ -93,6 +102,20 @@ on:
       patch_base64:
         description: "Base64-encoded unified diff to apply on top of ref"
         required: true
+      fix_attempt_id:
+        description: "fix_attempts.id (uuid) this run belongs to — lets a caller correlate this run back to its originating attempt, since workflow_dispatch's own API returns no run id synchronously"
+        required: true
+
+# Correlates this run back to its originating fix_attempts row for a caller
+# that dispatched via the API (workflow_dispatch returns HTTP 204, no run id)
+# — a reconciliation step can find this run by matching run-name, without
+# needing a second GitHub credential/permission just to list+guess runs by
+# timestamp. GitHub evaluates run-name as a workflow-level expression (not
+# shell), so this is not subject to the same script-injection class the file
+# header describes for `run:` blocks — but fix_attempt_id is still validated
+# below (defense in depth, same discipline as repo_full_name/ref) since it
+# also appears in results.json as a second, redundant correlation signal.
+run-name: "S3 Fix Sandbox — attempt ${{ inputs.fix_attempt_id }}"
 
 permissions:
   contents: read
@@ -115,11 +138,12 @@ jobs:
             exit 1
           fi
 
-      - name: Validate + parse repo_full_name into owner/name, validate ref
+      - name: Validate + parse repo_full_name into owner/name, validate ref + fix_attempt_id
         id: parse
         env:
           FULL: ${{ inputs.repo_full_name }}
           REF: ${{ inputs.ref }}
+          ATTEMPT_ID: ${{ inputs.fix_attempt_id }}
         run: |
           # Strict allowlist pattern — inputs are never interpolated directly
           # into a shell command elsewhere in this workflow (see file header);
@@ -130,6 +154,10 @@ jobs:
           fi
           if ! echo "$REF" | grep -qE '^[A-Za-z0-9_./-]+$'; then
             echo "::error::ref '$REF' contains characters outside the expected branch/tag/SHA pattern"
+            exit 1
+          fi
+          if ! echo "$ATTEMPT_ID" | grep -qE '^[0-9a-fA-F-]{1,64}$'; then
+            echo "::error::fix_attempt_id '$ATTEMPT_ID' does not match the expected uuid-shaped pattern"
             exit 1
           fi
           echo "owner=${FULL%%/*}" >> "$GITHUB_OUTPUT"
@@ -283,9 +311,12 @@ jobs:
           fi
 
       - name: Write the results summary
+        env:
+          ATTEMPT_ID: ${{ inputs.fix_attempt_id }}
         run: |
           cat > results.json <<EOF
           {
+            "fix_attempt_id": "${ATTEMPT_ID}",
             "build_outcome": "${{ steps.build.outcome }}",
             "lint_outcome": "${{ steps.lint.outcome }}",
             "test_outcome": "${{ steps.test.outcome }}",
@@ -311,6 +342,7 @@ jobs:
       - name: Summary
         if: always()
         env:
+          ATTEMPT_ID: ${{ inputs.fix_attempt_id }}
           FULL: ${{ inputs.repo_full_name }}
           REF: ${{ inputs.ref }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
@@ -320,6 +352,7 @@ jobs:
           CANARY_BLOCKED: ${{ steps.canary.outputs.canary_blocked }}
         run: |
           echo "=== S3 Fix Sandbox run ==="
+          echo "fix_attempt_id: $ATTEMPT_ID"
           echo "Repo: $FULL  Ref: $REF"
           echo "Build: $BUILD_OUTCOME | Lint: $LINT_OUTCOME | Test: $TEST_OUTCOME (skipped=$TEST_SKIPPED)"
           echo "Egress canary blocked: $CANARY_BLOCKED"
