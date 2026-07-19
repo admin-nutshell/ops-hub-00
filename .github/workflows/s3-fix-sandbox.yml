@@ -38,14 +38,29 @@ name: S3 Fix Sandbox — sandboxed patch/test/scan run (no secrets, egress-restr
 #      outbound call -> blocked") as something every real run re-verifies,
 #      not a one-time manual check.
 #
-# KNOWN, DOCUMENTED LIMITATION (same "honest limitation" discipline as the
-# process-integrity audit's triggering_actor note): harden-runner Community
-# tier has a published DNS-over-HTTPS (DoH) egress-policy bypass
-# (GHSA-46g3-37rh-v698). This is real defense-in-depth, not a perfect
-# guarantee — combined with the no-secrets invariant (job 2 never holds a
-# credential to exfiltrate in the first place) it is a meaningfully smaller
-# attack surface than an open-egress runner, not a claim of a fully sealed
-# sandbox.
+# KNOWN, DOCUMENTED LIMITATIONS (same "honest limitation" discipline as the
+# process-integrity audit's triggering_actor note; both flagged by Security
+# Lead review on this PR — real defense-in-depth, not a claim of a fully
+# sealed sandbox):
+#   - harden-runner Community tier has a published DNS-over-HTTPS (DoH)
+#     egress-policy bypass (GHSA-46g3-37rh-v698).
+#   - `*.blob.core.windows.net:443` is allowlisted because GitHub's own
+#     artifact storage needs it — but that wildcard is broad enough that
+#     sandboxed code could reach ANY Azure storage account, a real (if
+#     narrow) exfiltration channel for the checked-out repo's source. Kept
+#     because artifact upload/download would not work without it; combined
+#     with the no-secrets invariant (there is no credential in this job to
+#     exfiltrate), the residual risk is source-code disclosure of the
+#     already-public-within-the-org pilot repo, not credential theft.
+#
+# ALL WORKFLOW INPUTS ARE PASSED THROUGH `env:` BLOCKS, NEVER INTERPOLATED
+# DIRECTLY INTO `run:` SHELL (`${{ inputs.* }}` inline in a script is
+# GitHub's own documented script-injection footgun — a crafted
+# repo_full_name/ref/patch_base64 could otherwise execute arbitrary shell in
+# the TRUSTED checkout job, which holds the App token). `repo_full_name` and
+# `ref` are additionally validated against a strict allowlist pattern before
+# use. Flagged by Security Lead review on this PR — fixed pre-merge, not a
+# follow-up.
 #
 # THIS REPO'S PILOT PRODUCT HAS NO TEST SUITE: web-app-tns-06's package.json
 # defines no `test` script (confirmed by reading it directly, not assumed).
@@ -81,6 +96,7 @@ jobs:
   checkout:
     name: Trusted checkout (mints + discards an installation token; the ONLY job holding a credential)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Guard — required secret present
         run: |
@@ -89,17 +105,32 @@ jobs:
             exit 1
           fi
 
-      - name: Parse repo_full_name into owner/name
+      - name: Validate + parse repo_full_name into owner/name, validate ref
         id: parse
+        env:
+          FULL: ${{ inputs.repo_full_name }}
+          REF: ${{ inputs.ref }}
         run: |
-          FULL="${{ inputs.repo_full_name }}"
+          # Strict allowlist pattern — inputs are never interpolated directly
+          # into a shell command elsewhere in this workflow (see file header);
+          # this is the one place they are validated before any use at all.
+          if ! echo "$FULL" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "::error::repo_full_name '$FULL' does not match the expected owner/repo pattern"
+            exit 1
+          fi
+          if ! echo "$REF" | grep -qE '^[A-Za-z0-9_./-]+$'; then
+            echo "::error::ref '$REF' contains characters outside the expected branch/tag/SHA pattern"
+            exit 1
+          fi
           echo "owner=${FULL%%/*}" >> "$GITHUB_OUTPUT"
           echo "name=${FULL##*/}" >> "$GITHUB_OUTPUT"
 
       - name: Decode App private key (masked immediately, never written to a file)
         id: key
+        env:
+          KEY_B64: ${{ secrets.CONNECTOR_APP_PRIVATE_KEY_B64 }}
         run: |
-          PEM=$(echo "${{ secrets.CONNECTOR_APP_PRIVATE_KEY_B64 }}" | base64 -d)
+          PEM=$(echo "$KEY_B64" | base64 -d)
           echo "::add-mask::$PEM"
           {
             echo "pem<<GHAEOF"
@@ -117,11 +148,14 @@ jobs:
           repositories: ${{ steps.parse.outputs.name }}
 
       - name: Clone the product repo at ref (token used once here only, never persisted)
+        env:
+          TOKEN: ${{ steps.mint.outputs.token }}
+          FULL: ${{ inputs.repo_full_name }}
+          REF: ${{ inputs.ref }}
         run: |
-          TOKEN="${{ steps.mint.outputs.token }}"
           echo "::add-mask::$TOKEN"
-          git clone --depth 1 --branch "${{ inputs.ref }}" \
-            "https://x-access-token:${TOKEN}@github.com/${{ inputs.repo_full_name }}.git" repo
+          git clone --depth 1 --branch "$REF" \
+            "https://x-access-token:${TOKEN}@github.com/${FULL}.git" repo
 
       - name: Strip .git (no embedded remote/token trace) before packaging
         run: rm -rf repo/.git
@@ -140,6 +174,7 @@ jobs:
     needs: checkout
     runs-on: ubuntu-latest
     permissions: {}
+    timeout-minutes: 20
     steps:
       - name: Harden Runner — block all egress except this build's actual dependencies
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
@@ -170,9 +205,11 @@ jobs:
           name: repo-checkout
 
       - name: Unpack the checkout and decode the patch
+        env:
+          PATCH_B64: ${{ inputs.patch_base64 }}
         run: |
           tar xzf repo.tar.gz
-          echo "${{ inputs.patch_base64 }}" | base64 -d > patch.diff
+          echo "$PATCH_B64" | base64 -d > patch.diff
 
       - name: Apply the patch (plain `patch`, not `git apply` — .git was stripped)
         run: |
@@ -208,18 +245,29 @@ jobs:
             echo "skipped=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Egress canary — confirm a non-allowlisted outbound call is actually blocked
+      - name: Egress canary — confirm a non-allowlisted call is blocked AND an allowlisted one succeeds
         id: canary
         run: |
           set +e
-          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://example.com)
+          # Positive control FIRST: prove the network path itself works (an
+          # unrelated DNS/timeout failure would make "000" on the negative
+          # check below a false-positive pass, not real evidence of blocking —
+          # Security Lead review flagged this on this PR).
+          POS_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.github.com)
+          NEG_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://example.com)
           set -e
-          if [ "$CODE" = "000" ]; then
+          echo "Positive control (api.github.com, allowlisted): HTTP $POS_CODE"
+          echo "Negative control (example.com, NOT allowlisted): HTTP $NEG_CODE"
+          if [ "$POS_CODE" = "000" ]; then
+            echo "::error::Egress canary INCONCLUSIVE: even the allowlisted positive control (api.github.com) failed (HTTP $POS_CODE) — the network path itself is broken, so the negative control result below proves nothing."
+            exit 1
+          fi
+          if [ "$NEG_CODE" = "000" ]; then
             echo "canary_blocked=true" >> "$GITHUB_OUTPUT"
-            echo "Egress canary: outbound call to a non-allowlisted host was BLOCKED, as expected."
+            echo "Egress canary: allowlisted host reachable, non-allowlisted host BLOCKED — egress restriction confirmed working."
           else
             echo "canary_blocked=false" >> "$GITHUB_OUTPUT"
-            echo "::error::Egress canary FAILED: a non-allowlisted outbound call succeeded (HTTP $CODE) — egress restriction is not working. This job should be treated as failed even if build/lint/test passed."
+            echo "::error::Egress canary FAILED: a non-allowlisted outbound call succeeded (HTTP $NEG_CODE) — egress restriction is not working. This job should be treated as failed even if build/lint/test passed."
             exit 1
           fi
 
@@ -251,8 +299,16 @@ jobs:
 
       - name: Summary
         if: always()
+        env:
+          FULL: ${{ inputs.repo_full_name }}
+          REF: ${{ inputs.ref }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          TEST_SKIPPED: ${{ steps.test.outputs.skipped }}
+          CANARY_BLOCKED: ${{ steps.canary.outputs.canary_blocked }}
         run: |
           echo "=== S3 Fix Sandbox run ==="
-          echo "Repo: ${{ inputs.repo_full_name }}  Ref: ${{ inputs.ref }}"
-          echo "Build: ${{ steps.build.outcome }} | Lint: ${{ steps.lint.outcome }} | Test: ${{ steps.test.outcome }} (skipped=${{ steps.test.outputs.skipped }})"
-          echo "Egress canary blocked: ${{ steps.canary.outputs.canary_blocked }}"
+          echo "Repo: $FULL  Ref: $REF"
+          echo "Build: $BUILD_OUTCOME | Lint: $LINT_OUTCOME | Test: $TEST_OUTCOME (skipped=$TEST_SKIPPED)"
+          echo "Egress canary blocked: $CANARY_BLOCKED"
