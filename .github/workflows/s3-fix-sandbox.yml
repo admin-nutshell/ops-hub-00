@@ -15,7 +15,11 @@ name: S3 Fix Sandbox — sandboxed patch/test/scan run (no secrets, egress-restr
 # own API returns HTTP 204 with no run id, so the caller cannot learn which
 # run it just started. This input plus `run-name:` lets a reconciliation step
 # find the exact run afterward by name (and results.json below repeats the id
-# as a second, redundant correlation signal in the output artifact).
+# as a second, redundant correlation signal in the output artifact — shipped
+# in TWO artifacts: `sandbox-results` (diff+logs+results.json, tar.gz'd, for
+# a human to inspect via the Actions UI) and `sandbox-results-summary`
+# (results.json alone, flat — a single-zip-layer artifact for the
+# reconciliation mechanism to parse without needing a tar reader too).
 #
 # TWO-JOB SECURITY SPLIT (this is the actual mechanism behind "no secrets in
 # the sandbox" — a private repo cannot be checked out with literally zero
@@ -337,6 +341,20 @@ jobs:
         with:
           name: sandbox-results
           path: sandbox-results.tar.gz
+          retention-days: 7
+
+      # A second, separate artifact holding ONLY results.json (flat, no tar.gz
+      # layer inside it) — added for the not-yet-built reconciliation mechanism
+      # (see src/inngest/fix-author.ts's file header). Reconciliation only
+      # needs the machine-readable outcome, never the diff/log content; giving
+      # it a single-zip-layer artifact to read means it needs a zip reader
+      # only, never a tar reader, for a small, well-defined parsing surface.
+      # The full `sandbox-results` bundle above is unchanged and remains the
+      # one a human inspects via the Actions UI for the actual diff/logs.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sandbox-results-summary
+          path: results.json
           retention-days: 7
 
       - name: Summary

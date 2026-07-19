@@ -12,6 +12,7 @@ import { syncAgentCosts } from "./inngest/agent-cost-sync";
 import { inspectRepo } from "./inngest/repo-inspect";
 import { detectVulnerabilities } from "./inngest/detect-vulnerabilities";
 import { authorFix } from "./inngest/fix-author";
+import { fixReconcile } from "./inngest/fix-reconcile";
 import { emitTrace } from "./langfuse";
 import { handleStatusWebhook } from "./statusWebhook";
 import { handleLitellmHealth } from "./healthLitellm";
@@ -35,6 +36,7 @@ const inngestHandler = serve({
     inspectRepo,
     detectVulnerabilities,
     authorFix,
+    fixReconcile,
   ],
 });
 
