@@ -25,6 +25,11 @@
 
 **Notify:** Coordinator, once Item 2's 4 steps are done — will verify the App's permissions live (same "confirm by checking, not assuming from docs" discipline used for every prior App-scope check this sprint) and proceed with draft-PR creation.
 
+**Update 2026-07-19 — a third, smaller item surfaced while trying to live-prove the dispatch code merged in PR #560 (not blocking, just needs you when convenient):**
+
+- **The credential-scope risk is resolved, no action needed.** PR #560's own header flagged a real open question: `GITHUB_STATUS_DISPATCH_TOKEN` (Item 1 above) has only ever been proven live against GitHub's `repository_dispatch` endpoint (the status-page feature); the new fix-author code calls a *different* endpoint (`workflow_dispatch`, to run `s3-fix-sandbox.yml` directly) that GitHub documents as needing a different fine-grained permission (`Actions: write` vs. `Contents: write`). Checked GitHub's own docs and community reports directly rather than assuming: `workflow_dispatch` unambiguously needs `Actions: write` — and that's exactly the permission this token already has and already uses successfully every time the status page fires. No scope widening needed; this was a documentation-consistency question, not a real gap.
+- **The one thing still needed for an actual end-to-end live test: start `ops-hub-staging` again.** Checked just now — staging is currently **stopped** (its normal resting state per T-98's cost-saving design; confirmed via the documented "302 → app.inatechshell.ca" signature, not a guess). Starting it back up requires your own typed confirmation in `start-ops-hub-staging.yml`, same as every time before — this is not something the team will type on your behalf. No rush: nothing is broken by staging being stopped, and this only blocks the *live* proof, not the code itself (which is merged, reviewed, and doc-verified). Say the word whenever you'd like to see it run for real.
+
 ---
 
 ## ✅ FQ-78 — RESOLVED: you said yes; the content is live (via a corrective PR, not #501 itself — see why below)
