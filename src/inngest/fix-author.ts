@@ -335,18 +335,23 @@ async function dispatchSandboxWorkflow(params: {
 // second, small transaction (see the two blocks after the write txn below).
 //
 // TWO-STAGE ELIGIBILITY CHECK, DELIBERATE: the read transaction's
-// terminal-state/in-flight-attempt checks below are a cheap PRE-CHECK ONLY —
-// their purpose is to skip the (up to 60s) LLM call in the common case
-// (already-terminal finding, already-in-flight attempt from a prior/retried
-// run). They are NOT the safety boundary. The actual boundary is the
-// re-check inside the write transaction (see authorFixForFinding's second
-// half): `SELECT ... FOR UPDATE` on the finding row serializes concurrent
-// callers for the SAME finding_id, so the in-flight-attempt re-check that
-// runs after acquiring that lock is race-free — two concurrent dispatches
-// (or an Inngest retry overlapping a slow first run) cannot both insert a
-// `fix_attempts` row, and neither can commit a `pending` row against a
-// finding a human dismissed mid-flight (a security-review finding this PR
-// fixes before merge — see PR description).
+// terminal-state/in-flight-attempt/repo-connection checks below are a cheap
+// PRE-CHECK ONLY — their purpose is to skip the (up to 60s) LLM call in the
+// common case (already-terminal finding, already-in-flight attempt from a
+// prior/retried run, no active connection). They are NOT the safety
+// boundary. The actual boundary is the re-check inside the write
+// transaction (see authorFixForFinding's second half): `SELECT ... FOR
+// UPDATE` on the finding row serializes concurrent callers for the SAME
+// finding_id, so the in-flight-attempt re-check that runs after acquiring
+// that lock is race-free — two concurrent dispatches (or an Inngest retry
+// overlapping a slow first run) cannot both insert a `fix_attempts` row,
+// and neither can commit a `pending` row against a finding a human
+// dismissed mid-flight. The write transaction ALSO re-reads
+// repo_connections fresh (only when a diff was extracted, since that's the
+// only case anything gets dispatched) and dispatches using THAT freshly
+// re-checked row, never the one read minutes earlier before the LLM call —
+// a since-deactivated connection or changed default_branch must not cause a
+// dispatch against stale repo/branch data (CodeRabbit review, this PR).
 export async function authorFixForFinding(
   pool: Pool,
   productId: string,
@@ -449,6 +454,7 @@ export async function authorFixForFinding(
   await langfuse?.flushAsync();
 
   let fixAttemptId = "";
+  let dispatchConnection: RepoConnectionRow | null = null;
   const writeClient = await pool.connect();
   try {
     await writeClient.query("BEGIN");
@@ -485,6 +491,33 @@ export async function authorFixForFinding(
     if (attemptRows[0]) {
       await writeClient.query("ROLLBACK");
       return { skipped: true, reason: "attempt_in_progress" };
+    }
+
+    // Authoritative re-check for the repo connection too (CodeRabbit review,
+    // this PR), but ONLY when there's actually something to dispatch: `diff`
+    // being null means this attempt is going to be recorded 'failed' with no
+    // dispatch regardless, so a since-deactivated connection is irrelevant to
+    // it — gating the skip on that case would block a legitimate "no fix
+    // available" attempt for an unrelated reason. When a diff WAS extracted,
+    // `connection` above was read minutes earlier, before the LLM round
+    // trip — it could have been deactivated or repointed to a different
+    // default_branch in that window, same class of staleness the
+    // finding/attempt re-checks above already guard against. Re-read fresh
+    // and use THIS row (dispatchConnection, below) for the actual dispatch,
+    // never the stale one from the read transaction.
+    if (diff) {
+      const { rows: dispatchConnectionRows } = await writeClient.query<RepoConnectionRow>(
+        `SELECT repo_full_name, default_branch
+         FROM repo_connections
+         WHERE product_id = $1 AND status = 'active'
+         LIMIT 1`,
+        [productId]
+      );
+      dispatchConnection = dispatchConnectionRows[0] ?? null;
+      if (!dispatchConnection) {
+        await writeClient.query("ROLLBACK");
+        return { skipped: true, reason: "no_active_repo_connection" };
+      }
     }
 
     // Status starts 'pending' when a diff was extracted (dispatch is
@@ -541,18 +574,31 @@ export async function authorFixForFinding(
     // Nothing to dispatch — the row above is already 'failed', terminal.
     return { authored: true, fixAttemptId, model, diffExtracted: false, dispatched: false };
   }
+  if (!dispatchConnection) {
+    // Unreachable by construction: the write transaction above always sets
+    // dispatchConnection (or returns early) whenever diff is truthy — this
+    // is a defensive guard for the type checker, not an expected runtime path.
+    throw new Error("dispatchConnection missing despite a diff being present");
+  }
+  // Re-validate shape on THIS (freshly re-checked) row — the earlier
+  // validation above ran against the stale `connection` from the read
+  // transaction; this is the value that actually flows into the dispatch call.
+  assertValidRepoFullName(dispatchConnection.repo_full_name);
+  assertValidRef(dispatchConnection.default_branch);
 
   // Dispatch OUTSIDE the transaction/lock above (a slow network call must
-  // never hold a row lock — see file header) using the connection's
-  // repo_full_name/default_branch resolved in the read transaction.
+  // never hold a row lock — see file header) using dispatchConnection — the
+  // FRESHLY RE-CHECKED row from inside the write transaction (CodeRabbit
+  // review, this PR), never the one read minutes earlier in the initial read
+  // transaction, which could be stale by the time dispatch actually happens.
   // fixAttemptId is already committed as 'pending' at this point, so a
   // crash between here and the status update below leaves a real, visible
   // 'pending' row (auditable, not silently lost) rather than a dispatched
   // run with no corresponding attempt.
   try {
     await dispatchSandboxWorkflow({
-      repoFullName: connection.repo_full_name,
-      ref: connection.default_branch,
+      repoFullName: dispatchConnection.repo_full_name,
+      ref: dispatchConnection.default_branch,
       patchBase64: Buffer.from(diff, "utf8").toString("base64"),
       fixAttemptId,
     });

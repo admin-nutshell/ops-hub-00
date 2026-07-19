@@ -98,18 +98,28 @@ function fetchTxn(opts: {
 
 // The write transaction's AUTHORITATIVE re-check: SELECT ... FOR UPDATE the
 // finding row, then (only if still eligible) SELECT fix_attempts again, then
-// (only if still no in-flight attempt) INSERT fix_attempts, conditionally
-// UPDATE findings, INSERT audit_log, COMMIT. Any negative outcome ROLLBACKs
-// immediately without inserting anything.
-function writeTxnAuthored(opts: { lockedState?: string; advanceState: boolean }) {
+// (ONLY when a diff was extracted — `advanceState` doubles as that signal in
+// every current call site) SELECT repo_connections fresh, then INSERT
+// fix_attempts, conditionally UPDATE findings, INSERT audit_log, COMMIT. Any
+// negative outcome ROLLBACKs immediately without inserting anything.
+function writeTxnAuthored(opts: {
+  lockedState?: string;
+  advanceState: boolean;
+  dispatchConnection?: Record<string, unknown> | null;
+}) {
   const lockedState = opts.lockedState ?? "detected";
+  const dispatchConnection =
+    opts.dispatchConnection === undefined ? CONNECTION_ROW : opts.dispatchConnection;
   const rows: { rows: Record<string, unknown>[] }[] = [
     { rows: [] }, // BEGIN
     { rows: [] }, // set_config product
     { rows: [{ state: lockedState }] }, // SELECT findings FOR UPDATE
     { rows: [] }, // SELECT fix_attempts (authoritative)
-    { rows: [] }, // INSERT fix_attempts
   ];
+  if (opts.advanceState) {
+    rows.push({ rows: dispatchConnection ? [dispatchConnection] : [] }); // SELECT repo_connections (authoritative re-check, only when a diff was extracted)
+  }
+  rows.push({ rows: [] }); // INSERT fix_attempts
   if (opts.advanceState) rows.push({ rows: [] }); // UPDATE findings
   rows.push({ rows: [] }); // INSERT audit_log
   rows.push({ rows: [] }); // COMMIT
@@ -121,6 +131,17 @@ function writeTxnRolledBackOnLockedState(lockedState: string | null) {
     { rows: [] }, // BEGIN
     { rows: [] }, // set_config product
     { rows: lockedState ? [{ state: lockedState }] : [] }, // SELECT findings FOR UPDATE
+    { rows: [] }, // ROLLBACK
+  ];
+}
+
+function writeTxnRolledBackOnMissingConnection() {
+  return [
+    { rows: [] }, // BEGIN
+    { rows: [] }, // set_config product
+    { rows: [{ state: "detected" }] }, // SELECT findings FOR UPDATE
+    { rows: [] }, // SELECT fix_attempts (authoritative) — none in flight
+    { rows: [] }, // SELECT repo_connections (authoritative) — deactivated mid-flight
     { rows: [] }, // ROLLBACK
   ];
 }
@@ -486,6 +507,23 @@ describe("authorFixForFinding", () => {
 
     expect(result).toEqual({ skipped: true, reason: "attempt_in_progress" });
     expect(calls(writeClient).some(([q]) => q.includes("INSERT INTO fix_attempts"))).toBe(false);
+  });
+
+  it("RACE: rolls back with no insert when the repo connection was deactivated mid-flight (CodeRabbit review)", async () => {
+    // Read-txn pre-check saw an active connection (so the LLM call happens
+    // and a real diff comes back); by the time the write txn re-checks, the
+    // connection has been deactivated. Must skip rather than dispatch stale
+    // repo/branch data.
+    const fetchClient = makeClient(fetchTxn({}));
+    const writeClient = makeClient(writeTxnRolledBackOnMissingConnection());
+    const pool = poolSequence(fetchClient, writeClient);
+    mockSequentialFetch(llmResponse(VALID_DIFF));
+
+    const result = await authorFixForFinding(pool, "prod-1", "finding-1");
+
+    expect(result).toEqual({ skipped: true, reason: "no_active_repo_connection" });
+    expect(calls(writeClient).some(([q]) => q.includes("INSERT INTO fix_attempts"))).toBe(false);
+    expect(calls(writeClient).some(([q]) => q === "ROLLBACK")).toBe(true);
   });
 
   it("scopes both the read-txn and write-txn finding lookups by product_id, not id alone", async () => {
