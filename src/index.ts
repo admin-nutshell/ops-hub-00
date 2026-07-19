@@ -11,6 +11,7 @@ import { learnFromTicket } from "./inngest/kb-learn";
 import { syncAgentCosts } from "./inngest/agent-cost-sync";
 import { inspectRepo } from "./inngest/repo-inspect";
 import { detectVulnerabilities } from "./inngest/detect-vulnerabilities";
+import { authorFix } from "./inngest/fix-author";
 import { emitTrace } from "./langfuse";
 import { handleStatusWebhook } from "./statusWebhook";
 import { handleLitellmHealth } from "./healthLitellm";
@@ -33,6 +34,7 @@ const inngestHandler = serve({
     syncAgentCosts,
     inspectRepo,
     detectVulnerabilities,
+    authorFix,
   ],
 });
 
