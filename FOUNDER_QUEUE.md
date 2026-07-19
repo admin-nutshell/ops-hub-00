@@ -4,6 +4,35 @@
 
 ---
 
+## 🟡 FQ-79 — Two credential decisions needed to finish S3's "propose fixes as draft PRs" (product reboot)
+
+**Filed:** 2026-07-18
+**Filed by:** Coordinator (S3 build session — schema, model-routing, and the ephemeral fix-sandbox workflow are all merged and live-proven; the fix-author-agent that reads a finding and asks the AI for a patch is built and about to be reviewed/merged. Two separate credential decisions are what's left to complete the loop — surfaced together so you can act on both at once instead of getting asked twice.)
+**Needs:** Decision + founder action, on two independent items below. Neither is urgent — nothing is broken, no customer is affected — but both block the next visible milestone ("a real draft PR shows up on the pilot repo").
+**Context:** S3's full path is: read a finding → AI authors a candidate patch → validate it in a locked-down sandbox (no secrets, egress-restricted — already built and proven working this sprint) → a separate trusted step opens a **draft** pull request (never auto-merged; S3 ships draft-only by design). The first two steps of that path need no new access. The last two each need one:
+
+**Item 1 — a credential to trigger our OWN sandbox workflow from the backend.** The AI-authored patch has to get to the sandbox somehow. The sandbox lives in this repo (`ops-hub-00`) as a GitHub Actions workflow; our backend app needs a way to say "run this workflow now, here's the patch." That requires write access to THIS repo's own Actions — and nothing in the codebase has that today (checked directly: no existing token, no existing trigger call). This is arguably a bigger ask than Item 2 below, because it reaches the repo that holds every one of our pipelines, not just the pilot product's code.
+- **Option A — a narrow, single-purpose credential (a fine-grained GitHub personal access token, or a small dedicated GitHub App, scoped to ONLY "run this one workflow" on ONLY this repo).** Simplest to build, standing credential the backend holds. The AI-authored patch is dispatched in the same step it's produced, so nothing needs to survive in storage between "patch written" and "sandbox runs it."
+- **Option B — no new standing credential: flip the direction.** Instead of our backend reaching out to trigger the workflow, a small scheduled job *inside* this repo periodically checks "is there a patch waiting to be tested?" and runs the sandbox itself, using GitHub's own built-in one-time token (already scoped to this repo, expires automatically, nothing new to store). **Correction after a second review pass (a real gap, not just a nuance — worth being upfront about):** this option is NOT a drop-in swap for A today. It requires the AI-authored patch to be written somewhere durable *first* (a database column, a queue, a private artifact store) so the scheduled job has something to actually pick up — that storage doesn't exist yet, and the team deliberately did NOT build it as a stand-in for a "pending" patch, precisely because doing so would mean holding AI-generated, prompt-injection-adjacent content at rest in a new place, which needs its own small design/review pass before it's a safe default. So B trades "one new access credential" for "one new small storage/handoff design" — not a strictly cheaper option, just a differently-shaped one.
+- **Recommendation:** **A**, since it's the more immediately buildable path (same-step dispatch, no new storage design needed) — worth it even though it's a standing credential, given the credential itself can be scoped to do nothing but trigger one named workflow on one named repo. Revisit **B** later if minimizing standing credentials becomes a higher priority than shipping quickly; it would need its own short design pass on the patch-storage piece first.
+
+**Item 2 — widen what our GitHub App can do on the pilot repo, so it can actually open a pull request.** Right now `ops-hub-connector` (the GitHub App connected to `admin-nutshell/web-app-tns-06`) is **read-only** — it can see code and alerts but cannot push a branch or open a PR. To open a **draft** PR from a validated patch, it needs two more permissions: **Contents: Read and write** (to push a branch) and **Pull requests: Read and write** (to open the PR itself). No other scope changes.
+- **What's needed:** github.com/settings/apps/ops-hub-connector → Permissions & events → add those two → Save → then accept the resulting installation-update prompt on the `web-app-tns-06` repo (GitHub requires an explicit re-accept whenever an App's permissions change, even for the account that installed it).
+- **Guardrails already in place regardless of this scope:** every PR opened this way starts in **draft** state — nothing merges itself; a human opens/reviews/merges it, same as any other PR on that repo. The credential used to push+open the PR is minted fresh per-operation and discarded immediately after (never stored), same discipline as every other credential this project uses.
+
+**Options (overall):**
+- **(A)** Decide Item 1 (A or B) and do Item 2 now — completes the last founder-gated step before "a real draft PR on the pilot repo" is possible. **Recommended.**
+- **(B)** Do Item 2 only for now, defer Item 1 — the fix-author-agent keeps recording authored patches (visible in the database) but nothing gets sandbox-validated or opened as a PR yet.
+- **(C)** Defer both — no functional regression; S3 stays where it is today (finding → AI-authored patch → recorded, nothing further).
+
+**Recommendation:** (A), with Item 1 = Option A (the narrow dispatch credential) — it's the more immediately buildable path; see Item 1's own note on why Option B isn't a same-cost swap today.
+
+**Deadline:** Non-blocking. Nothing today depends on this; it unblocks the next visible proof point, not a live capability already in use.
+
+**Notify:** Coordinator, once you've decided — will wire up whichever Item-1 option you pick and walk you through Item 2's two clicks + the re-accept prompt.
+
+---
+
 ## ✅ FQ-78 — RESOLVED: you said yes; the content is live (via a corrective PR, not #501 itself — see why below)
 
 **Filed:** 2026-07-16
