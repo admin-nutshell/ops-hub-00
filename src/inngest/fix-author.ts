@@ -616,6 +616,19 @@ export async function authorFixForFinding(
 // Never logs the diff itself; only success/failure + a truncated error
 // message on failure (matching every other GitHub-API error handler in this
 // codebase).
+//
+// The UPDATE is conditional on status = 'pending' (added per the Security
+// Lead review on PR #563/fix-reconcile, a defense-in-depth follow-up flagged
+// against this pre-existing function): without it, a sufficiently late crash
+// recovery or retry could flip a row reconciliation had ALREADY resolved
+// (e.g. to 'completed'/'failed' via the sandbox run's real outcome) back to
+// 'running'/'failed' based on this stale dispatch-call result. The practical
+// window for this is small (fix-reconcile's own grace period already waits
+// past this call's own timeout before touching a row), but the condition
+// costs nothing and closes it outright. The audit_log entry still records
+// this call's own outcome even when the UPDATE is a no-op, since it
+// documents what THIS dispatch attempt did, not a claim about the row's
+// current state.
 async function markDispatchOutcome(
   pool: Pool,
   productId: string,
@@ -627,11 +640,10 @@ async function markDispatchOutcome(
   try {
     await client.query("BEGIN");
     await client.query("SELECT set_config('app.current_product', $1, true)", [productId]);
-    await client.query(`UPDATE fix_attempts SET status = $1 WHERE id = $2 AND product_id = $3`, [
-      dispatched ? "running" : "failed",
-      fixAttemptId,
-      productId,
-    ]);
+    await client.query(
+      `UPDATE fix_attempts SET status = $1 WHERE id = $2 AND product_id = $3 AND status = 'pending'`,
+      [dispatched ? "running" : "failed", fixAttemptId, productId]
+    );
     await client.query(
       `INSERT INTO audit_log (actor, action, resource_type, resource_id, payload)
        VALUES ('fix-author-agent', 'fix.dispatch', 'fix_attempt', $1, $2)`,
