@@ -176,6 +176,49 @@ const MALFORMED_DIFF = [
   "",
 ].join("\n");
 
+// Security Lead review (PR #568) findings — regression fixtures.
+
+// A bare "." path segment is neither ".." nor empty, so it previously slipped
+// past assertPathSafe AND defeated isGovernancePath's literal ".github/"
+// prefix match. Verified via a Node spike that parsePatch produces exactly
+// this newFileName ("b/./.github/workflows/evil.yml") for this input.
+const DOT_SEGMENT_TRAVERSAL_DIFF = [
+  "diff --git a/./.github/workflows/evil.yml b/./.github/workflows/evil.yml",
+  "new file mode 100644",
+  "index 0000000..e69de29",
+  "--- /dev/null",
+  "+++ b/./.github/workflows/evil.yml",
+  "@@ -0,0 +1 @@",
+  "+bad",
+  "",
+].join("\n");
+
+// GitHub honors CODEOWNERS at root, .github/, AND docs/ — isGovernancePath
+// originally covered only the first two.
+const DOCS_CODEOWNERS_DIFF = [
+  "diff --git a/docs/CODEOWNERS b/docs/CODEOWNERS",
+  "index 1234567..89abcde 100644",
+  "--- a/docs/CODEOWNERS",
+  "+++ b/docs/CODEOWNERS",
+  "@@ -1 +1 @@",
+  "-* @old-owner",
+  "+* @new-owner",
+  "",
+].join("\n");
+
+// A diff-declared mode of 120000 is a symlink — an LLM-authored diff has no
+// legitimate reason to create one, and it was previously taken verbatim.
+const SYMLINK_MODE_DIFF = [
+  "diff --git a/evil-link b/evil-link",
+  "new file mode 120000",
+  "index 0000000..1234567",
+  "--- /dev/null",
+  "+++ b/evil-link",
+  "@@ -0,0 +1 @@",
+  "+/etc/passwd",
+  "",
+].join("\n");
+
 function buildZip(entryName: string, content: string): Buffer {
   const zip = new AdmZip();
   zip.addFile(entryName, Buffer.from(content, "utf8"));
@@ -246,6 +289,23 @@ describe("planFileChanges", () => {
     const result = planFileChanges(CODEOWNERS_DIFF);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/governance-sensitive path/);
+  });
+
+  it("rejects a diff touching docs/CODEOWNERS (a real CODEOWNERS location, not just root/.github/)", () => {
+    const result = planFileChanges(DOCS_CODEOWNERS_DIFF);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/governance-sensitive path/);
+  });
+
+  it("rejects a bare '.' path segment, which would otherwise bypass the .github/ governance check", () => {
+    const result = planFileChanges(DOT_SEGMENT_TRAVERSAL_DIFF);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/unsafe file path/);
+  });
+
+  it("rejects a diff-declared symlink mode (120000)", () => {
+    const result = planFileChanges(SYMLINK_MODE_DIFF);
+    expect(result).toEqual({ ok: false, error: 'unsupported file mode in diff: "120000"' });
   });
 
   it("rejects a diff that does not parse as a unified diff", () => {

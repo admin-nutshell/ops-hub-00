@@ -80,14 +80,36 @@ import { assertValidRepoFullName } from "./repo-inspect";
 // share one Supabase DB and would otherwise both attempt the same repo
 // writes).
 //
+// INDEPENDENT SECURITY LEAD REVIEW (PR #568, pre-merge) found and required
+// four fixes, all applied: (1) assertPathSafe rejected ".." and empty path
+// segments but not a bare "." segment — a path like "b/./.github/workflows/
+// evil.yml" would have slipped past both that check AND isGovernancePath's
+// literal ".github/" prefix match, a real governance-bypass risk this fixes
+// closes; (2) isGovernancePath was missing docs/CODEOWNERS (GitHub honors
+// CODEOWNERS at root, .github/, AND docs/ — only the first two were
+// covered); (3) the diff-declared file mode was taken verbatim, letting an
+// LLM-authored diff mint a 120000 (symlink) or 160000 (gitlink) entry — now
+// allowlisted to 100644/100755 only; (4) the `patch-diff` artifact was
+// originally uploaded in s3-fix-sandbox.yml AFTER npm ci/build/lint/test had
+// already run untrusted, patched code in that same job/VM/user — since this
+// artifact's content becomes a real commit here (not just triage data like
+// results.json), a hostile patch backgrounding a process to tamper with it
+// before upload would have let attacker content through under a PR body
+// that claimed it was "validated." Fixed by moving the upload to
+// immediately after the patch is decoded, before it's even applied — see
+// that workflow step's own comment — and by softening buildPrBody's wording
+// to match the "advisory signal, not a trust boundary" framing already used
+// elsewhere in this codebase for sandbox output.
+//
 // STILL NOT LIVE-EXECUTED: built on top of a confirmed App permission
 // escalation (contents:write/pull_requests:write on the pilot repo,
 // FOUNDER_QUEUE.md FQ-79 Item 2) that this session could not independently
 // verify (checking a GitHub App's own installation permissions needs either
 // the App's own credentials or an `admin:org`-scoped token, neither
 // available here) — taken on the founder's direct confirmation. The code
-// below handles a 403 from GitHub explicitly rather than assuming success;
-// the first real end-to-end proof still awaits staging being started.
+// below fails closed on any non-2xx GitHub response, including the 403 an
+// unescalated App would return, rather than assuming success; the first
+// real end-to-end proof still awaits staging being started.
 
 const OPS_HUB_BRANCH_PREFIX = "ops-hub/fix-";
 const GITHUB_API_TIMEOUT_MS = 15_000;
@@ -249,9 +271,17 @@ export async function fetchPatchDiff(
 // touch this sprint — fix-author's whole scope is a single detected finding
 // in the product repo's own code, never CI/ownership config. Fails closed
 // (rejects the whole attempt) rather than silently allowing it through to a
-// draft PR a reviewer might approve without noticing.
+// draft PR a reviewer might approve without noticing. GitHub honors
+// CODEOWNERS in exactly three locations (root, .github/, docs/) — all three
+// are covered explicitly, not just the .github/ prefix (a Security Lead
+// review caught docs/CODEOWNERS being missed here).
 function isGovernancePath(path: string): boolean {
-  return path === "CODEOWNERS" || path === ".github" || path.startsWith(".github/");
+  return (
+    path === "CODEOWNERS" ||
+    path === "docs/CODEOWNERS" ||
+    path === ".github" ||
+    path.startsWith(".github/")
+  );
 }
 
 // Git diff headers use "a/<path>" / "b/<path>" prefixes; strip only an exact
@@ -265,7 +295,20 @@ function stripGitPrefix(path: string): string {
 }
 
 function assertPathSafe(path: string): void {
-  if (!path || path.startsWith("/") || path.split("/").some((seg) => seg === "" || seg === "..")) {
+  // A bare "." segment (e.g. "b/./.github/workflows/evil.yml") is neither
+  // ".." nor empty, so it previously slipped past this check AND defeated
+  // isGovernancePath's literal ".github/" prefix match — a real path-
+  // traversal-adjacent bypass of the one check that exists specifically to
+  // stop a governance-file write. Caught by an independent Security Lead
+  // review before merge; a backslash is rejected too since it's a raw path
+  // separator on Windows CI checkouts, even though GitHub's own APIs treat
+  // it as a literal filename character.
+  if (
+    !path ||
+    path.startsWith("/") ||
+    path.includes("\\") ||
+    path.split("/").some((seg) => seg === "" || seg === "." || seg === "..")
+  ) {
     throw new Error(`unsafe file path in diff: ${JSON.stringify(path)}`);
   }
   if (isGovernancePath(path)) {
@@ -316,11 +359,24 @@ export function planFileChanges(
     if (filePatch.isDelete) {
       changes.push({ kind: "delete", path });
     } else {
+      // The diff-declared mode is untrusted (LLM-authored) — allowlist to
+      // plain-file/executable-file only. 120000 (symlink) or 160000
+      // (gitlink/submodule) would let a single detected finding's fix smuggle
+      // in a checkout-hostile symlink or point product CI at an attacker-
+      // controlled submodule if .gitmodules is ever added. Caught by an
+      // independent Security Lead review before merge.
+      const requestedMode = filePatch.newMode ?? "100644";
+      if (requestedMode !== "100644" && requestedMode !== "100755") {
+        return {
+          ok: false,
+          error: `unsupported file mode in diff: ${JSON.stringify(requestedMode)}`,
+        };
+      }
       changes.push({
         kind: "upsert",
         path,
         isCreate: Boolean(filePatch.isCreate),
-        mode: filePatch.newMode ?? "100644",
+        mode: requestedMode,
         filePatch,
       });
     }
@@ -540,7 +596,7 @@ function buildPrBody(findingTitle: string, model: string): string {
     safeTitle,
     "```",
     "",
-    `Candidate patch authored by \`${model}\`, validated in an isolated sandbox (build/lint/test green, no secrets, egress-restricted). This PR is a **draft** — nothing here auto-merges. Please review before merging.`,
+    `Candidate patch authored by \`${model}\`. An isolated sandbox reported build/lint/test green with no secrets present and egress restricted — treat that as an advisory signal, not a security guarantee (the sandbox runs this same untrusted patch, so it is not a trust boundary). This PR is a **draft** — nothing here auto-merges. Please review the diff yourself before merging.`,
   ].join("\n");
 }
 
