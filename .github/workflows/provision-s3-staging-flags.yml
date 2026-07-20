@@ -30,17 +30,18 @@ name: Provision S3 draft-PR pipeline flags on ops-hub-staging (one-shot)
 # Rollback: re-run with mode=delete to remove both vars. No redeploy needed
 # either way, since nothing changes for a container that isn't running yet.
 #
-# Pre-merge run: a `pull_request` trigger scoped to this file's own path lets
-# it run for real during this PR's CI, matching
-# provision-github-app-env-staging.yml's precedent (GitHub cannot
-# workflow_dispatch a brand-new workflow file until it exists on main).
+# One-shot provisioning already done: this file's initial version carried a
+# `pull_request` trigger (scoped to its own path) so it could run for real
+# during its own PR's CI, matching provision-github-app-env-staging.yml's
+# precedent (GitHub cannot workflow_dispatch a brand-new workflow file until
+# it exists on main). That run succeeded and both flags are confirmed set —
+# see the PR for the verified output. The pull_request trigger is removed in
+# this same PR (CodeRabbit review) since leaving it in permanently would mean
+# ANY future edit to this file re-triggers a real Coolify write as a side
+# effect of opening a PR, with no explicit dispatch/approval step. Only
+# workflow_dispatch remains, for any future toggle (e.g. mode=delete).
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/provision-s3-staging-flags.yml"
-
   workflow_dispatch:
     inputs:
       mode:
@@ -75,11 +76,7 @@ jobs:
         id: mode
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "mode=set" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          fi
+          echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
 
       - name: Guard — required secret present
         run: |
