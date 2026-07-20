@@ -4,9 +4,9 @@
 
 ---
 
-## 🟡 FQ-79 — One credential decision left to finish S3's "propose fixes as draft PRs" (product reboot)
+## ✅ FQ-79 — RESOLVED: both items closed; S3 ("propose fixes as draft PRs") fully built and merged
 
-**Filed:** 2026-07-18 | **Item 1 self-corrected and resolved 2026-07-19 (no founder action needed) — Item 2 decided 2026-07-19, action still pending**
+**Filed:** 2026-07-18 | **Item 1 self-corrected and resolved 2026-07-19 — Item 2 confirmed done by the founder 2026-07-19 — FQ fully closed 2026-07-20**
 **Filed by:** Coordinator (S3 build session — schema, model-routing, and the ephemeral fix-sandbox workflow are all merged and live-proven; the fix-author-agent that reads a finding and asks the AI for a patch is built and merged. Two credential decisions were originally filed together; Item 1 turned out to need no new founder action at all — see correction below.)
 **Needs:** One founder action remaining (Item 2). Neither item was ever urgent — nothing is broken, no customer is affected — but Item 2 blocks the next visible milestone ("a real draft PR shows up on the pilot repo").
 **Context:** S3's full path is: read a finding → AI authors a candidate patch → validate it in a locked-down sandbox (no secrets, egress-restricted — already built and proven working this sprint) → a separate trusted step opens a **draft** pull request (never auto-merged; S3 ships draft-only by design).
@@ -29,6 +29,10 @@
 
 - **The credential-scope risk is resolved, no action needed.** PR #560's own header flagged a real open question: `GITHUB_STATUS_DISPATCH_TOKEN` (Item 1 above) has only ever been proven live against GitHub's `repository_dispatch` endpoint (the status-page feature); the new fix-author code calls a *different* endpoint (`workflow_dispatch`, to run `s3-fix-sandbox.yml` directly) that GitHub documents as needing a different fine-grained permission (`Actions: write` vs. `Contents: write`). Checked GitHub's own docs and community reports directly rather than assuming: `workflow_dispatch` unambiguously needs `Actions: write` — and that's exactly the permission this token already has and already uses successfully every time the status page fires. No scope widening needed; this was a documentation-consistency question, not a real gap.
 - **The one thing still needed for an actual end-to-end live test: start `ops-hub-staging` again.** Checked just now — staging is currently **stopped** (its normal resting state per T-98's cost-saving design; confirmed via the documented "302 → app.inatechshell.ca" signature, not a guess). Starting it back up requires your own typed confirmation in `start-ops-hub-staging.yml`, same as every time before — this is not something the team will type on your behalf. No rush: nothing is broken by staging being stopped, and this only blocks the *live* proof, not the code itself (which is merged, reviewed, and doc-verified). Say the word whenever you'd like to see it run for real.
+
+**Resolved 2026-07-20 — Item 2 confirmed done, draft-PR creation built, reviewed, and merged (PR #568).** You confirmed `ops-hub-connector`'s permission escalation (`Contents: Read and write`, `Pull requests: Read and write` on the pilot repo) was completed. `src/inngest/draft-pr.ts` — the last remaining S3 piece — was built on top of it: reads a `fix_attempts` row `fix-reconcile` resolved to `'completed'`, fetches its diff, applies it via GitHub's Git Data API, and opens a draft PR. An independent Security Lead review found and required 4 fixes before merge (a path-traversal/governance-bypass gap, a missing `docs/CODEOWNERS` location, an untrusted-diff-controlled file-mode risk, and an artifact-upload-timing issue that could have let a hostile sandbox patch swap its own committed content) — all fixed and verified (38 new unit tests, full suite green, CodeRabbit approved). Merged 2026-07-20. **S3 ("propose fixes as draft PRs, human opens/merges") is now fully built.** What's genuinely still open, not blocking: (1) this session could not independently verify the App's permission escalation actually took effect — no tooling available to check a GitHub App's own installation permissions without the App's own credentials or an `admin:org` token — taken on your word, code fails closed on a 403 rather than assuming success; (2) the full pipeline (finding → fix-author → sandbox → reconcile → draft PR) has never run end-to-end live — still needs staging started (your own typed confirmation, same as always) for the first real proof.
+
+**Notify:** Coordinator — done, FQ closed.
 
 ---
 
