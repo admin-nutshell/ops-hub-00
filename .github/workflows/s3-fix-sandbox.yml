@@ -266,6 +266,27 @@ jobs:
           tar xzf repo.tar.gz
           echo "$PATCH_B64" | base64 -d > patch.diff
 
+      # Uploaded here — BEFORE the patch is applied and BEFORE npm ci/build/
+      # lint/test run any untrusted code — deliberately, not alongside the
+      # other two artifacts below (which are written after those steps).
+      # draft-pr.ts commits THIS artifact's content to the product repo and
+      # its PR body claims it was "validated in an isolated sandbox"; if the
+      # diff were uploaded after untrusted code ran (as it originally was),
+      # a hostile patch could background a process and swap its own on-disk
+      # content before upload — the same tampering risk this file already
+      # documents for results.json, but with a strictly worse consequence
+      # here (a real commit, not just misleading triage data). Uploading
+      # before any patched code executes closes that window: nothing
+      # untrusted has run yet, and upload-artifact v4+ artifacts are
+      # immutable once created (a second upload under the same name fails),
+      # so this copy cannot be swapped afterward either. Caught by an
+      # independent Security Lead review before merge.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: patch-diff
+          path: patch.diff
+          retention-days: 7
+
       - name: Apply the patch (plain `patch`, not `git apply` — .git was stripped)
         run: |
           cd repo
@@ -368,6 +389,16 @@ jobs:
           name: sandbox-results-summary
           path: results.json
           retention-days: 7
+
+      # Note: a third flat artifact (`patch-diff`, path `patch.diff`) also
+      # exists for draft-PR creation (src/inngest/draft-pr.ts) to read — same
+      # single-zip-layer, no-tar-reader rationale as sandbox-results-summary
+      # above. It is uploaded MUCH EARLIER in this job (right after the patch
+      # is decoded, before it's even applied) rather than here alongside its
+      # siblings — see that upload step's own comment for why: this is the
+      # one artifact whose content becomes a real commit in the product repo,
+      # so it must be captured before any untrusted code has had a chance to
+      # run, not after build/lint/test like these two.
 
       - name: Summary
         if: always()
