@@ -13,6 +13,7 @@ import { inspectRepo } from "./inngest/repo-inspect";
 import { detectVulnerabilities } from "./inngest/detect-vulnerabilities";
 import { authorFix } from "./inngest/fix-author";
 import { fixReconcile } from "./inngest/fix-reconcile";
+import { draftPrCreate } from "./inngest/draft-pr";
 import { emitTrace } from "./langfuse";
 import { handleStatusWebhook } from "./statusWebhook";
 import { handleLitellmHealth } from "./healthLitellm";
@@ -37,6 +38,7 @@ const inngestHandler = serve({
     detectVulnerabilities,
     authorFix,
     fixReconcile,
+    draftPrCreate,
   ],
 });
 
