@@ -1,6 +1,7 @@
 import { loadVulnFindingsView } from "../lib/queries";
 import { ErrorNote, PendingNote } from "./ErrorNote";
 import { VulnDetectTrigger } from "./VulnDetectTrigger";
+import { FixAuthorTrigger } from "./FixAuthorTrigger";
 import { formatRelativeAge } from "../lib/format";
 import type { Severity } from "../../src/inngest/detect-vulnerabilities";
 
@@ -9,8 +10,14 @@ import type { Severity } from "../../src/inngest/detect-vulnerabilities";
 // Dependabot + code-scanning alert APIs) and displays the findings it wrote
 // to `findings` (finding_type = 'vuln'). Mirrors RepoInspectPanel's shape
 // closely (same async Server Component + trigger-with-polling pattern) — see
-// that file for the precedent. Read-only display only: no per-finding
-// triage/dismiss actions yet (later sprint, not S2).
+// that file for the precedent.
+//
+// S3 adds the one per-finding action this file's own header used to say was
+// deferred: an "Actions" column rendering FixAuthorTrigger, so a human can
+// dispatch `ops-hub/fix.author.requested` for an eligible finding directly
+// from here — this dashboard button was S3's missing entry point (see
+// src/metrics/fixAuthor.ts's header for the full context on why nothing
+// upstream of this panel could ever start a fix attempt without it).
 
 const SEVERITY_BADGE: Record<Severity, string> = {
   // critical/high both read as "stand out" red — critical the strongest, high
@@ -81,7 +88,7 @@ export async function VulnFindingsPanel() {
           <table className="w-full min-w-[640px] border-collapse text-sm">
             <thead>
               <tr>
-                {["Severity", "Finding", "State", "Detected"].map((h) => (
+                {["Severity", "Finding", "State", "Detected", "Actions"].map((h) => (
                   <th
                     key={h}
                     className="sticky top-0 border-b border-border-soft bg-surface px-[22px] py-[11px] text-left text-[10.5px] font-[650] tracking-[0.06em] text-text-faint uppercase whitespace-nowrap"
@@ -93,7 +100,10 @@ export async function VulnFindingsPanel() {
             </thead>
             <tbody>
               {view.findings.map((f) => (
-                <tr key={f.id} className="border-b border-border-soft last:border-none hover:bg-surface-raised">
+                <tr
+                  key={f.id}
+                  className="border-b border-border-soft last:border-none hover:bg-surface-raised"
+                >
                   <td className="px-[22px] py-[13px] align-top">
                     <span
                       className={`inline-flex rounded-md px-2.5 py-[3px] text-[11px] font-[650] uppercase tracking-[0.04em] whitespace-nowrap ${SEVERITY_BADGE[f.severity] ?? "bg-surface-raised text-text-faint"}`}
@@ -120,6 +130,9 @@ export async function VulnFindingsPanel() {
                     <span title={new Date(f.createdAt).toLocaleString()}>
                       {formatRelativeAge(f.createdAt)}
                     </span>
+                  </td>
+                  <td className="px-[22px] py-[13px] align-top">
+                    <FixAuthorTrigger findingId={f.id} state={f.state} />
                   </td>
                 </tr>
               ))}

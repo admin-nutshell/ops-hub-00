@@ -26,6 +26,7 @@ import {
 } from "../../src/metrics/settingsWrite";
 import { triggerRepoInspect } from "../../src/metrics/repoInspect";
 import { triggerVulnDetect } from "../../src/metrics/vulnDetect";
+import { triggerFixAuthor, validateFixAuthorTriggerInput } from "../../src/metrics/fixAuthor";
 
 export { SettingsWriteError, ValidationError };
 
@@ -61,7 +62,10 @@ class ProductScopeUnavailableError extends SettingsWriteError {
   }
 }
 
-export type RequestOriginInfo = Pick<OriginCheckInput, "originHeader" | "refererHeader" | "requestHost">;
+export type RequestOriginInfo = Pick<
+  OriginCheckInput,
+  "originHeader" | "refererHeader" | "requestHost"
+>;
 
 function assertTrustedOrigin(origin: RequestOriginInfo): void {
   const allowed = isTrustedOrigin({
@@ -130,4 +134,18 @@ export async function triggerVulnDetectRequest(origin: RequestOriginInfo) {
   assertTrustedOrigin(origin);
   const scope = requireProductScope();
   return triggerVulnDetect(scope.productId);
+}
+
+// Product-domain reboot (S3) — dispatches ops-hub/fix.author.requested for
+// one finding. Unlike the two triggers above, this one carries a request
+// body (the finding to propose a fix for) — validated in
+// src/metrics/fixAuthor.ts, never trusted raw. Product id is still
+// server-pinned via resolveProductWriteScope, same as every other write
+// surface; a forged/foreign finding id is a no-op skip inside the Inngest
+// function, not a cross-product read from this route.
+export async function triggerFixAuthorRequest(rawPayload: unknown, origin: RequestOriginInfo) {
+  assertTrustedOrigin(origin);
+  const scope = requireProductScope();
+  const input = validateFixAuthorTriggerInput(rawPayload);
+  return triggerFixAuthor(scope.productId, input.findingId);
 }
