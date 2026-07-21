@@ -1,0 +1,200 @@
+name: Provision S3 draft-PR pipeline flags on ops-hub-staging (one-shot)
+
+# Sets FIX_RECONCILE_ENABLED=true and DRAFT_PR_ENABLED=true on ops-hub-staging
+# so that once the founder starts staging (start-ops-hub-staging.yml, their
+# own typed confirmation — never this workflow), the fix-reconcile cron and
+# the draft-pr-create cron begin running for real instead of no-op'ing on
+# their own ENABLED-flag gate (see src/inngest/fix-reconcile.ts and
+# src/inngest/draft-pr.ts headers).
+#
+# DELIBERATELY NO RESTART/START STEP. ops-hub-staging is currently STOPPED
+# (T-98 SC7's default resting state). Setting an env var via Coolify's
+# /envs endpoint does not itself start or restart the container — it only
+# updates the stored config, which the container reads the NEXT time it
+# boots. Calling /restart or /start here would start staging as a SIDE
+# EFFECT of an env-var provisioning workflow — exactly the kind of
+# self-supplied-start this project's standing rule (see
+# start-ops-hub-staging.yml's own header, and the incident it documents)
+# exists to prevent. Bringing staging up stays exclusively the founder's
+# own action, via their own typed confirmation, in that other workflow.
+#
+# Anchored by UUID, NOT by app name — ops-hub-staging and ops-hub-prod both
+# display as "ops-hub-app (localhost)" in the Coolify UI (T-54(A) app-name
+# collision precedent). Asserts the resolved app's fqdn looks like
+# ops-hub-staging before writing anything, matching
+# provision-github-app-env-staging.yml's precedent.
+#
+# Prerequisites (GitHub Actions secrets):
+#   COOLIFY_API_TOKEN — Coolify admin API token (existing repo secret)
+#
+# Rollback: re-run with mode=delete to remove both vars. No redeploy needed
+# either way, since nothing changes for a container that isn't running yet.
+#
+# One-shot provisioning already done: this file's initial version carried a
+# `pull_request` trigger (scoped to its own path) so it could run for real
+# during its own PR's CI, matching provision-github-app-env-staging.yml's
+# precedent (GitHub cannot workflow_dispatch a brand-new workflow file until
+# it exists on main). That run succeeded and both flags are confirmed set —
+# see the PR for the verified output. The pull_request trigger is removed in
+# this same PR (CodeRabbit review) since leaving it in permanently would mean
+# ANY future edit to this file re-triggers a real Coolify write as a side
+# effect of opening a PR, with no explicit dispatch/approval step. Only
+# workflow_dispatch remains, for any future toggle (e.g. mode=delete).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'set = provision both flags (no restart); delete = remove both flags'
+        required: false
+        default: 'set'
+        type: choice
+        options: ['set', 'delete']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ops-hub-staging-env
+  cancel-in-progress: false
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  # Stable Coolify app UUID for ops-hub-staging — does not change on redeploy
+  # (main-deploy.yml precedent). Verified against a live fqdn check below.
+  OPS_HUB_STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+
+jobs:
+  provision:
+    name: Provision S3 pipeline flags on ops-hub-staging
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+
+    steps:
+      - name: Resolve mode
+        id: mode
+        run: |
+          set -euo pipefail
+          echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+
+      - name: Guard — required secret present
+        run: |
+          set -euo pipefail
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+
+      - name: Confirm this UUID really is ops-hub-staging (not prod, not a stale pin)
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/app.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID")
+          [ "$HTTP" = "200" ] || { echo "::error::GET /applications/$OPS_HUB_STAGING_UUID -> HTTP $HTTP"; cat /tmp/app.json; exit 1; }
+          FQDN=$(jq -r '.fqdn // ""' /tmp/app.json)
+          NAME=$(jq -r '.name // ""' /tmp/app.json)
+          STATUS=$(jq -r '.status // ""' /tmp/app.json)
+          echo "Resolved app: name=$NAME fqdn=$FQDN status=$STATUS"
+          case "$FQDN" in
+            *ops-hub-staging*) echo "Confirmed: fqdn contains ops-hub-staging." ;;
+            *) echo "::error::fqdn '$FQDN' does not look like ops-hub-staging — refusing to write env vars. Verify OPS_HUB_STAGING_UUID before re-running."; exit 1 ;;
+          esac
+          echo "Current status: $STATUS (this workflow does not start/restart the app regardless of this value)."
+
+      - name: Delete existing FIX_RECONCILE_ENABLED / DRAFT_PR_ENABLED entries (idempotent, handles Coolify's append-not-upsert Save)
+        run: |
+          set -euo pipefail
+          curl -s --max-time 30 -o /tmp/envs.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs"
+          for KEY in FIX_RECONCILE_ENABLED DRAFT_PR_ENABLED; do
+            COUNT=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k)] | length' /tmp/envs.json 2>/dev/null || echo 0)
+            echo "Existing $KEY entries: $COUNT"
+            for eu in $(jq -r --arg k "$KEY" '.[] | select(.key == $k) | .uuid' /tmp/envs.json 2>/dev/null); do
+              DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs/$eu")
+              echo "  DELETE $KEY $eu -> HTTP $DEL"
+            done
+          done
+
+      - name: Set FIX_RECONCILE_ENABLED=true and DRAFT_PR_ENABLED=true
+        if: steps.mode.outputs.mode == 'set'
+        run: |
+          set -euo pipefail
+          set_var() {
+            KEY="$1"; VAL="$2"
+            HTTP=$(curl -s --max-time 30 -o /tmp/set-var.json -w "%{http_code}" -X POST \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "Content-Type: application/json" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs" \
+              -d "$(jq -n --arg k "$KEY" --arg v "$VAL" '{key:$k,value:$v}')")
+            echo "POST $KEY=$VAL -> HTTP $HTTP"
+            if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+              echo "::error::failed to set $KEY (HTTP $HTTP)"; cat /tmp/set-var.json | head -5; exit 1
+            fi
+          }
+          set_var "FIX_RECONCILE_ENABLED" "true"
+          set_var "DRAFT_PR_ENABLED" "true"
+
+      - name: Verify — presence, single row (Production scope), correct value
+        run: |
+          set -euo pipefail
+          curl -s --max-time 30 -o /tmp/verify.json \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs"
+
+          FAIL=0
+          # Same two-scope discipline as provision-github-app-env-staging.yml:
+          # Coolify keeps a genuinely separate row per key for "Production"
+          # (is_preview:false, what the running container reads) and "Preview
+          # Deployments" (is_preview:true) scopes. A real duplicate is two rows
+          # sharing BOTH the same key AND the same is_preview value.
+          for KEY in FIX_RECONCILE_ENABLED DRAFT_PR_ENABLED; do
+            jq -r --arg k "$KEY" '.[] | select(.key == $k) | "  scope: key=\(.key) is_preview=\(.is_preview) uuid=\(.uuid) value=\(.value)"' /tmp/verify.json
+
+            if [ "${{ steps.mode.outputs.mode }}" = "delete" ]; then
+              TOTAL=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k)] | length' /tmp/verify.json)
+              if [ "$TOTAL" != "0" ]; then
+                echo "::error::$KEY still has $TOTAL row(s) (any scope) after delete"; FAIL=1
+              else
+                echo "$KEY: 0 rows in any scope (deleted, as expected)"
+              fi
+              continue
+            fi
+
+            PROD_COUNT=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k and .is_preview == false)] | length' /tmp/verify.json)
+            if [ "$PROD_COUNT" != "1" ]; then
+              echo "::error::$KEY (Production scope, is_preview=false) has $PROD_COUNT row(s) — expected exactly 1"; FAIL=1
+              continue
+            fi
+            VAL=$(jq -r --arg k "$KEY" '[.[] | select(.key == $k and .is_preview == false)][0].value' /tmp/verify.json)
+            if [ "$VAL" != "true" ]; then
+              echo "::error::$KEY (Production scope) = '$VAL', expected 'true'"; FAIL=1
+              continue
+            fi
+            echo "$KEY (Production scope): 1 row, value=true"
+          done
+
+          [ "$FAIL" -eq 0 ] || { echo "::error::verification failed — see above"; exit 1; }
+          echo "Verification passed."
+
+      - name: Confirm staging status is unchanged by this workflow
+        if: always()
+        run: |
+          curl -s --max-time 15 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID" | jq '{status, fqdn, restart_count, last_online_at}' \
+            || true
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "==========================================================="
+          echo " S3 pipeline flags — ops-hub-staging ($OPS_HUB_STAGING_UUID)"
+          echo " mode: ${{ steps.mode.outputs.mode }}"
+          echo "==========================================================="
+          echo "No start/restart performed — staging's running/stopped state"
+          echo "is unaffected by this workflow either way."
+          echo ""
+          echo "Once the founder starts staging (start-ops-hub-staging.yml,"
+          echo "their own typed confirmation), fix-reconcile and draft-pr-create"
+          echo "will run on their normal 5-minute crons with these flags set."
