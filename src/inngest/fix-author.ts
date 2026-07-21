@@ -675,6 +675,16 @@ export const authorFix = inngest.createFunction(
     id: "fix-author",
     retries: 2,
     triggers: [{ event: "ops-hub/fix.author.requested" }],
+    // Security Lead review (PR #571, the new dashboard trigger for this
+    // event): serializes concurrent dispatches for the SAME finding_id so a
+    // burst of clicks (or a scripted retry loop) can't fan out into multiple
+    // simultaneous LLM-authoring calls before the first's fix_attempts row
+    // commits — authorFixForFinding's own SELECT ... FOR UPDATE guard only
+    // prevented duplicate ROWS, not duplicate LLM SPEND, on a same-finding
+    // burst. Different findings still author concurrently (no cross-finding
+    // limit here) — that's an intentional, separate cost-control question
+    // (rate limiting overall dispatch volume), not this fix's scope.
+    concurrency: { limit: 1, key: "event.data.finding_id" },
   },
   async ({ event, step }: InngestCtx) => {
     const { product_id, finding_id } = event.data as FixAuthorEventData;
