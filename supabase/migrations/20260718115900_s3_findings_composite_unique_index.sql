@@ -1,0 +1,50 @@
+-- Migration: 20260718115900_s3_findings_composite_unique_index
+-- Ops Hub product-domain reboot — Sprint S3: composite unique INDEX on findings (step 1/2)
+-- Author: Tech Lead  Date: 2026-07-18
+-- Forward-only, additive only. Does not touch any existing row's data.
+--
+-- WHY: S3's fix_attempts table (companion migration 20260718120100) needs a
+-- composite FK to findings(product_id, id) — the same "guarantee at the
+-- database level, not just in application code, that a child row's
+-- product_id matches its parent's real product_id" pattern already applied
+-- to repo_connections (20260717150000) and signal_sources (20260717160000).
+-- Postgres requires an independent UNIQUE (or PK) constraint on (id,
+-- product_id) — or (product_id, id) — to exist on the referenced side before
+-- a composite FK can reference that pair; `id` being the primary key alone
+-- does not satisfy this.
+--
+-- TWO-STEP, NOT A PLAIN `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` (per
+-- CodeRabbit review on PR #548): findings is now a LIVE table with real rows
+-- (S2's 5 confirmed CVE findings, proven live 2026-07-18) that a running
+-- detection-agent can write to at any time. A plain ADD CONSTRAINT UNIQUE
+-- builds its backing index while holding an ACCESS EXCLUSIVE lock on
+-- findings for the build's full duration, blocking every concurrent
+-- read/write. `findings` is tiny today so that duration is milliseconds in
+-- practice, but the correct pattern for a live table is to build the index
+-- CONCURRENTLY (brief ONLY a SHARE UPDATE EXCLUSIVE lock, does not block
+-- reads/writes) and attach the constraint to that already-built index in a
+-- separate, near-instant step (companion migration 20260718120000).
+--
+-- CRITICAL: CREATE INDEX CONCURRENTLY cannot run inside a transaction block.
+-- This file must be run ALONE (its own SQL Editor execution/paste) — do NOT
+-- batch it with any other statement or file, or Postgres will reject it with
+-- "CREATE INDEX CONCURRENTLY cannot run inside a transaction block."
+--
+-- SAFE TO APPLY: this index can never conflict with existing data — id is
+-- already the primary key (globally unique on its own), so (product_id, id)
+-- is strictly implied. Pure guarantee-strengthening addition.
+--
+-- ORDERING: apply after all S1/S2 migrations (findings must already exist).
+-- Must apply BEFORE 20260718120000 (attaches the constraint to this index)
+-- and 20260718120100 (fix_attempts references that constraint).
+
+create unique index concurrently if not exists findings_product_id_id_idx
+  on findings (product_id, id);
+
+-- POST-APPLY VERIFICATION (run manually as service_role after applying):
+--   select indexname from pg_indexes
+--     where tablename = 'findings' and indexname = 'findings_product_id_id_idx';
+--   -- expect exactly 1 row; also confirm no INVALID index:
+--   select indisvalid from pg_index where indexrelid = 'findings_product_id_id_idx'::regclass;
+--   -- must be true — a CONCURRENTLY build that fails partway leaves an INVALID index that
+--   -- must be dropped and retried, never left in place.

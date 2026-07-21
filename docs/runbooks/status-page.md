@@ -71,6 +71,8 @@ The ops-hub app validates the secret and forwards a `repository_dispatch` event 
 - `STATUS_WEBHOOK_SECRET` — shared secret between UptimeRobot and the webhook endpoint
 - `GITHUB_STATUS_DISPATCH_TOKEN` — GitHub fine-grained PAT with `Actions: Read and Write` on this repo
 
+**Second consumer, added 2026-07-19 (Security Lead review note — read before rotating or letting this expire):** `GITHUB_STATUS_DISPATCH_TOKEN` is also reused, as-is, by S3's fix-author-agent (`src/inngest/fix-author.ts`) to dispatch `.github/workflows/s3-fix-sandbox.yml` — a deliberate reuse rather than a second credential with identical scope (see `FOUNDER_QUEUE.md` FQ-79). Rotating, revoking, or letting this PAT expire (fine-grained PATs have a mandatory expiration; this one was created 2026-06-28) breaks BOTH features, not just the status page. The failure is not silent for either: the status webhook returns 502/503 (see below), and fix-author-agent records the affected `fix_attempts` row as `status='failed'` with a `fix.dispatch` `audit_log` entry carrying the GitHub error body — but a human checking only the status-page symptom could miss that the same rotation also broke fix dispatch. Check both when this token is touched.
+
 ---
 
 ## Troubleshooting

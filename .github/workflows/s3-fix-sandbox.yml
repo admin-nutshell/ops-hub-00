@@ -1,0 +1,419 @@
+name: S3 Fix Sandbox — sandboxed patch/test/scan run (no secrets, egress-restricted)
+
+# S3 of the ops-hub reboot (propose fixes as draft PRs) — the sandbox
+# mechanism the plan requires: "The sandbox that runs AI-generated code holds
+# no secrets and no GitHub token, and is egress-restricted... It cannot reach
+# the network, the LiteLLM master key, Supabase, or the App key." This file
+# is PR C in the S3 sequence — a standalone, workflow_dispatch-able sandbox.
+# fix-author-agent (src/inngest/fix-author.ts) dispatches this programmatically
+# per fix_attempt, reusing GITHUB_STATUS_DISPATCH_TOKEN (an existing Coolify-
+# held credential, Actions: Read/Write on this repo — see FOUNDER_QUEUE.md
+# FQ-79 for why no new credential was needed); it remains manually dispatchable
+# for testing too.
+#
+# fix_attempt_id (added alongside the dispatch caller): workflow_dispatch's
+# own API returns HTTP 204 with no run id, so the caller cannot learn which
+# run it just started. This input plus `run-name:` lets a reconciliation step
+# find the exact run afterward by name (and results.json below repeats the id
+# as a second, redundant correlation signal in the output artifact — shipped
+# in TWO artifacts: `sandbox-results` (diff+logs+results.json, tar.gz'd, for
+# a human to inspect via the Actions UI) and `sandbox-results-summary`
+# (results.json alone, flat — a single-zip-layer artifact for the
+# reconciliation mechanism to parse without needing a tar reader too).
+#
+# results.json IS AN ADVISORY SIGNAL, NOT A TRUST BOUNDARY (Security Lead
+# review, src/inngest/fix-reconcile.ts's PR): the `sandbox` job below runs
+# the AI-authored, untrusted-content-derived patch (npm ci/build/lint/test)
+# in the SAME job/VM/user as the later steps that write and upload
+# results.json — GitHub Actions does not kill background processes between
+# steps of one job, so a hostile patch could in principle background a
+# process that tampers with results.json before upload. Reconciliation
+# treats this file's content as triage input (which attempts are worth a
+# human looking at), never as a security verdict — the authoritative gates
+# remain the product repo's own real CI and a human reviewing/merging the
+# draft PR, per the reboot plan's two-independent-gates requirement.
+#
+# TWO-JOB SECURITY SPLIT (this is the actual mechanism behind "no secrets in
+# the sandbox" — a private repo cannot be checked out with literally zero
+# credentials, so the credential and the untrusted code execution are put in
+# DIFFERENT jobs, which GitHub Actions guarantees run in separate, isolated
+# VMs with no shared process/filesystem):
+#   1. `checkout` (TRUSTED) — the only job that ever holds a credential. Mints
+#      a short-lived (1-hour) GitHub App installation token scoped to the ONE
+#      target repo (contents:read — the App has no more than that today),
+#      clones at the given ref, STRIPS .git (no embedded remote/token trace),
+#      packages the plain files as a workflow artifact, and lets the token
+#      expire/discard. It never touches the AI-authored patch — that only
+#      exists in job 2. This mirrors the plan's "token minting + PR creation
+#      happen in a separate trusted step, never inside code execution"
+#      discipline, applied to checkout too.
+#   2. `sandbox` (UNTRUSTED-SHAPED) — `permissions: {}` (calls no GitHub API
+#      at all), downloads the plain-file artifact (no token needed for a
+#      same-run artifact download), applies the patch, installs, builds,
+#      lints, conditionally tests, and is network-EGRESS-RESTRICTED via
+#      step-security/harden-runner in `block` mode with an explicit
+#      allowlist — this is the actual containment for the untrusted,
+#      partially-AI-authored code this job executes (finding.detail, which
+#      shapes the patch, is untrusted external content per the plan's
+#      injection-risk note; no-secrets alone does not stop it from trying to
+#      exfiltrate the checked-out repo or pivot outbound — egress restriction
+#      does). A built-in CANARY step makes an outbound call to a known
+#      non-allowlisted host and FAILS THE JOB if that call is not blocked —
+#      this operationalizes the plan's own S3 acceptance test ("attempt an
+#      outbound call -> blocked") as something every real run re-verifies,
+#      not a one-time manual check.
+#
+# KNOWN, DOCUMENTED LIMITATIONS (same "honest limitation" discipline as the
+# process-integrity audit's triggering_actor note; both flagged by Security
+# Lead review on this PR — real defense-in-depth, not a claim of a fully
+# sealed sandbox):
+#   - harden-runner Community tier has a published DNS-over-HTTPS (DoH)
+#     egress-policy bypass (GHSA-46g3-37rh-v698).
+#   - `*.blob.core.windows.net:443` is allowlisted because GitHub's own
+#     artifact storage needs it — but that wildcard is broad enough that
+#     sandboxed code could reach ANY Azure storage account, a real (if
+#     narrow) exfiltration channel for the checked-out repo's source. Kept
+#     because artifact upload/download would not work without it; combined
+#     with the no-secrets invariant (there is no credential in this job to
+#     exfiltrate), the residual risk is source-code disclosure of the
+#     already-public-within-the-org pilot repo, not credential theft.
+#
+# ALLOWLIST DISCOVERED VIA A REAL BLOCKED RUN, NOT GUESSED: the first live
+# dispatch (2026-07-19, run 29666779286) had `npm ci` genuinely blocked and
+# fail — real evidence harden-runner's egress restriction works, not a
+# no-op — because this repo's `supabase` devDependency downloads a platform
+# binary from `release-assets.githubusercontent.com` during its postinstall
+# script, a distinct host from `objects.githubusercontent.com`. Added below.
+# A future pilot product with different postinstall needs may require
+# widening this list the same way — expect harden-runner's own run log to
+# name the exact blocked domain, same self-documenting loop as this one.
+#
+# ALL WORKFLOW INPUTS ARE PASSED THROUGH `env:` BLOCKS, NEVER INTERPOLATED
+# DIRECTLY INTO `run:` SHELL (`${{ inputs.* }}` inline in a script is
+# GitHub's own documented script-injection footgun — a crafted
+# repo_full_name/ref/patch_base64 could otherwise execute arbitrary shell in
+# the TRUSTED checkout job, which holds the App token). `repo_full_name` and
+# `ref` are additionally validated against a strict allowlist pattern before
+# use. Flagged by Security Lead review on this PR — fixed pre-merge, not a
+# follow-up.
+#
+# THIS REPO'S PILOT PRODUCT HAS NO TEST SUITE: web-app-tns-06's package.json
+# defines no `test` script (confirmed by reading it directly, not assumed).
+# The plan says "run the product repo's own tests" — this workflow runs
+# whatever the repo actually provides (build + lint always; test only if a
+# `test` script exists) rather than hard-failing on a gap that predates this
+# work. This is a real, disclosed limitation of what "tested" means for this
+# pilot today, not a design defect in the sandbox itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_full_name:
+        description: "Product repo to sandbox against, e.g. admin-nutshell/web-app-tns-06"
+        required: true
+      ref:
+        description: "Branch/commit to check out as the base"
+        required: true
+        default: "main"
+      patch_base64:
+        description: "Base64-encoded unified diff to apply on top of ref"
+        required: true
+      fix_attempt_id:
+        description: "fix_attempts.id (uuid) this run belongs to — lets a caller correlate this run back to its originating attempt, since workflow_dispatch's own API returns no run id synchronously"
+        required: true
+
+# Correlates this run back to its originating fix_attempts row for a caller
+# that dispatched via the API (workflow_dispatch returns HTTP 204, no run id)
+# — a reconciliation step can find this run by matching run-name, without
+# needing a second GitHub credential/permission just to list+guess runs by
+# timestamp. GitHub evaluates run-name as a workflow-level expression (not
+# shell), so this is not subject to the same script-injection class the file
+# header describes for `run:` blocks — but fix_attempt_id is still validated
+# below (defense in depth, same discipline as repo_full_name/ref) since it
+# also appears in results.json as a second, redundant correlation signal.
+run-name: "S3 Fix Sandbox — attempt ${{ inputs.fix_attempt_id }}"
+
+permissions:
+  contents: read
+
+env:
+  # Non-secret: the App's public numeric id (see the plan file / WORK.md S1
+  # entry — App ID 4325155). Never the private key, which stays a secret.
+  OPS_HUB_CONNECTOR_APP_ID: "4325155"
+
+jobs:
+  checkout:
+    name: Trusted checkout (mints + discards an installation token; the ONLY job holding a credential)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Guard — required secret present
+        run: |
+          if [ -z "${{ secrets.CONNECTOR_APP_PRIVATE_KEY_B64 }}" ]; then
+            echo "::error::CONNECTOR_APP_PRIVATE_KEY_B64 not set"
+            exit 1
+          fi
+
+      - name: Validate + parse repo_full_name into owner/name, validate ref + fix_attempt_id
+        id: parse
+        env:
+          FULL: ${{ inputs.repo_full_name }}
+          REF: ${{ inputs.ref }}
+          ATTEMPT_ID: ${{ inputs.fix_attempt_id }}
+        run: |
+          # Strict allowlist pattern — inputs are never interpolated directly
+          # into a shell command elsewhere in this workflow (see file header);
+          # this is the one place they are validated before any use at all.
+          if ! echo "$FULL" | grep -qE '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'; then
+            echo "::error::repo_full_name '$FULL' does not match the expected owner/repo pattern"
+            exit 1
+          fi
+          if ! echo "$REF" | grep -qE '^[A-Za-z0-9_./-]+$'; then
+            echo "::error::ref '$REF' contains characters outside the expected branch/tag/SHA pattern"
+            exit 1
+          fi
+          if ! echo "$ATTEMPT_ID" | grep -qE '^[0-9a-fA-F-]{1,64}$'; then
+            echo "::error::fix_attempt_id '$ATTEMPT_ID' does not match the expected uuid-shaped pattern"
+            exit 1
+          fi
+          echo "owner=${FULL%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${FULL##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Decode App private key (masked immediately, never written to a file)
+        id: key
+        env:
+          KEY_B64: ${{ secrets.CONNECTOR_APP_PRIVATE_KEY_B64 }}
+        run: |
+          PEM=$(echo "$KEY_B64" | base64 -d)
+          echo "::add-mask::$PEM"
+          {
+            echo "pem<<GHAEOF"
+            echo "$PEM"
+            echo "GHAEOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mint a short-lived installation token (contents:read only — the App's own current scope)
+        id: mint
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ env.OPS_HUB_CONNECTOR_APP_ID }}
+          private-key: ${{ steps.key.outputs.pem }}
+          owner: ${{ steps.parse.outputs.owner }}
+          repositories: ${{ steps.parse.outputs.name }}
+
+      - name: Clone the product repo at ref (token used once here only, never persisted)
+        env:
+          TOKEN: ${{ steps.mint.outputs.token }}
+          FULL: ${{ inputs.repo_full_name }}
+          REF: ${{ inputs.ref }}
+        run: |
+          echo "::add-mask::$TOKEN"
+          git clone --depth 1 --branch "$REF" \
+            "https://x-access-token:${TOKEN}@github.com/${FULL}.git" repo
+
+      - name: Strip .git (no embedded remote/token trace) before packaging
+        run: rm -rf repo/.git
+
+      - name: Package the plain-file checkout as an artifact
+        run: tar czf repo.tar.gz repo
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repo-checkout
+          path: repo.tar.gz
+          retention-days: 1
+
+  sandbox:
+    name: Sandbox — apply patch, install, build, lint, test (no secrets, egress-restricted)
+    needs: checkout
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 20
+    steps:
+      - name: Harden Runner — block all egress except this build's actual dependencies
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
+            *.blob.core.windows.net:443
+            registry.npmjs.org:443
+
+      - name: Confirm no secrets are present in this job's environment (a real check, not a comment)
+        run: |
+          echo "Env var names present in the sandbox job:"
+          env | cut -d= -f1 | sort
+          for bad in GITHUB_TOKEN CONNECTOR_APP_PRIVATE_KEY_B64 COOLIFY_API_TOKEN LITELLM_MASTER_KEY SUPABASE_ACCESS_TOKEN LITELLM_EVAL_KEY SUPABASE_STAGING_DB_URL; do
+            if env | cut -d= -f1 | grep -qx "$bad"; then
+              echo "::error::Sensitive env var $bad is present in the sandbox job — this must never happen."
+              exit 1
+            fi
+          done
+          echo "Confirmed: no known sensitive credential env vars present in this job."
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: repo-checkout
+
+      - name: Unpack the checkout and decode the patch
+        env:
+          PATCH_B64: ${{ inputs.patch_base64 }}
+        run: |
+          tar xzf repo.tar.gz
+          echo "$PATCH_B64" | base64 -d > patch.diff
+
+      # Uploaded here — BEFORE the patch is applied and BEFORE npm ci/build/
+      # lint/test run any untrusted code — deliberately, not alongside the
+      # other two artifacts below (which are written after those steps).
+      # draft-pr.ts commits THIS artifact's content to the product repo and
+      # its PR body claims it was "validated in an isolated sandbox"; if the
+      # diff were uploaded after untrusted code ran (as it originally was),
+      # a hostile patch could background a process and swap its own on-disk
+      # content before upload — the same tampering risk this file already
+      # documents for results.json, but with a strictly worse consequence
+      # here (a real commit, not just misleading triage data). Uploading
+      # before any patched code executes closes that window: nothing
+      # untrusted has run yet, and upload-artifact v4+ artifacts are
+      # immutable once created (a second upload under the same name fails),
+      # so this copy cannot be swapped afterward either. Caught by an
+      # independent Security Lead review before merge.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: patch-diff
+          path: patch.diff
+          retention-days: 7
+
+      - name: Apply the patch (plain `patch`, not `git apply` — .git was stripped)
+        run: |
+          cd repo
+          patch -p1 --dry-run < ../patch.diff
+          patch -p1 < ../patch.diff
+
+      - name: Install dependencies
+        working-directory: repo
+        run: npm ci
+
+      - name: Build
+        id: build
+        working-directory: repo
+        continue-on-error: true
+        run: npm run build 2>&1 | tee ../build.log
+
+      - name: Lint
+        id: lint
+        working-directory: repo
+        continue-on-error: true
+        run: npm run lint 2>&1 | tee ../lint.log
+
+      - name: Test (only if this repo defines a `test` script — see file header)
+        id: test
+        working-directory: repo
+        continue-on-error: true
+        run: |
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+            npm test 2>&1 | tee ../test.log
+          else
+            echo "No 'test' script defined in this repo's package.json — skipping. This is a documented gap in the pilot repo, not a sandbox failure." | tee ../test.log
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Egress canary — confirm a non-allowlisted call is blocked AND an allowlisted one succeeds
+        id: canary
+        run: |
+          set +e
+          # Positive control FIRST: prove the network path itself works (an
+          # unrelated DNS/timeout failure would make "000" on the negative
+          # check below a false-positive pass, not real evidence of blocking —
+          # Security Lead review flagged this on this PR).
+          POS_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://api.github.com)
+          NEG_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 https://example.com)
+          set -e
+          echo "Positive control (api.github.com, allowlisted): HTTP $POS_CODE"
+          echo "Negative control (example.com, NOT allowlisted): HTTP $NEG_CODE"
+          if [ "$POS_CODE" = "000" ]; then
+            echo "::error::Egress canary INCONCLUSIVE: even the allowlisted positive control (api.github.com) failed (HTTP $POS_CODE) — the network path itself is broken, so the negative control result below proves nothing."
+            exit 1
+          fi
+          if [ "$NEG_CODE" = "000" ]; then
+            echo "canary_blocked=true" >> "$GITHUB_OUTPUT"
+            echo "Egress canary: allowlisted host reachable, non-allowlisted host BLOCKED — egress restriction confirmed working."
+          else
+            echo "canary_blocked=false" >> "$GITHUB_OUTPUT"
+            echo "::error::Egress canary FAILED: a non-allowlisted outbound call succeeded (HTTP $NEG_CODE) — egress restriction is not working. This job should be treated as failed even if build/lint/test passed."
+            exit 1
+          fi
+
+      - name: Write the results summary
+        env:
+          ATTEMPT_ID: ${{ inputs.fix_attempt_id }}
+        run: |
+          cat > results.json <<EOF
+          {
+            "fix_attempt_id": "${ATTEMPT_ID}",
+            "build_outcome": "${{ steps.build.outcome }}",
+            "lint_outcome": "${{ steps.lint.outcome }}",
+            "test_outcome": "${{ steps.test.outcome }}",
+            "test_skipped": "${{ steps.test.outputs.skipped == 'true' }}",
+            "egress_canary_blocked": ${{ steps.canary.outputs.canary_blocked }}
+          }
+          EOF
+          cat results.json
+
+      - name: Package results (diff + logs + summary) as the sandbox's output artifact
+        run: |
+          mkdir -p sandbox-results
+          cp patch.diff results.json sandbox-results/
+          cp build.log lint.log test.log sandbox-results/ 2>/dev/null || true
+          tar czf sandbox-results.tar.gz sandbox-results
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sandbox-results
+          path: sandbox-results.tar.gz
+          retention-days: 7
+
+      # A second, separate artifact holding ONLY results.json (flat, no tar.gz
+      # layer inside it) — added for the not-yet-built reconciliation mechanism
+      # (see src/inngest/fix-author.ts's file header). Reconciliation only
+      # needs the machine-readable outcome, never the diff/log content; giving
+      # it a single-zip-layer artifact to read means it needs a zip reader
+      # only, never a tar reader, for a small, well-defined parsing surface.
+      # The full `sandbox-results` bundle above is unchanged and remains the
+      # one a human inspects via the Actions UI for the actual diff/logs.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sandbox-results-summary
+          path: results.json
+          retention-days: 7
+
+      # Note: a third flat artifact (`patch-diff`, path `patch.diff`) also
+      # exists for draft-PR creation (src/inngest/draft-pr.ts) to read — same
+      # single-zip-layer, no-tar-reader rationale as sandbox-results-summary
+      # above. It is uploaded MUCH EARLIER in this job (right after the patch
+      # is decoded, before it's even applied) rather than here alongside its
+      # siblings — see that upload step's own comment for why: this is the
+      # one artifact whose content becomes a real commit in the product repo,
+      # so it must be captured before any untrusted code has had a chance to
+      # run, not after build/lint/test like these two.
+
+      - name: Summary
+        if: always()
+        env:
+          ATTEMPT_ID: ${{ inputs.fix_attempt_id }}
+          FULL: ${{ inputs.repo_full_name }}
+          REF: ${{ inputs.ref }}
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          TEST_SKIPPED: ${{ steps.test.outputs.skipped }}
+          CANARY_BLOCKED: ${{ steps.canary.outputs.canary_blocked }}
+        run: |
+          echo "=== S3 Fix Sandbox run ==="
+          echo "fix_attempt_id: $ATTEMPT_ID"
+          echo "Repo: $FULL  Ref: $REF"
+          echo "Build: $BUILD_OUTCOME | Lint: $LINT_OUTCOME | Test: $TEST_OUTCOME (skipped=$TEST_SKIPPED)"
+          echo "Egress canary blocked: $CANARY_BLOCKED"

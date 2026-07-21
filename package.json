@@ -32,6 +32,8 @@
   "dependencies": {
     "@sentry/node": "^10.66.0",
     "@supabase/supabase-js": "^2.110.7",
+    "adm-zip": "0.6.0",
+    "diff": "9.0.0",
     "inngest": "^4.13.0",
     "langfuse-node": "^3.38.0",
     "pg": "^8.22.0"

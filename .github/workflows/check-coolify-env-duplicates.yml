@@ -122,19 +122,37 @@ jobs:
       # ── Resolve which app UUID to check ─────────────────────────────────────
       - name: Resolve target app UUID
         id: resolve
+        env:
+          INPUT_APP_UUID: ${{ inputs.app_uuid }}
+          INPUT_APP_LABEL: ${{ inputs.app_label }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_call" ]; then
-            APP_UUID="${{ inputs.app_uuid }}"
-            APP_LABEL="${{ inputs.app_label }}"
-            [ -n "$APP_LABEL" ] || APP_LABEL="$APP_UUID"
-          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
             # Self-test target: ops-hub-staging is a safe, low-blast-radius
             # real app to verify this guard's logic against on every PR that
             # touches this workflow file.
             APP_UUID="ajqplom2mghf5a8h6vf1q6xg"
             APP_LABEL="ops-hub-staging (PR self-test)"
-          else
+          elif [ -n "${{ inputs.app }}" ]; then
+            # SECOND correction to this same bug class (see DECISIONS.md):
+            # branching on `github.event_name = "workflow_dispatch"` is ALSO
+            # unreliable, not just "= workflow_call". Confirmed by a real
+            # failed run: manually dispatching the OUTER caller
+            # (main-deploy.yml via workflow_dispatch) makes
+            # github.event_name report "workflow_dispatch" all the way down
+            # into THIS reusable workflow too, even though it's reached via
+            # a genuine `uses:` workflow_call, not a direct dispatch of this
+            # workflow. github.event_name cannot distinguish "I was directly
+            # dispatched" from "my caller was dispatched and called me via
+            # workflow_call" -- both report the same string.
+            #
+            # The reliable signal instead: `app` is a declared
+            # workflow_dispatch-only input (never declared for
+            # workflow_call), so `${{ inputs.app }}` resolves to a real,
+            # non-empty value (it even has a default) ONLY on a genuine
+            # direct dispatch of this exact workflow, and reliably resolves
+            # EMPTY on every workflow_call invocation, regardless of what
+            # triggered the caller (push, workflow_dispatch, schedule, ...).
             APP="${{ inputs.app }}"
             case "$APP" in
               ops-hub-staging)      APP_UUID="ajqplom2mghf5a8h6vf1q6xg" ;;
@@ -147,6 +165,15 @@ jobs:
               *) echo "::error::Unknown app '$APP'"; exit 1 ;;
             esac
             APP_LABEL="$APP"
+          else
+            # workflow_call path (main-deploy.yml, prod-deploy.yml calling this
+            # via `uses:`) -- reached whenever `inputs.app` is empty, which is
+            # the reliable signal (see the comment above): `app` is never a
+            # declared input for workflow_call, so it can never be non-empty
+            # here except on a genuine direct dispatch, already handled above.
+            APP_UUID="$INPUT_APP_UUID"
+            APP_LABEL="$INPUT_APP_LABEL"
+            [ -n "$APP_LABEL" ] || APP_LABEL="$APP_UUID"
           fi
           if [ -z "$APP_UUID" ] || [ "$APP_UUID" = "null" ]; then
             echo "::error::No app_uuid resolved — if app=custom, app_uuid is required."
@@ -154,10 +181,17 @@ jobs:
           fi
           echo "app_uuid=$APP_UUID" >> "$GITHUB_OUTPUT"
           echo "app_label=$APP_LABEL" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = "workflow_call" ]; then
-            MODE="${{ inputs.mode }}"
-          else
+          # Same reliable signal as the APP_UUID/APP_LABEL resolution above --
+          # NOT github.event_name (confirmed unreliable twice now: it's never
+          # literally "workflow_call", AND "= workflow_dispatch" also
+          # misfires when an outer caller like main-deploy.yml is itself
+          # manually dispatched). `inputs.app` non-empty is the genuine
+          # direct-dispatch signal; empty means a real workflow_call
+          # regardless of what triggered the caller.
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ -n "${{ inputs.app }}" ]; then
             MODE="block"
+          else
+            MODE="${{ inputs.mode }}"
           fi
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "Checking '$APP_LABEL' ($APP_UUID) for duplicate env-var keys... (mode=$MODE)"

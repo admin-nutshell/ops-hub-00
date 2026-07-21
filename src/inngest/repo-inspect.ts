@@ -19,8 +19,17 @@ type RepoConnectionRow = {
   default_branch: string;
 };
 
-type TreeEntry = { path: string; type: string; size?: number };
-type CommitSummary = { sha: string; message: string; author: string | null; date: string | null };
+// Exported (not just module-local) so the dashboard's read side
+// (src/metrics/repoInspect.ts) can type the `repo_snapshots.tree` / `.commits`
+// jsonb columns against the exact same shape this function writes, instead of
+// re-declaring a parallel copy that could silently drift.
+export type TreeEntry = { path: string; type: string; size?: number };
+export type CommitSummary = {
+  sha: string;
+  message: string;
+  author: string | null;
+  date: string | null;
+};
 
 export type RepoSnapshot = {
   repo_full_name: string;

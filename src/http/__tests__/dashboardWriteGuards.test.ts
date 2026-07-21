@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isTrustedOrigin, parseAllowedOrigins, resolveWriteScope } from "../dashboardWriteGuards";
+import {
+  isTrustedOrigin,
+  parseAllowedOrigins,
+  resolveWriteScope,
+  resolveProductWriteScope,
+} from "../dashboardWriteGuards";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -141,5 +146,29 @@ describe("resolveWriteScope", () => {
     vi.stubEnv("POLLING_PROJECT_ID", "proj-1");
     vi.stubEnv("POLLING_TENANT_ID", "tenant-1");
     expect(resolveWriteScope()).toEqual({ projectId: "proj-1", tenantId: "tenant-1" });
+  });
+});
+
+describe("resolveProductWriteScope", () => {
+  it("FAIL-CLOSED — returns null when DASHBOARD_PRODUCT_ID is unset", () => {
+    vi.stubEnv("DASHBOARD_PRODUCT_ID", "");
+    expect(resolveProductWriteScope()).toBeNull();
+  });
+
+  it("FAIL-CLOSED — returns null for a blank (whitespace-only) value", () => {
+    vi.stubEnv("DASHBOARD_PRODUCT_ID", "   ");
+    expect(resolveProductWriteScope()).toBeNull();
+  });
+
+  it("does NOT fall back to the read-side pilot-product default (web/lib/project.ts)", () => {
+    vi.stubEnv("DASHBOARD_PRODUCT_ID", "");
+    const scope = resolveProductWriteScope();
+    expect(scope).not.toEqual({ productId: "8bafa6a6-4d80-4983-89bc-e536d3dba672" });
+    expect(scope).toBeNull();
+  });
+
+  it("returns the real scope when the var is set", () => {
+    vi.stubEnv("DASHBOARD_PRODUCT_ID", "product-1");
+    expect(resolveProductWriteScope()).toEqual({ productId: "product-1" });
   });
 });

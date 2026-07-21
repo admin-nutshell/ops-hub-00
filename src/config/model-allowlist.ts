@@ -195,3 +195,44 @@ export const MODEL_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   "fallback-model": "Anthropic — Claude Haiku 4.5",
   "meta/llama-3.3-70b-instruct": "Meta — Llama 3.3 70B (via NVIDIA)",
 } as const;
+
+// ===========================================================================
+// REBOOT PRODUCT-DOMAIN AGENT ROLES (S3+) — a SEPARATE key space from the
+// ticket-domain RoutingFunctionKey above. Same allowlist CONCEPT (this file
+// remains the single source of truth for which LiteLLM aliases may be
+// selected) and same admission PROCESS (a role's list stays empty until an
+// alias clears a recorded live-eval pass for that (role, alias) pair — see
+// the PROCESS section above, which applies here unchanged), but a distinct
+// type/table because the two domains are scoped on different axes: ticket
+// functions are project-scoped (`agent_model_routing`, current_project_id()),
+// reboot agent roles are product-scoped (`agent_routing`,
+// current_product_id()) — see agent_routing's migration header
+// (20260718170000) for why they cannot share a table.
+//
+// fix_author is the first reboot agent role to route a model at all (S2's
+// detection agent calls no LLM — it only reads GitHub's alert APIs). Widen
+// this type when detection/security/review start routing models (S7+ per
+// the plan's roadmap) — don't pre-guess further than what ships this sprint.
+// ===========================================================================
+
+/** Reboot product-domain agent roles that route an LLM call. Keys match the
+ * DB CHECK on `agent_routing.agent_role` exactly. */
+export type AgentRoutingKey = "fix_author";
+
+/**
+ * Per-role curated allowlist, same admission discipline as
+ * MODEL_ROUTING_ALLOWLIST above. Empty until an alias clears a recorded
+ * live-eval pass for (fix_author, that alias) — no alias has yet, so the
+ * dashboard has nothing selectable for fix_author today; the resolver's
+ * literal default (below) is what actually runs, and literals are trusted
+ * deploy-time config outside the allowlist's threat model (same T-79 rule
+ * as the ticket-domain literals).
+ */
+export const AGENT_ROUTING_ALLOWLIST: Readonly<Record<AgentRoutingKey, readonly string[]>> = {
+  fix_author: [],
+} as const;
+
+/** True iff `alias` is allowed for `agentRole`. Mirrors isAllowedModel. */
+export function isAllowedAgentModel(agentRole: AgentRoutingKey, alias: string): boolean {
+  return AGENT_ROUTING_ALLOWLIST[agentRole]?.includes(alias) ?? false;
+}
