@@ -1,0 +1,283 @@
+name: Provision dashboard INNGEST_EVENT_KEY + DASHBOARD_PRODUCT_ID (S1)
+
+# Sprint S1 (ops-hub reboot): two env vars are missing on the dashboard's
+# Coolify app (ops-hub-dashboard-staging, UUID r14c3p7jzwo4wxyprd4yxyev):
+#
+#   1. INNGEST_EVENT_KEY -- copied byte-for-byte from ops-hub-staging
+#      (UUID ajqplom2mghf5a8h6vf1q6xg), never invented/regenerated. Its
+#      value is never printed or logged -- only its length, to give
+#      evidence the copy was exact without exposing the secret.
+#   2. DASHBOARD_PRODUCT_ID -- a literal, non-secret UUID row id
+#      (8bafa6a6-4d80-4983-89bc-e536d3dba672) in the `products` table.
+#
+# TRIGGER CHOICE (read before touching this file): a brand-new workflow
+# cannot be workflow_dispatch-run until it exists on `main`, and this repo's
+# standing rule is no self-merge. Per T-122 precedent
+# (check-coolify-env-duplicates.yml), this workflow is ALSO wired to
+# `pull_request`, scoped to its own path, so opening the PR that adds this
+# file is itself the real, live run against Coolify -- completion does not
+# depend on merging first. That means this workflow mutates real staging
+# state (env vars + a redeploy) at PR-open time, and again on every push to
+# the PR (idempotent by design -- see delete-then-set below -- so re-runs
+# are safe, not additive). workflow_dispatch is also wired for future
+# reuse/rollback after merge.
+#
+# Idempotency: delete-then-set, not append. Coolify's env-var POST APPENDS
+# a new row rather than upserting an existing key (T-104/T-122's documented
+# footgun) -- every existing row for a key is deleted before the new one is
+# created, every run, so a second run (e.g. a PR push) does not create
+# duplicate rows.
+#
+# Rollback: DELETE the two env-var rows on ops-hub-dashboard-staging via
+# the Coolify API (or UI) and POST /applications/{uuid}/restart again. The
+# dashboard ran fine before this change; removing both vars and redeploying
+# returns it to that exact prior state. Mean rollback time: well under
+# Production Manager's 15-minute target -- two DELETE calls + one restart.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/provision-dashboard-inngest-and-product-id.yml"
+
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  SOURCE_UUID: "ajqplom2mghf5a8h6vf1q6xg" # ops-hub-staging (source of INNGEST_EVENT_KEY)
+  TARGET_UUID: "r14c3p7jzwo4wxyprd4yxyev" # ops-hub-dashboard-staging
+  DASHBOARD_PRODUCT_ID_VALUE: "8bafa6a6-4d80-4983-89bc-e536d3dba672"
+
+jobs:
+  provision:
+    name: Copy INNGEST_EVENT_KEY + set DASHBOARD_PRODUCT_ID, then redeploy
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      DASH_PASSWORD: ${{ secrets.DASHBOARD_BASIC_AUTH_PASSWORD }}
+
+    steps:
+      - name: Guard -- required secrets present
+        run: |
+          set -euo pipefail
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+
+      # ── Step 1: read INNGEST_EVENT_KEY from the source app (never print value) ──
+      - name: Fetch INNGEST_EVENT_KEY from ops-hub-staging (source)
+        id: source
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/source_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$SOURCE_UUID/envs")
+          echo "GET /applications/$SOURCE_UUID/envs -> HTTP $HTTP"
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read ops-hub-staging envs (HTTP $HTTP)"; exit 1; }
+
+          VALUE=$(jq -r '[.[] | select(.key=="INNGEST_EVENT_KEY" and .is_preview==false)] | .[0].value // empty' /tmp/source_envs.json)
+          if [ -z "$VALUE" ]; then
+            echo "::error::INNGEST_EVENT_KEY (Production scope) not found on ops-hub-staging -- nothing to copy."
+            exit 1
+          fi
+          echo "::add-mask::$VALUE"
+          LEN=$(jq '[.[] | select(.key=="INNGEST_EVENT_KEY" and .is_preview==false)] | .[0].value | length' /tmp/source_envs.json)
+          echo "len=$LEN" >> "$GITHUB_OUTPUT"
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+          echo "Found INNGEST_EVENT_KEY on source (Production scope), length=$LEN (value never printed)."
+
+      # ── Step 2: clean-slate check on target (report only, not a gate -- see header) ──
+      - name: Check current state of target app (ops-hub-dashboard-staging)
+        id: target_pre
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/target_pre.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$TARGET_UUID/envs")
+          echo "GET /applications/$TARGET_UUID/envs -> HTTP $HTTP"
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read target envs (HTTP $HTTP)"; exit 1; }
+          PRE_INNGEST=$(jq '[.[] | select(.key=="INNGEST_EVENT_KEY")] | length' /tmp/target_pre.json)
+          PRE_PRODUCT=$(jq '[.[] | select(.key=="DASHBOARD_PRODUCT_ID")] | length' /tmp/target_pre.json)
+          echo "Pre-existing INNGEST_EVENT_KEY row(s) on target (any scope): $PRE_INNGEST"
+          echo "Pre-existing DASHBOARD_PRODUCT_ID row(s) on target (any scope): $PRE_PRODUCT"
+          if [ "$PRE_INNGEST" = "0" ] && [ "$PRE_PRODUCT" = "0" ]; then
+            echo "Clean slate confirmed -- neither key present yet (expected on first run)."
+          else
+            echo "NOTE: one or both keys already present -- this is expected on a re-run (e.g. a PR push) and is handled safely by the delete-then-set step below, which always deletes ALL existing rows for a key before creating the new one (no duplicates, no silent double-row footgun)."
+          fi
+
+      # ── Step 3: delete-then-set both keys on the target (idempotent, no append) ──
+      - name: Set INNGEST_EVENT_KEY on target (delete-then-set)
+        run: |
+          set -euo pipefail
+          VALUE="${{ steps.source.outputs.value }}"
+          for eu in $(curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$TARGET_UUID/envs" | jq -r '.[] | select(.key=="INNGEST_EVENT_KEY") | .uuid'); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$TARGET_UUID/envs/$eu")
+            echo "  DELETE INNGEST_EVENT_KEY $eu -> HTTP $DEL"
+          done
+          RC=$(curl -s --max-time 30 -o /tmp/set_inngest.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$TARGET_UUID/envs" \
+            -d "$(jq -n --arg k "INNGEST_EVENT_KEY" --arg v "$VALUE" '{key:$k,value:$v}')")
+          echo "POST INNGEST_EVENT_KEY -> HTTP $RC (response body not printed -- may echo the value back)"
+          [ "$RC" = "200" ] || [ "$RC" = "201" ] || { echo "::error::failed to set INNGEST_EVENT_KEY (HTTP $RC)"; exit 1; }
+
+      - name: Set DASHBOARD_PRODUCT_ID on target (delete-then-set)
+        run: |
+          set -euo pipefail
+          for eu in $(curl -s --max-time 30 -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$TARGET_UUID/envs" | jq -r '.[] | select(.key=="DASHBOARD_PRODUCT_ID") | .uuid'); do
+            DEL=$(curl -s --max-time 30 -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              "$COOLIFY_BASE/applications/$TARGET_UUID/envs/$eu")
+            echo "  DELETE DASHBOARD_PRODUCT_ID $eu -> HTTP $DEL"
+          done
+          RC=$(curl -s --max-time 30 -o /tmp/set_product.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$TARGET_UUID/envs" \
+            -d "$(jq -n --arg k "DASHBOARD_PRODUCT_ID" --arg v "$DASHBOARD_PRODUCT_ID_VALUE" '{key:$k,value:$v}')")
+          echo "POST DASHBOARD_PRODUCT_ID=$DASHBOARD_PRODUCT_ID_VALUE -> HTTP $RC"
+          [ "$RC" = "200" ] || [ "$RC" = "201" ] || { echo "::error::failed to set DASHBOARD_PRODUCT_ID (HTTP $RC)"; cat /tmp/set_product.json; exit 1; }
+
+      # ── Step 4: verify -- exactly one Production-scope row per key, length match ──
+      - name: Verify both vars, no duplicates, length match (value never printed)
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/target_final.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$TARGET_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read target envs post-set (HTTP $HTTP)"; exit 1; }
+
+          INNGEST_COUNT=$(jq '[.[] | select(.key=="INNGEST_EVENT_KEY" and .is_preview==false)] | length' /tmp/target_final.json)
+          INNGEST_LEN=$(jq '[.[] | select(.key=="INNGEST_EVENT_KEY" and .is_preview==false)] | .[0].value | length' /tmp/target_final.json)
+          PRODUCT_COUNT=$(jq '[.[] | select(.key=="DASHBOARD_PRODUCT_ID" and .is_preview==false)] | length' /tmp/target_final.json)
+          PRODUCT_VALUE=$(jq -r '[.[] | select(.key=="DASHBOARD_PRODUCT_ID" and .is_preview==false)] | .[0].value' /tmp/target_final.json)
+          SOURCE_LEN="${{ steps.source.outputs.len }}"
+
+          echo "INNGEST_EVENT_KEY: $INNGEST_COUNT row(s) at is_preview:false, length=$INNGEST_LEN (source length=$SOURCE_LEN)"
+          echo "DASHBOARD_PRODUCT_ID: $PRODUCT_COUNT row(s) at is_preview:false, value=$PRODUCT_VALUE"
+
+          FAIL=0
+          if [ "$INNGEST_COUNT" != "1" ]; then
+            echo "::error::expected exactly 1 Production-scope INNGEST_EVENT_KEY row, found $INNGEST_COUNT"
+            FAIL=1
+          fi
+          if [ "$INNGEST_LEN" != "$SOURCE_LEN" ]; then
+            echo "::error::INNGEST_EVENT_KEY length mismatch -- target=$INNGEST_LEN source=$SOURCE_LEN (copy was not exact)"
+            FAIL=1
+          fi
+          if [ "$PRODUCT_COUNT" != "1" ]; then
+            echo "::error::expected exactly 1 Production-scope DASHBOARD_PRODUCT_ID row, found $PRODUCT_COUNT"
+            FAIL=1
+          fi
+          if [ "$PRODUCT_VALUE" != "$DASHBOARD_PRODUCT_ID_VALUE" ]; then
+            echo "::error::DASHBOARD_PRODUCT_ID value mismatch -- target=$PRODUCT_VALUE expected=$DASHBOARD_PRODUCT_ID_VALUE"
+            FAIL=1
+          fi
+
+          # Check for REAL duplicates only -- two-plus rows sharing the SAME
+          # (key, is_preview) pair. Do NOT flag "2 rows total" as an error:
+          # Coolify's POST /envs (no is_preview in the body) populates BOTH
+          # the Production (is_preview:false) AND Preview Deployments
+          # (is_preview:true) scopes by default -- this is normal, intentional
+          # per-app behavior, not a duplicate. An earlier version of THIS
+          # REPO's own duplicate guard (check-coolify-env-duplicates.yml,
+          # T-122) made exactly this mistake -- grouping by key alone and
+          # reporting 19 false-positive "duplicates" on ops-hub-staging/-prod
+          # (DECISIONS.md 2026-07-16/17) -- before being corrected to group by
+          # (key, is_preview). This step follows that corrected model.
+          INNGEST_PREVIEW_COUNT=$(jq '[.[] | select(.key=="INNGEST_EVENT_KEY" and .is_preview==true)] | length' /tmp/target_final.json)
+          PRODUCT_PREVIEW_COUNT=$(jq '[.[] | select(.key=="DASHBOARD_PRODUCT_ID" and .is_preview==true)] | length' /tmp/target_final.json)
+          echo "INNGEST_EVENT_KEY: $INNGEST_PREVIEW_COUNT row(s) at is_preview:true (expected 0 or 1 -- Coolify's default dual-scope POST behavior, not a duplicate)"
+          echo "DASHBOARD_PRODUCT_ID: $PRODUCT_PREVIEW_COUNT row(s) at is_preview:true (expected 0 or 1 -- same)"
+          if [ "$INNGEST_PREVIEW_COUNT" -gt 1 ]; then
+            echo "::error::INNGEST_EVENT_KEY has $INNGEST_PREVIEW_COUNT rows at is_preview:true -- that IS a real duplicate (same key, same scope)"
+            FAIL=1
+          fi
+          if [ "$PRODUCT_PREVIEW_COUNT" -gt 1 ]; then
+            echo "::error::DASHBOARD_PRODUCT_ID has $PRODUCT_PREVIEW_COUNT rows at is_preview:true -- that IS a real duplicate (same key, same scope)"
+            FAIL=1
+          fi
+
+          [ "$FAIL" = "0" ] || exit 1
+          echo "VERIFIED: both vars set exactly once at Production scope; INNGEST_EVENT_KEY length matches source; no duplicates."
+
+      # ── Step 5: redeploy so the app picks up both new vars ──────────────────────
+      - name: Redeploy ops-hub-dashboard-staging
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 60 -o /tmp/restart.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$TARGET_UUID/restart")
+          echo "POST /applications/$TARGET_UUID/restart -> HTTP $HTTP"
+          cat /tmp/restart.json 2>/dev/null || true
+          if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+            echo "::error::redeploy trigger failed (HTTP $HTTP)"
+            exit 1
+          fi
+          echo "Redeploy queued. Waiting 30s before polling status..."
+          sleep 30
+
+      # ── Step 6: confirm healthy -- status field is the primary signal ───────────
+      - name: Poll Coolify status until running
+        id: status
+        run: |
+          set -euo pipefail
+          STATUS=""
+          for i in $(seq 1 12); do
+            HTTP=$(curl -s --max-time 15 -o /tmp/app_status.json -w "%{http_code}" \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+              "$COOLIFY_BASE/applications/$TARGET_UUID")
+            if [ "$HTTP" = "200" ]; then
+              STATUS=$(jq -r '.status // empty' /tmp/app_status.json)
+              FQDN=$(jq -r '.fqdn // empty' /tmp/app_status.json | sed 's#,.*##; s#/$##')
+              echo "Attempt $i: status=$STATUS"
+              case "$STATUS" in
+                running*) break ;;
+              esac
+            else
+              echo "Attempt $i: GET /applications/$TARGET_UUID -> HTTP $HTTP"
+            fi
+            sleep 10
+          done
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "fqdn=$FQDN" >> "$GITHUB_OUTPUT"
+          if [ -z "$STATUS" ] || [ "${STATUS#running}" = "$STATUS" ]; then
+            echo "::error::app did not reach a 'running' status after redeploy (last observed: '$STATUS'). Check Coolify UI / container logs before treating this as healthy."
+            exit 1
+          fi
+          echo "Coolify reports status=$STATUS -- primary health signal PASSED."
+
+      - name: Secondary reachability probe (informational, non-blocking)
+        if: always() && steps.status.outputs.status != ''
+        run: |
+          FQDN="${{ steps.status.outputs.fqdn }}"
+          if [ -z "$FQDN" ]; then
+            echo "No fqdn set on this app (known -- FQ-60 custom domain not yet attached; dashboard is reachable via its sslip.io preview per WORK.md T-68). Skipping HTTP probe; status field above is the health signal of record."
+            exit 0
+          fi
+          UNAUTH=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$FQDN/") || UNAUTH="000"
+          echo "Unauthenticated $FQDN/ -> HTTP $UNAUTH (401 expected -- Basic Auth gate from FQ-59)"
+          if [ -n "$DASH_PASSWORD" ]; then
+            AUTHED=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 -u "opsadmin:$DASH_PASSWORD" "$FQDN/") || AUTHED="000"
+            echo "Authenticated $FQDN/ -> HTTP $AUTHED (200 expected)"
+          else
+            echo "DASHBOARD_BASIC_AUTH_PASSWORD secret not available to this step -- skipping authenticated probe."
+          fi
+          echo "This probe is informational only and does not fail the workflow -- Coolify's status field (previous step) is the authoritative health signal, per Production Manager guidance (a flaky/unset fqdn should not manufacture a false failure)."
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "=================================================================="
+          echo " ops-hub-dashboard-staging ($TARGET_UUID) -- S1 env var provision"
+          echo "=================================================================="
+          echo " INNGEST_EVENT_KEY: copied from ops-hub-staging, length=${{ steps.source.outputs.len }} (value never printed)"
+          echo " DASHBOARD_PRODUCT_ID: $DASHBOARD_PRODUCT_ID_VALUE"
+          echo " Coolify status after redeploy: ${{ steps.status.outputs.status }}"
+          echo " fqdn: ${{ steps.status.outputs.fqdn }}"
+          echo "=================================================================="
