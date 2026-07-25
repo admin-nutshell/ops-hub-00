@@ -474,6 +474,14 @@ describe("authorFixForFinding", () => {
     assertAuthored(result);
 
     expect(result).toMatchObject({ authored: true, diffExtracted: false, dispatched: false });
+    const insertCall = calls(writeClient).find(([q]) => q.includes("INSERT INTO fix_attempts"))!;
+    expect(insertCall[1]).toEqual([
+      result.fixAttemptId,
+      "prod-1",
+      "finding-1",
+      "triage-model",
+      "failed",
+    ]);
     expect(fetchMock).toHaveBeenCalledTimes(1); // LLM only — never wastes a sandbox dispatch on a known-truncated diff
   });
 
