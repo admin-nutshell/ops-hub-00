@@ -1,0 +1,103 @@
+name: Diagnose S3 first live run (read-only)
+
+# One-off, read-only diagnostic for the first-ever live click of the
+# dashboard's "Propose a fix" button (S3, PR #571). The dashboard's poll
+# timed out twice with no visible state change — this checks the actual
+# fix_attempts/findings rows directly rather than continue guessing from the
+# client-side symptom alone.
+#
+# Read-only: SELECT only, no writes. Connects via OPS_HUB_APP_LOGIN_URL (the
+# ops_hub_app role, RLS-scoped) fetched from the ops-hub-staging Coolify app —
+# same credential/DSN-fetch mechanism as t60-rls-probe.yml. Never prints the
+# DSN password (masked), never prints raw finding.detail/fix_attempts diff
+# content (metadata columns only, same no-raw-content discipline as every
+# audit_log write elsewhere in this codebase).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/diagnose-s3-first-live-run.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  COOLIFY_BASE: "https://coolify.inatechshell.ca/api/v1"
+  OPS_HUB_STAGING_UUID: "ajqplom2mghf5a8h6vf1q6xg"
+  PILOT_PRODUCT_ID: "8bafa6a6-4d80-4983-89bc-e536d3dba672"
+
+jobs:
+  diagnose:
+    name: Query findings/fix_attempts state for the pilot product (read-only)
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Guard — required secret present
+        run: |
+          [ -n "$TOKEN" ] || { echo "::error::COOLIFY_API_TOKEN not set"; exit 1; }
+
+      - name: Fetch staging OPS_HUB_APP_LOGIN_URL from Coolify (masked)
+        run: |
+          set -euo pipefail
+          HTTP=$(curl -s --max-time 30 -o /tmp/staging_envs.json -w "%{http_code}" \
+            -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
+            "$COOLIFY_BASE/applications/$OPS_HUB_STAGING_UUID/envs")
+          [ "$HTTP" = "200" ] || { echo "::error::cannot read staging envs (HTTP $HTTP)"; head -c 300 /tmp/staging_envs.json; exit 1; }
+
+          LOGIN=$(jq -r '.[] | select(.key=="OPS_HUB_APP_LOGIN_URL" and .is_preview==false) | .value' /tmp/staging_envs.json | head -1)
+          if [ -z "$LOGIN" ] || [ "$LOGIN" = "null" ]; then
+            echo "::error::OPS_HUB_APP_LOGIN_URL absent on staging app"; exit 1
+          fi
+          echo "::add-mask::$LOGIN"
+          printf '%s' "$LOGIN" > /tmp/login_dsn
+          REDACTED=$(printf '%s' "$LOGIN" | sed -E 's#(://[^:]+):[^@]*@#\1:***@#')
+          echo "staging OPS_HUB_APP_LOGIN_URL present. Redacted: $REDACTED"
+
+      - name: findings — state for the pilot product (metadata only, no detail blob)
+        run: |
+          LOGIN=$(cat /tmp/login_dsn); echo "::add-mask::$LOGIN"
+          psql "$LOGIN" -c "
+            SELECT set_config('app.current_product', '$PILOT_PRODUCT_ID', true);
+            SELECT id, finding_type, severity, state, created_at, updated_at
+              FROM findings
+             WHERE product_id = '$PILOT_PRODUCT_ID'
+             ORDER BY updated_at DESC
+             LIMIT 20;
+          "
+
+      - name: fix_attempts — every attempt for the pilot product (metadata only, no diff content)
+        run: |
+          LOGIN=$(cat /tmp/login_dsn); echo "::add-mask::$LOGIN"
+          psql "$LOGIN" -c "
+            SELECT set_config('app.current_product', '$PILOT_PRODUCT_ID', true);
+            SELECT id, finding_id, agent, model_alias, status, sandbox_run_id,
+                   eval_score, created_at, updated_at
+              FROM fix_attempts
+             WHERE product_id = '$PILOT_PRODUCT_ID'
+             ORDER BY created_at DESC
+             LIMIT 20;
+          "
+
+      - name: pull_requests — any draft PR rows recorded for the pilot product
+        run: |
+          LOGIN=$(cat /tmp/login_dsn); echo "::add-mask::$LOGIN"
+          psql "$LOGIN" -c "
+            SELECT set_config('app.current_product', '$PILOT_PRODUCT_ID', true);
+            SELECT id, fix_attempt_id, github_pr_number, branch, state,
+                   checks_status, created_at, updated_at
+              FROM pull_requests
+             WHERE product_id = '$PILOT_PRODUCT_ID'
+             ORDER BY created_at DESC
+             LIMIT 20;
+          "
+
+      # audit_log is intentionally skipped: its RLS (20260618120100, unchanged
+      # by the S1 product-domain migration) is still scoped by
+      # app.current_tenant/app.current_project only, not app.current_product
+      # — connecting with only the product GUC set would silently return
+      # zero rows regardless of actual content (fail-closed on the wrong
+      # axis), a false negative rather than real signal. Not worth the
+      # confusion for a one-off diagnostic.
