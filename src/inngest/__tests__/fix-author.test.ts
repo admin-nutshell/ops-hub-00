@@ -24,6 +24,7 @@ vi.mock("../../langfuse", () => ({ langfuse: null }));
 
 import {
   authorFixForFinding,
+  authorPatch,
   extractDiff,
   getPool,
   _resetPool,
@@ -188,6 +189,18 @@ function llmResponse(content: string) {
   return { ok: true, json: async () => ({ choices: [{ message: { content } }] }) };
 }
 
+// A truncated LiteLLM response — this shape is real, not hypothetical:
+// the first live run against the pilot repo (2026-07-24/25) saw exactly
+// this on 3 of 4 attempts (all targeting package-lock.json), each rejected
+// downstream by the sandbox's `patch` with "unexpectedly ends in middle of
+// line." finish_reason:"length" is the API's own truncation signal.
+function llmResponseTruncated(content: string) {
+  return {
+    ok: true,
+    json: async () => ({ choices: [{ message: { content }, finish_reason: "length" }] }),
+  };
+}
+
 function dispatchOk() {
   return { status: 204 };
 }
@@ -215,6 +228,36 @@ describe("extractDiff", () => {
 
   it("returns null for empty output", () => {
     expect(extractDiff("   ")).toBeNull();
+  });
+});
+
+describe("authorPatch", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("extracts the diff from a normal (non-truncated) response", async () => {
+    vi.stubEnv("LITELLM_URL", "http://litellm-test:4000");
+    vi.stubEnv("LITELLM_MASTER_KEY", "test-key");
+    mockSequentialFetch(llmResponse(VALID_DIFF));
+
+    const result = await authorPatch(FINDING_ROW, "triage-model");
+    expect(result.diff).toBe(VALID_DIFF);
+  });
+
+  it("treats finish_reason:'length' as truncated and returns diff:null, even though the partial content still opens like a valid diff", async () => {
+    // The opening lines alone would pass extractDiff's shape check — this is
+    // exactly why the fix checks finish_reason instead of only inferring
+    // truncation from extractDiff's output.
+    const truncated = VALID_DIFF.slice(0, 40);
+    vi.stubEnv("LITELLM_URL", "http://litellm-test:4000");
+    vi.stubEnv("LITELLM_MASTER_KEY", "test-key");
+    mockSequentialFetch(llmResponseTruncated(truncated));
+
+    const result = await authorPatch(FINDING_ROW, "triage-model");
+    expect(result.diff).toBeNull();
+    expect(result.raw).toBe(truncated); // raw content is still returned, just never trusted as a diff
   });
 });
 
@@ -419,6 +462,27 @@ describe("authorFixForFinding", () => {
     ]);
     expect(calls(writeClient).some(([q]) => q.includes("UPDATE findings"))).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1); // LLM only — no dispatch attempted
+  });
+
+  it("records a 'failed' fix_attempts row and never dispatches when the model's response was truncated (finish_reason:'length'), even if the partial content looks like a diff", async () => {
+    const fetchClient = makeClient(fetchTxn({}));
+    const writeClient = makeClient(writeTxnAuthored({ advanceState: false }));
+    const pool = poolSequence(fetchClient, writeClient);
+    const fetchMock = mockSequentialFetch(llmResponseTruncated(VALID_DIFF.slice(0, 40)));
+
+    const result = await authorFixForFinding(pool, "prod-1", "finding-1");
+    assertAuthored(result);
+
+    expect(result).toMatchObject({ authored: true, diffExtracted: false, dispatched: false });
+    const insertCall = calls(writeClient).find(([q]) => q.includes("INSERT INTO fix_attempts"))!;
+    expect(insertCall[1]).toEqual([
+      result.fixAttemptId,
+      "prod-1",
+      "finding-1",
+      "triage-model",
+      "failed",
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // LLM only — never wastes a sandbox dispatch on a known-truncated diff
   });
 
   it("scopes the fix_attempts INSERT and dispatch UPDATE by product_id, not finding_id alone", async () => {

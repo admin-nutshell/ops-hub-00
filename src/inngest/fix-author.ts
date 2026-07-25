@@ -223,6 +223,17 @@ export function extractDiff(raw: string): string | null {
   return cleaned;
 }
 
+// First live run of this pipeline (2026-07-24/25, 4 real attempts against the
+// pilot repo) found 3 of 4 failures were the SAME symptom: the sandbox's
+// plain `patch` rejected the diff mid-hunk with "patch unexpectedly ends in
+// middle of line" — every one of those three targeted package-lock.json, a
+// large, machine-generated file where a real version-bump diff (nested
+// transitive resolution + hash changes) can easily run past a small output
+// budget. 1500 tokens was too tight for that case; raised generously below.
+// Also now checks the API's own finish_reason rather than only inferring
+// truncation from a downstream patch-apply failure — see below.
+const MAX_AUTHOR_TOKENS = 4000;
+
 export async function authorPatch(
   finding: Pick<FindingRow, "finding_type" | "severity" | "title" | "detail">,
   model: string
@@ -239,7 +250,7 @@ export async function authorPatch(
     body: JSON.stringify({
       model,
       temperature: 0,
-      max_tokens: 1500,
+      max_tokens: MAX_AUTHOR_TOKENS,
       messages: [
         {
           role: "system",
@@ -279,8 +290,24 @@ export async function authorPatch(
     throw new Error(`LiteLLM ${resp.status}: ${text.slice(0, 200)}`);
   }
 
-  const json = (await resp.json()) as { choices: Array<{ message: { content: string } }> };
+  const json = (await resp.json()) as {
+    choices: Array<{ message: { content: string }; finish_reason?: string }>;
+  };
   const raw = json.choices?.[0]?.message?.content?.trim() ?? "";
+
+  // finish_reason "length" means the API cut the response off at
+  // max_tokens — the diff is DEFINITELY incomplete, not just possibly
+  // malformed. Treat identically to NO_FIX_AVAILABLE (diff: null, no sandbox
+  // dispatch) rather than pass a guaranteed-truncated diff through
+  // extractDiff, which only checks the OPENING shape and would happily wave
+  // a cut-off diff through — wasting a full sandbox dispatch on an attempt
+  // that cannot possibly apply cleanly (confirmed against real output: this
+  // is exactly what happened on 3 of the first 4 live attempts, all against
+  // package-lock.json, before this check existed).
+  if (json.choices?.[0]?.finish_reason === "length") {
+    return { raw, diff: null };
+  }
+
   return { raw, diff: extractDiff(raw) };
 }
 
