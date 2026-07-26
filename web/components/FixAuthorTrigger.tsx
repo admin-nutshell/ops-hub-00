@@ -12,14 +12,24 @@ import { WriteStatus, type WriteStatusState } from "./settings/WriteStatus";
 // honest "dispatch success != completion" signal discipline, applied at the
 // single-row level instead of the whole-list level.
 //
-// Only shows the button for a finding whose state is "detected" or
-// "triaged" — mirrors fix-author.ts's own ELIGIBLE_FOR_IN_PROGRESS set
-// exactly (not re-derived independently). Any other state
-// (fix_in_progress, pr_open, shipped, dismissed, reopened) renders nothing,
-// since the backend would just skip a dispatch against it anyway
-// (TERMINAL_FINDING_STATES, or an attempt already in progress) — no point
-// offering a click that's a guaranteed no-op.
-const ELIGIBLE_STATES = new Set(["detected", "triaged"]);
+// Shows the button for "detected", "triaged", or "fix_in_progress" —
+// "fix_in_progress" was ADDED after the pipeline's first live runs
+// (2026-07-24 through 2026-07-26): every one of the first 5 real attempts
+// resolved to a TERMINAL fix_attempts status ('failed'), which advances
+// findings.state to 'fix_in_progress' and leaves it there permanently — the
+// original ELIGIBLE_FOR_IN_PROGRESS-mirroring set (detected/triaged only)
+// then hid the button forever for every finding that had ever been tried
+// once, even though the server has always permitted a retry: fix-author.ts's
+// own TERMINAL_FINDING_STATES only blocks 'shipped'/'dismissed', and its
+// separate in-flight-attempt guard only blocks a finding with a
+// 'pending'/'running' row, not a terminal one. This was a client-side
+// display gap, not a security boundary — the server-side authorization was
+// already correct; the dashboard just wasn't reflecting it. Deliberately
+// still excludes "pr_open" (an open real PR should never be casually
+// re-authored against) and "reopened" (a distinct product-scope question,
+// flagged in PR #571's Security Lead review, not decided yet — not the gap
+// that was actually blocking real testing).
+const ELIGIBLE_STATES = new Set(["detected", "triaged", "fix_in_progress"]);
 
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_ATTEMPTS = 30; // ~90s — same generous window as VulnDetectTrigger.
@@ -44,6 +54,25 @@ export function FixAuthorTrigger({ findingId, state }: { findingId: string; stat
   const pollCountRef = useRef(0);
   const baselineStateRef = useRef(state);
 
+  // KNOWN LIMITATION, disclosed rather than hidden: this poll's whole success
+  // signal is "did findings.state change" — but fix-author.ts only ever
+  // advances state FROM 'detected'/'triaged' TO 'fix_in_progress' (see its
+  // own ELIGIBLE_FOR_IN_PROGRESS gate); nothing in this pipeline yet advances
+  // state any further once it's already 'fix_in_progress' (draft-pr.ts/
+  // fix-reconcile.ts never touch findings.state at all). So a click on an
+  // already-fix_in_progress finding (the exact case this button now allows)
+  // is only GUARANTEED to have the event ACCEPTED by Inngest — the handler
+  // itself may still legitimately skip (an attempt already pending/running
+  // for this finding, the finding vanishing/reaching a terminal state, or no
+  // active repo connection, per authorFixForFinding's own re-checks) — and
+  // even when it genuinely dispatches and runs, this component can never
+  // observe a state change for it. Either way the poll always times out at
+  // 90s, whether the click was a no-op skip or a real, successful retry.
+  // That's a real gap in this pipeline (findings.state should eventually
+  // reflect a completed attempt or an open PR too), not something this
+  // component can paper over on its own — flagged for a future pass, not
+  // fixed here.
+  //
   // Fires on every re-render this component receives via router.refresh()
   // (VulnFindingsPanel re-renders the whole list server-side; React matches
   // this row's component instance by key, so it just receives a fresh
@@ -69,8 +98,11 @@ export function FixAuthorTrigger({ findingId, state }: { findingId: string; stat
           kind: "pending",
           message:
             "Still no state change after 90s — this can mean authoring is still running, it " +
-            "skipped (e.g. an attempt was already in progress, or no repo is connected), or this " +
-            "environment's backend isn't wired up for it yet. Reload the page later to check again.",
+            "skipped (e.g. an attempt was already in progress, or no repo is connected), this " +
+            "was a retry on a finding already past its first attempt (state can't advance " +
+            "again from here — check the finding's actual result elsewhere, this isn't a sign " +
+            "of failure), or this environment's backend isn't wired up for it yet. Reload the " +
+            "page later to check again.",
         });
         return;
       }
