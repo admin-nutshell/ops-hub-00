@@ -686,6 +686,12 @@ describe("authorFixForFinding", () => {
     await expect(authorFixForFinding(pool, "prod-1", "finding-1")).rejects.toThrow(
       "GitHub contents fetch 500"
     );
+
+    // The throw happens before the write transaction is ever opened — only
+    // ONE pool.connect() call total (the read-phase fetchClient), so no
+    // INSERT INTO fix_attempts could have been issued anywhere.
+    expect(pool.connect).toHaveBeenCalledTimes(1);
+    expect(calls(fetchClient).some(([q]) => q.includes("INSERT INTO fix_attempts"))).toBe(false);
   });
 
   // --- Race-condition regression coverage (security review, carried over) --
