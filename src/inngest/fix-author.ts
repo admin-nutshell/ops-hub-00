@@ -259,16 +259,43 @@ function assertValidRef(ref: string): void {
 
 // Real, machine-generated lockfiles are the dominant real-world failure mode
 // for LLM-authored diffs — see this file's header. Never attempted, even
-// with full content available; app-agnostic on purpose (not npm-specific),
-// since this reboot's standing constraint is "nothing hardcoded to one app."
+// with full content available. This list is Node.js-ecosystem-specific
+// (matching authorPatch's own system prompt, which already scopes this agent
+// to Node.js/TypeScript repos) — not a claim of covering every ecosystem's
+// lockfile, just this one's. This basename check is deliberately NOT the
+// only backstop against authoring against a real lockfile: MAX_TARGET_FILE_
+// CONTENT_CHARS below independently skips almost every real-world lockfile
+// on size alone (Security Lead review, PR #579).
 const LOCKFILE_BASENAMES: ReadonlySet<string> = new Set([
   "package-lock.json",
   "yarn.lock",
   "pnpm-lock.yaml",
 ]);
 function isLockfilePath(path: string): boolean {
-  const basename = path.split("/").pop() ?? path;
+  const basename = (path.split("/").pop() ?? path).toLowerCase();
   return LOCKFILE_BASENAMES.has(basename);
+}
+
+// resolveTargetFilePath's output is fully attacker-influenced (read directly
+// from GitHub's own alert JSON — untrusted external content — with zero
+// validation of its own) and flows into a GitHub Contents API URL below.
+// Per-segment encodeURIComponent does NOT make this safe: "." and ".." are
+// unreserved characters that pass through encoding unchanged, and the WHATWG
+// URL parser inside fetch() normalizes dot segments BEFORE the request is
+// sent — a path like "../../../../installation/repositories" would resolve
+// to a completely different api.github.com endpoint, called with the
+// installation token this function just minted. Independent Security Lead
+// review (PR #579) caught this — the same class of gap draft-pr.ts's
+// assertPathSafe was hardened against in PR #568, missed here despite this
+// function's own comment claiming to mirror that one. Mirrors it exactly
+// now: reject empty, a leading "/", any "\", and any "."/".."/empty segment.
+function isUnsafeTargetPath(path: string): boolean {
+  return (
+    !path ||
+    path.startsWith("/") ||
+    path.includes("\\") ||
+    path.split("/").some((seg) => seg === "" || seg === "." || seg === "..")
+  );
 }
 
 // Bounds the embedded target file content's contribution to prompt size/cost
@@ -603,14 +630,21 @@ export async function authorFixForFinding(
   // calling the LLM — see this file's header for why. Any failure to obtain
   // real content short-circuits straight to the "no fix" path below with no
   // LLM call and no sandbox dispatch, same as the model's own
-  // NO_FIX_AVAILABLE sentinel. skipReason is metadata (a file path/category,
-  // never diff/file content) recorded in the audit_log payload for
-  // visibility — same no-raw-content discipline as everywhere else.
+  // NO_FIX_AVAILABLE sentinel. skipReason is metadata (a fixed category
+  // string, never a file path or diff/file content) recorded in the
+  // audit_log payload for visibility — same no-raw-content discipline as
+  // everywhere else.
   const targetPath = resolveTargetFilePath(finding);
   let targetFile: { path: string; content: string } | null = null;
   let skipReason: string | null = null;
   if (!targetPath) {
     skipReason = "no_target_path_resolved";
+  } else if (isUnsafeTargetPath(targetPath)) {
+    // Security Lead review, PR #579: targetPath is untrusted (read straight
+    // from the finding's own alert JSON) and is about to flow into a GitHub
+    // API URL — reject a traversal-shaped path fail-closed, never attempt
+    // the fetch. See isUnsafeTargetPath's own comment for the concrete risk.
+    skipReason = "unsafe_target_path";
   } else if (isLockfilePath(targetPath)) {
     skipReason = "lockfile_target_not_supported";
   } else {
