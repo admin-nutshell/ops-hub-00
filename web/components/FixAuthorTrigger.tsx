@@ -59,14 +59,19 @@ export function FixAuthorTrigger({ findingId, state }: { findingId: string; stat
   // advances state FROM 'detected'/'triaged' TO 'fix_in_progress' (see its
   // own ELIGIBLE_FOR_IN_PROGRESS gate); nothing in this pipeline yet advances
   // state any further once it's already 'fix_in_progress' (draft-pr.ts/
-  // fix-reconcile.ts never touch findings.state at all). So a RETRY on an
+  // fix-reconcile.ts never touch findings.state at all). So a click on an
   // already-fix_in_progress finding (the exact case this button now allows)
-  // will dispatch and run for real, but this component can never observe a
-  // state change for it — the poll will always time out at 90s regardless of
-  // whether the retry actually succeeds. That's a real gap in this pipeline
-  // (findings.state should eventually reflect a completed attempt or an open
-  // PR too), not something this component can paper over on its own — flagged
-  // for a future pass, not fixed here.
+  // is only GUARANTEED to have the event ACCEPTED by Inngest — the handler
+  // itself may still legitimately skip (an attempt already pending/running
+  // for this finding, the finding vanishing/reaching a terminal state, or no
+  // active repo connection, per authorFixForFinding's own re-checks) — and
+  // even when it genuinely dispatches and runs, this component can never
+  // observe a state change for it. Either way the poll always times out at
+  // 90s, whether the click was a no-op skip or a real, successful retry.
+  // That's a real gap in this pipeline (findings.state should eventually
+  // reflect a completed attempt or an open PR too), not something this
+  // component can paper over on its own — flagged for a future pass, not
+  // fixed here.
   //
   // Fires on every re-render this component receives via router.refresh()
   // (VulnFindingsPanel re-renders the whole list server-side; React matches
