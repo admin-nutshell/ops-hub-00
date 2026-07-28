@@ -4,6 +4,22 @@
 
 ---
 
+## FQ-80 — S3's last proof point is blocked: all 5 real pilot findings target a file this pipeline deliberately refuses to patch
+
+**Filed:** 2026-07-28
+**Filed by:** Coordinator, after root-causing why every "Propose a fix" click on the live dashboard (2026-07-24 through 2026-07-27, all 5 real findings, multiple rounds) has failed or instantly declined.
+**Needs:** Decision (non-blocking — nothing is broken, no customer affected).
+**Context:** S3's remaining outstanding proof point is "get one real attempt all the way to a draft PR." Investigated properly rather than patching symptoms again (per your instruction): a new read-only diagnostic query (PR #583, merged), run directly against the live database, confirms **all 5 real vulnerability findings on the pilot repo (`web-app-tns-06`) resolve to the same target file: `package-lock.json`.** That file is permanently excluded from automated patching by design (PR #579) — it's large, machine-generated, and a model-authored edit to it that "applies cleanly" is no guarantee the result stays internally consistent (could silently break `npm ci` even though the patch itself applies). Every click since has been the pipeline **correctly declining**, not failing — there is no bug left to find here, and no amount of further patch-quality tuning (prompt changes, token budget, grounding in real file content — all already done) can produce a successful draft PR against any of these 5 findings, because none of them is the kind of finding this pipeline is built to fix.
+**Options:**
+- **(A) Wait.** Do nothing — leave the pilot repo's Dependabot/code-scanning feed running; the first genuine single-source-file finding (a real code-scanning alert on an actual source file, not a dependency/lockfile alert) that appears naturally becomes the proof-point candidate. Lowest risk, no new design work, but timing isn't in our control.
+- **(B) Extend scope to support dependency-only fixes.** Teach the pipeline to author a `package.json`-only version bump (no lockfile edit) for dependency findings. Bigger design question — a bump to `package.json` alone without a matching lockfile update will very likely still fail the product repo's own `npm ci`-based CI, so this may just move the failure downstream rather than solve it. Needs a Tech Lead design pass before any code changes.
+- **(C) Point at a second repo/finding source for the proof point.** Connect another repo (or manually seed a single known-fixable source-file finding) specifically to exercise the untested `draft-pr.ts` write path. Fastest to a concrete proof point, but is testing against non-representative data rather than the real pilot pipeline.
+**Recommendation:** (A) — lowest risk, requires no new engineering, and keeps the proof point honest (a real finding, not a manufactured one). Worth revisiting if no qualifying finding appears within a few weeks.
+**Deadline:** Non-blocking.
+**Notify:** Coordinator, once you've picked an option (or if you'd rather just let it sit for now — that's fine too).
+
+---
+
 ## ✅ FQ-79 — RESOLVED: both items closed; S3 ("propose fixes as draft PRs") fully built and merged
 
 **Filed:** 2026-07-18 | **Item 1 self-corrected and resolved 2026-07-19 — Item 2 confirmed done by the founder 2026-07-19 — FQ fully closed 2026-07-20**
