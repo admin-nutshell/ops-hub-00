@@ -103,21 +103,36 @@ jobs:
       # product_id column; its RLS is tenant/project-scoped only, both NULL
       # for product-domain rows — see the note at the end of this file).
       # This step reads findings.detail directly instead (product-scoped,
-      # RLS-safe) to see exactly what resolveTargetFilePath would extract for
-      # each of the 5 findings, settling "no_target_path_resolved" vs a real
-      # resolved path without needing the unreadable audit_log row at all.
+      # RLS-safe) to see what resolveTargetFilePath would actually extract for
+      # each of the 5 known pilot findings, settling "no_target_path_resolved"
+      # vs a real resolved path without needing the unreadable audit_log row.
+      # resolved_path mirrors resolveTargetFilePath's own precedence exactly
+      # (fix-author.ts): a non-blank dependency.manifest_path wins outright,
+      # else fall back to a non-blank most_recent_instance.location.path,
+      # else NULL — not two independent raw projections. Filtered to the 5
+      # known finding IDs (not a bare product-wide LIMIT 20) so the result
+      # can never silently drop a target finding or admit an unrelated one as
+      # this product's finding count grows past 20.
       - name: findings — detail path fields for the 5 known finding IDs (metadata only)
         run: |
           LOGIN=$(cat /tmp/login_dsn); echo "::add-mask::$LOGIN"
           psql "$LOGIN" -c "
             SELECT set_config('app.current_product', '$PILOT_PRODUCT_ID', true);
             SELECT id, finding_type, severity,
-                   detail #>> '{dependency,manifest_path}' AS manifest_path,
-                   detail #>> '{most_recent_instance,location,path}' AS scanning_path
+                   COALESCE(
+                     NULLIF(TRIM(detail #>> '{dependency,manifest_path}'), ''),
+                     NULLIF(TRIM(detail #>> '{most_recent_instance,location,path}'), '')
+                   ) AS resolved_path
               FROM findings
              WHERE product_id = '$PILOT_PRODUCT_ID'
-             ORDER BY updated_at DESC
-             LIMIT 20;
+               AND id IN (
+                 '55f2ae89-e5a8-4b52-b920-170eb51214a8',
+                 'b7dee0be-a6c9-4678-a8e8-57169028fb35',
+                 'bd18d967-63e3-414b-adfe-a950207afd2c',
+                 'cae1e5fe-c2fb-4e7f-aa19-7c3063898a36',
+                 '1a36d135-5367-435a-8ba1-dccecd817c7b'
+               )
+             ORDER BY updated_at DESC;
           "
 
       # audit_log is intentionally skipped: its RLS (20260618120100, unchanged
