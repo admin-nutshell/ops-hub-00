@@ -94,6 +94,55 @@ jobs:
              LIMIT 20;
           "
 
+      # One-off addition (2026-07-27): the 2026-07-27 retry batch produced 5
+      # instant-fail fix_attempts rows with no sandbox_run_id — meaning
+      # authorFixForFinding's own resolveTargetFilePath/isLockfilePath/
+      # fetchTargetFileContent skip path fired before ever calling the LLM,
+      # for at least some of these. skipReason itself lives only in
+      # audit_log's payload, which is unreadable here (audit_log has no
+      # product_id column; its RLS is tenant/project-scoped only, both NULL
+      # for product-domain rows — see the note at the end of this file).
+      # This step reads findings.detail directly instead (product-scoped,
+      # RLS-safe) to see what resolveTargetFilePath would actually extract for
+      # each of the 5 known pilot findings, settling "no_target_path_resolved"
+      # vs a real resolved path without needing the unreadable audit_log row.
+      # resolved_path mirrors resolveTargetFilePath's own precedence exactly
+      # (fix-author.ts): a JSON *string* type with non-blank content at
+      # dependency.manifest_path wins outright (TRIM used only to test for
+      # blank, the untrimmed value is what's returned — matching
+      # `typeof x === "string" && x.trim() !== ""` followed by `return x`),
+      # else fall back to the same check on
+      # most_recent_instance.location.path, else NULL. Filtered to the 5
+      # known finding IDs (not a bare product-wide LIMIT 20) so the result
+      # can never silently drop a target finding or admit an unrelated one as
+      # this product's finding count grows past 20.
+      - name: findings — detail path fields for the 5 known finding IDs (metadata only)
+        run: |
+          LOGIN=$(cat /tmp/login_dsn); echo "::add-mask::$LOGIN"
+          psql "$LOGIN" -c "
+            SELECT set_config('app.current_product', '$PILOT_PRODUCT_ID', true);
+            SELECT id, finding_type, severity,
+                   CASE
+                     WHEN jsonb_typeof(detail #> '{dependency,manifest_path}') = 'string'
+                          AND TRIM(detail #>> '{dependency,manifest_path}') <> ''
+                       THEN detail #>> '{dependency,manifest_path}'
+                     WHEN jsonb_typeof(detail #> '{most_recent_instance,location,path}') = 'string'
+                          AND TRIM(detail #>> '{most_recent_instance,location,path}') <> ''
+                       THEN detail #>> '{most_recent_instance,location,path}'
+                     ELSE NULL
+                   END AS resolved_path
+              FROM findings
+             WHERE product_id = '$PILOT_PRODUCT_ID'
+               AND id IN (
+                 '55f2ae89-e5a8-4b52-b920-170eb51214a8',
+                 'b7dee0be-a6c9-4678-a8e8-57169028fb35',
+                 'bd18d967-63e3-414b-adfe-a950207afd2c',
+                 'cae1e5fe-c2fb-4e7f-aa19-7c3063898a36',
+                 '1a36d135-5367-435a-8ba1-dccecd817c7b'
+               )
+             ORDER BY updated_at DESC;
+          "
+
       # audit_log is intentionally skipped: its RLS (20260618120100, unchanged
       # by the S1 product-domain migration) is still scoped by
       # app.current_tenant/app.current_project only, not app.current_product
