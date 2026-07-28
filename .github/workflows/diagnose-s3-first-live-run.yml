@@ -107,9 +107,12 @@ jobs:
       # each of the 5 known pilot findings, settling "no_target_path_resolved"
       # vs a real resolved path without needing the unreadable audit_log row.
       # resolved_path mirrors resolveTargetFilePath's own precedence exactly
-      # (fix-author.ts): a non-blank dependency.manifest_path wins outright,
-      # else fall back to a non-blank most_recent_instance.location.path,
-      # else NULL — not two independent raw projections. Filtered to the 5
+      # (fix-author.ts): a JSON *string* type with non-blank content at
+      # dependency.manifest_path wins outright (TRIM used only to test for
+      # blank, the untrimmed value is what's returned — matching
+      # `typeof x === "string" && x.trim() !== ""` followed by `return x`),
+      # else fall back to the same check on
+      # most_recent_instance.location.path, else NULL. Filtered to the 5
       # known finding IDs (not a bare product-wide LIMIT 20) so the result
       # can never silently drop a target finding or admit an unrelated one as
       # this product's finding count grows past 20.
@@ -119,10 +122,15 @@ jobs:
           psql "$LOGIN" -c "
             SELECT set_config('app.current_product', '$PILOT_PRODUCT_ID', true);
             SELECT id, finding_type, severity,
-                   COALESCE(
-                     NULLIF(TRIM(detail #>> '{dependency,manifest_path}'), ''),
-                     NULLIF(TRIM(detail #>> '{most_recent_instance,location,path}'), '')
-                   ) AS resolved_path
+                   CASE
+                     WHEN jsonb_typeof(detail #> '{dependency,manifest_path}') = 'string'
+                          AND TRIM(detail #>> '{dependency,manifest_path}') <> ''
+                       THEN detail #>> '{dependency,manifest_path}'
+                     WHEN jsonb_typeof(detail #> '{most_recent_instance,location,path}') = 'string'
+                          AND TRIM(detail #>> '{most_recent_instance,location,path}') <> ''
+                       THEN detail #>> '{most_recent_instance,location,path}'
+                     ELSE NULL
+                   END AS resolved_path
               FROM findings
              WHERE product_id = '$PILOT_PRODUCT_ID'
                AND id IN (
