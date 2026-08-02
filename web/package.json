@@ -14,19 +14,19 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "next": "16.2.10",
+    "next": "16.2.12",
     "pg": "^8.22.0",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "server-only": "^0.0.1"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
-    "eslint": "^10.7.0",
-    "typescript-eslint": "^8.64.0",
+    "eslint": "^10.8.0",
+    "typescript-eslint": "^8.65.0",
     "tailwindcss": "^4.3.3",
     "@tailwindcss/postcss": "^4.3.3",
     "typescript": "^6.0.3"
