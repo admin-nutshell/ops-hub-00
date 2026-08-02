@@ -20,18 +20,18 @@
     "prepare": "node -e \"process.env.CI || require('child_process').execSync('git config core.hooksPath .githooks', {stdio:'inherit'})\""
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "@types/pg": "^8.20.0",
-    "eslint": "^10.7.0",
+    "eslint": "^10.8.0",
     "eslint-config-prettier": "^10.1.8",
-    "prettier": "^3.9.5",
+    "prettier": "^3.9.6",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.64.0",
+    "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@sentry/node": "^10.66.0",
-    "@supabase/supabase-js": "^2.110.7",
+    "@sentry/node": "^10.69.0",
+    "@supabase/supabase-js": "^2.111.0",
     "adm-zip": "0.6.0",
     "diff": "9.0.0",
     "inngest": "^4.13.0",
